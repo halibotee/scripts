@@ -1,2 +1,2 @@
 # scripts
-My personal Linux automation scripts
+Linux automation scripts
