@@ -1091,7 +1091,7 @@ view_chain_client_config_3() {
     
     echo
     yellow "[SS+KCPTUN+UDP2RAW] 合并订阅链接 (复制以下整行):"
-    green "${sub_link} && KCPTUN://${kcp_args} && UDP2RAW://${client_args_udp2raw}"
+    green "${sub_link} && KCPtun://${kcp_args} && UDP2raw://${client_args_udp2raw}"
     echo
 }
 
@@ -1318,7 +1318,7 @@ view_chain_client_config() {
     green "$client_args"; echo
     
     yellow "$display_title 合并订阅链接 (复制以下整行):"
-    green "${sub_link} && UDP2RAW://${client_args}"
+    green "${sub_link} && UDP2raw://${client_args}"
     echo
 }
 
