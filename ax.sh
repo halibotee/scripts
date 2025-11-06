@@ -874,10 +874,13 @@ create_new_xray_instance() {
         if [[ -z "$private_key" ]]; then
             private_key=$(echo "$tmp_key" | grep "PrivateKey" | cut -d: -f2- | tr -d '[:space:]')
         fi
+
         if [[ -z "$public_key" ]]; then
-            # 假设如果 PrivateKey 存在, Public key 也可能是 PublicKey
-            public_key=$(echo "$tmp_key" | grep "PublicKey" | cut -d: -f2- | tr -d '[:space:]')
+        # 假设如果 PrivateKey 存在, Public key 也可能是 PublicKey
+        # [修正] 兼容 'Password:' 格式的输出
+        public_key=$(echo "$tmp_key" | grep "Password" | cut -d: -f2- | tr -d '[:space:]')
         fi
+    
 
         # 验证结果
         if [[ -z "$private_key" || -z "$public_key" ]]; then
