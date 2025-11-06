@@ -861,22 +861,29 @@ create_new_xray_instance() {
         
         log "正在生成 Reality 密钥对..."
 
-        # 生成可复现的 Reality 种子（32位 hex）
-        local reality_key_seed=$(echo -n "${uuid}" | sha256sum | awk '{print $1}' | head -c 32)
+        # [修] 移除旧的、已注释的种子逻辑，直接调用 x25519
+        local tmp_key=$("$XRAY_INSTALL_DIR/xray" x25519)
 
-        # 生成 Reality 密钥对
-        # local tmp_key=$($XRAY_INSTALL_DIR/xray x25519 -i <<< "${reality_key_seed}")
-        local tmp_key=$($XRAY_INSTALL_DIR/xray x25519)
+        # [修] 使用更健壮的 grep/cut/tr 提取
+        # 1. 尝试提取标准 'Private key: '
+        local private_key=$(echo "$tmp_key" | grep "Private key" | cut -d: -f2- | tr -d '[:space:]')
+        # 2. 尝试提取标准 'Public key: '
+        local public_key=$(echo "$tmp_key" | grep "Public key" | cut -d: -f2- | tr -d '[:space:]')
 
-        # 提取私钥和公钥（更稳健的提取方式）
-        local private_key=$(awk -F': ' '/Private/{print $2}' <<< "${tmp_key}")
-        local public_key=$(awk -F': ' '/Public/{print $2}' <<< "${tmp_key}")
+        # [修] 增加对您日志中 'PrivateKey:' 格式的兼容性 (作为后备)
+        if [[ -z "$private_key" ]]; then
+            private_key=$(echo "$tmp_key" | grep "PrivateKey" | cut -d: -f2- | tr -d '[:space:]')
+        fi
+        if [[ -z "$public_key" ]]; then
+            # 假设如果 PrivateKey 存在, Public key 也可能是 PublicKey
+            public_key=$(echo "$tmp_key" | grep "PublicKey" | cut -d: -f2- | tr -d '[:space:]')
+        fi
 
         # 验证结果
         if [[ -z "$private_key" || -z "$public_key" ]]; then
             red "错误: 无法生成或解析 Reality 密钥对！"
-            log "Xray 命令输入种子: $reality_key_seed"
-            log "Xray 命令输出: $tmp_key"
+            # [修] 移除不再使用的 "输入种子" 日志
+            log "Xray 命令输出 (Debug): $tmp_key" # 保留此行以供调试
             return 1
         fi
 
@@ -952,7 +959,6 @@ create_new_xray_instance() {
         fi
     fi
 }
-
 # --- 14. 客户端配置查看器 ---
 
 # 生成 Hysteria2 订阅链接
