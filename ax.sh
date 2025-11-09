@@ -70,7 +70,7 @@ CLIENT_VLESS_UDP2RAW_LISTEN_ADDR="127.0.0.1:1094"
 CLIENT_SS_3_CHAIN_KCP_TARGET="127.0.0.1:1095" # KCP 目标 (UDP2RAW 监听)
 CLIENT_SS_3_CHAIN_SS_TARGET="127.0.0.1:1096"  # SS 目标 (KCP 监听)
 
-UDP2RAW_COMMON_ARGS="--raw-mode faketcp --cipher-mode xor --auth-mode crc32 --seq-mode 4 -a --keep-rule --fix-gro"
+UDP2RAW_COMMON_ARGS="--raw-mode faketcp --cipher-mode aes128cbc --auth-mode hmac_sha1 --seq-mode 4 -a --keep-rule --fix-gro"
 UDP2RAW_CLIENT_BASE_ARGS="-c ${UDP2RAW_COMMON_ARGS}"
 
 # --- 9. 配置文件模板 (JSON / YAML / CONF) ---
@@ -89,8 +89,8 @@ read -r -d '' UDP2RAW_CONFIG_TEMPLATE <<'EOM'
 -r __TARGET_ADDR__
 -k __PASSWORD__
 --raw-mode faketcp
---cipher-mode xor
---auth-mode crc32
+--cipher-mode aes128cbc
+--auth-mode hmac_sha1
 --seq-mode 4
 -a
 --keep-rule
