@@ -1,12 +1,12 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.11
+# VPS Optimizer v2.12
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-SCRIPT_VERSION="2.11"
+SCRIPT_VERSION="2.12"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -205,20 +205,21 @@ fn_trim_services() {
     fn_log "SUCCESS" "服务裁剪完成。"
 }
 
-# 智能 ZRAM 安装 (v2.11 - 修复 v2.10 的 systemd 语法)
+# 智能 ZRAM 安装 (自定义 systemd 服务)
 fn_setup_zram() {
     local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
     
-    # --- [!!! 修复 v2.11 !!!] ---
-    # 策略: v2.10 的自定义服务是正确的, 但 systemd 语法错误 (多个 ExecStart)。
-    # v2.11 将所有命令合并到一个 /bin/sh -c "..." 中。
+    # 策略: zram-tools 的 zramswap.service 在 Debian 11 上不可靠, 启动时会忽略配置。
+    # 1. 我们安装 zram-tools 只是为了 'zramctl' 依赖 (util-linux)。
+    # 2. 我们永久禁用有 bug 的 'zramswap.service'。
+    # 3. 我们创建自己的 'vps-optimizer-zram.service' 来直接运行 'zramctl'。
 
-    fn_log "INFO" "  -> [FIX v2.11] 正在彻底清除旧的 zram-tools 服务 (以防万一)..."
+    fn_log "INFO" "  -> 正在彻底清除旧的 ZRAM 服务 (以防万一)..."
     systemctl disable --now zramswap.service >/dev/null 2>&1
     apt purge -y zram-tools >/dev/null 2>&1
     
-    # 清理 v2.9 (编译) 的残留
+    # 清理编译版的残留 (以防万一)
     systemctl disable --now systemd-zram-setup@zram0.service >/dev/null 2>&1
     rm -f /etc/systemd/zram-generator.conf
     rm -f /usr/local/lib/systemd/system-generators/zram-generator
@@ -227,17 +228,17 @@ fn_setup_zram() {
     [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
     rm -f /etc/default/zramswap
 
-    fn_log "INFO" "  -> [FIX v2.11] 正在安装 zram-tools (仅为 'zramctl' 依赖)..."
+    fn_log "INFO" "  -> 正在安装 zram-tools (仅为 'zramctl' 依赖)..."
     if ! apt install -y zram-tools; then 
         fn_log "ERROR" "ZRAM 软件包 'zram-tools' 安装失败。"; 
         return 1; 
     fi
     
-    fn_log "INFO" "  -> [FIX v2.11] 再次确认禁用有 bug 的 'zramswap.service'..."
+    fn_log "INFO" "  -> 再次确认禁用 zram-tools 自带服务 (zramswap.service)..."
     systemctl disable --now zramswap.service >/dev/null 2>&1
     
     # 创建我们自己的 systemd 服务
-    fn_log "INFO" "  -> [FIX v2.11] 正在创建自定义 ZRAM systemd 服务 (vps-optimizer-zram.service)..."
+    fn_log "INFO" "  -> 正在创建自定义 ZRAM systemd 服务 (vps-optimizer-zram.service)..."
     cat > /etc/systemd/system/vps-optimizer-zram.service <<EOF
 # Configured by VPS Optimizer v$SCRIPT_VERSION
 # This service manually configures ZRAM, bypassing the faulty zram-tools scripts.
@@ -248,7 +249,6 @@ After=multi-user.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/sbin/modprobe zram
-# [FIX v2.11] 将所有命令合并到一个 ExecStart 中
 ExecStart=/bin/sh -c "zramctl --reset /dev/zram0 2>/dev/null || true; zramctl --find --size ${ZRAM_SIZE_MB}M --algorithm zstd; mkswap /dev/zram0; swapon /dev/zram0"
 ExecStop=/bin/sh -c "swapoff /dev/zram0 2>/dev/null || true; zramctl --reset /dev/zram0 2>/dev/null || true"
 [Install]
@@ -273,15 +273,15 @@ EOF
 
 # ZRAM 恢复 (卸载)
 fn_restore_zram() {
-    fn_log "INFO" "  -> [v2.11] 正在卸载自定义 'vps-optimizer-zram.service'..."
+    fn_log "INFO" "  -> 正在卸载自定义 'vps-optimizer-zram.service'..."
     systemctl disable --now vps-optimizer-zram.service > /dev/null 2>&1
     rm -f /etc/systemd/system/vps-optimizer-zram.service
     
-    fn_log "INFO" "  -> [v2.11] 正在卸载 'zram-tools'..."
+    fn_log "INFO" "  -> 正在卸载 'zram-tools'..."
     apt purge -y zram-tools >/dev/null 2>&1
     
-    # 卸载 v2.9 (编译) 的残留
-    fn_log "INFO" "  -> [v2.11] 正在清理编译版 (zram-generator) 的残留..."
+    # 卸载编译版的残留 (以防万一)
+    fn_log "INFO" "  -> 正在清理编译版 (zram-generator) 的残留..."
     systemctl disable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
     rm -f /etc/systemd/zram-generator.conf
     rm -f /usr/local/lib/systemd/system-generators/zram-generator
@@ -291,7 +291,7 @@ fn_restore_zram() {
     
     systemctl daemon-reload
     
-    # 恢复旧的(有bug的) zram-tools 配置 (如果存在)
+    # 恢复旧的 zram-tools 配置 (如果存在)
     if [ -f "${BACKUP_DIR}/zramswap.bak" ]; then
         cp "${BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
     fi
@@ -431,7 +431,7 @@ fn_show_status_report() {
             echo "  DNS 状态: $dns_info (系统默认)"
         fi
     else
-        # [FIX v2.4] 优化非 resolved 系统的 DNS 状态检测
+        # 优化非 resolved 系统的 DNS 状态检测
         dns_info=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n 1)
         if [[ "$dns_info" == "8.8.8.8" ]] || [[ "$dns_info" == "1.1.1.1" ]]; then
              echo "  DNS 状态: $dns_info (已应用, /etc/resolv.conf)"
@@ -453,7 +453,7 @@ fn_show_status_report() {
     # --- Optimization ---
     echo "[ 优化 ]"
     
-    # [FIX v2.10] 检查 $TOUCHED_SERVICES_FILE 是否存在
+    # 检查 $TOUCHED_SERVICES_FILE 是否存在
     if [ -f "$TOUCHED_SERVICES_FILE" ]; then
         echo "  服务状态: 已优化"
     else
@@ -515,7 +515,7 @@ fn_optimize_auto() {
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
     # 步骤 4: ZRAM
-    fn_log "INFO" "[4/10] 安装与配置 ZRAM (自定义服务 v2.11)..."
+    fn_log "INFO" "[4/10] 安装与配置 ZRAM (自定义服务 v2.12)..."
     if ! fn_setup_zram; then
         fn_log "ERROR" "ZRAM 安装失败。正在中止优化。"
         return 1
@@ -555,7 +555,6 @@ EOF
     # 步骤 8: CPU
     fn_log "INFO" "[8/10] CPU 调速器持久化 (动态检测)..."
     
-    # [FIX v2.4] 检查文件是否存在且可写，以避免 "No such file" 错误
     local gov_file="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
     
     if [ -f "$gov_file" ] && [ -w "$gov_file" ]; then
@@ -681,7 +680,7 @@ fn_restore_state() {
     fi
 
     # 步骤 2: 卸载 ZRAM
-    fn_log "INFO" "[2/11] 卸载 ZRAM (v2.11)..."
+    fn_log "INFO" "[2/11] 卸载 ZRAM..."
     fn_restore_zram
 
     # 步骤 3: 恢复 fstab
@@ -729,7 +728,7 @@ fn_restore_state() {
         cp "${USER_BACKUP_DIR}/resolved.conf.bak" /etc/systemd/resolved.conf
         systemctl restart systemd-resolved.service > /dev/null 2>&1
     else
-        # [FIX v2.10] 即使备份丢失也尝试恢复 (针对 v2.9 失败后备份丢失的情况)
+        # 即使备份丢失也尝试恢复 (针对 v2.9 失败后备份丢失的情况)
         fn_log "WARN" "  -> 未找到 'resolved.conf.bak'。尝试强制恢复默认值..."
         if [ -f /etc/systemd/resolved.conf ]; then
             sed -i 's/^DNS=8.8.8.8 1.1.1.1/#DNS=/g' /etc/systemd/resolved.conf
@@ -776,7 +775,7 @@ fn_restore_state() {
     fn_log "INFO" "[11/11] 刷新 APT 软件源..."
     apt update -y
 
-    # [FIX v2.10] 移除状态文件以在报告中反映“未优化”
+    # 移除状态文件以在报告中反映“未优化”
     rm -f "$TOUCHED_SERVICES_FILE"
 
     fn_log "SUCCESS" "撤销优化完成！"
