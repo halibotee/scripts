@@ -1,12 +1,12 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v3.0
+# Prime Optimizer v1.0
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="3.0"
+VERSION="1.0"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -285,7 +285,7 @@ fn_detect_selinux() {
 
 # 状态报告
 fn_show_status_report() {
-    echo "--- [系统运行状态报告] ---"
+    echo "--- [系统状态] ---"
     
     if [ -z "$PRETTY_NAME" ] && [ -f /etc/os-release ]; then
         source /etc/os-release
@@ -596,7 +596,7 @@ fn_show_menu() {
     echo " Prime Optimizer v$VERSION (自动 APT 修复)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
-    echo "  1) 自动优化 (推荐)"
+    echo "  1) 自动优化"
     echo "  2) 撤销优化"
     echo "  0) 退出"
     echo "============================================================"
