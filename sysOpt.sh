@@ -1,12 +1,12 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.10
+# VPS Optimizer v2.11
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-SCRIPT_VERSION="2.10"
+SCRIPT_VERSION="2.11"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -205,16 +205,16 @@ fn_trim_services() {
     fn_log "SUCCESS" "服务裁剪完成。"
 }
 
-# 智能 ZRAM 安装 (v2.10 - 自定义 systemd 服务)
+# 智能 ZRAM 安装 (v2.11 - 修复 v2.10 的 systemd 语法)
 fn_setup_zram() {
     local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
     
-    # --- [!!! 修复 v2.10 !!!] ---
-    # 策略: 编译 (v2.9) 失败, zram-tools (v2.1-v2.5) 不可靠。
-    # 回到 v2.7 的自定义服务方案, 但这次要确保 zram-tools 的服务被彻底清除。
+    # --- [!!! 修复 v2.11 !!!] ---
+    # 策略: v2.10 的自定义服务是正确的, 但 systemd 语法错误 (多个 ExecStart)。
+    # v2.11 将所有命令合并到一个 /bin/sh -c "..." 中。
 
-    fn_log "INFO" "  -> [FIX v2.10] 正在彻底清除旧的 zram-tools 服务 (以防万一)..."
+    fn_log "INFO" "  -> [FIX v2.11] 正在彻底清除旧的 zram-tools 服务 (以防万一)..."
     systemctl disable --now zramswap.service >/dev/null 2>&1
     apt purge -y zram-tools >/dev/null 2>&1
     
@@ -227,17 +227,17 @@ fn_setup_zram() {
     [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
     rm -f /etc/default/zramswap
 
-    fn_log "INFO" "  -> [FIX v2.10] 正在安装 zram-tools (仅为 'zramctl' 依赖)..."
+    fn_log "INFO" "  -> [FIX v2.11] 正在安装 zram-tools (仅为 'zramctl' 依赖)..."
     if ! apt install -y zram-tools; then 
         fn_log "ERROR" "ZRAM 软件包 'zram-tools' 安装失败。"; 
         return 1; 
     fi
     
-    fn_log "INFO" "  -> [FIX v2.10] 再次确认禁用有 bug 的 'zramswap.service'..."
+    fn_log "INFO" "  -> [FIX v2.11] 再次确认禁用有 bug 的 'zramswap.service'..."
     systemctl disable --now zramswap.service >/dev/null 2>&1
     
     # 创建我们自己的 systemd 服务
-    fn_log "INFO" "  -> [FIX v2.10] 正在创建自定义 ZRAM systemd 服务 (vps-optimizer-zram.service)..."
+    fn_log "INFO" "  -> [FIX v2.11] 正在创建自定义 ZRAM systemd 服务 (vps-optimizer-zram.service)..."
     cat > /etc/systemd/system/vps-optimizer-zram.service <<EOF
 # Configured by VPS Optimizer v$SCRIPT_VERSION
 # This service manually configures ZRAM, bypassing the faulty zram-tools scripts.
@@ -248,12 +248,9 @@ After=multi-user.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/sbin/modprobe zram
-ExecStartPre=/usr/bin/zramctl --reset /dev/zram0
-ExecStart=/usr/bin/zramctl --find --size ${ZRAM_SIZE_MB}M --algorithm zstd
-ExecStart=/sbin/mkswap /dev/zram0
-ExecStart=/sbin/swapon /dev/zram0
-ExecStop=/sbin/swapoff /dev/zram0
-ExecStop=/usr/bin/zramctl --reset /dev/zram0
+# [FIX v2.11] 将所有命令合并到一个 ExecStart 中
+ExecStart=/bin/sh -c "zramctl --reset /dev/zram0 2>/dev/null || true; zramctl --find --size ${ZRAM_SIZE_MB}M --algorithm zstd; mkswap /dev/zram0; swapon /dev/zram0"
+ExecStop=/bin/sh -c "swapoff /dev/zram0 2>/dev/null || true; zramctl --reset /dev/zram0 2>/dev/null || true"
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -267,7 +264,8 @@ EOF
     if swapon -s | grep -q 'zram0'; then
         fn_log "SUCCESS" "  -> ZRAM 已通过自定义服务启动并配置。"
     else
-        fn_log "WARN" "  -> ZRAM 自定义服务启动后未检测到 swap。可能需要重启。"
+        fn_log "ERROR" "  -> ZRAM 自定义服务启动失败。请检查 'systemctl status vps-optimizer-zram.service'。"
+        return 1
     fi
     
     return 0
@@ -275,15 +273,15 @@ EOF
 
 # ZRAM 恢复 (卸载)
 fn_restore_zram() {
-    fn_log "INFO" "  -> [v2.10] 正在卸载自定义 'vps-optimizer-zram.service'..."
+    fn_log "INFO" "  -> [v2.11] 正在卸载自定义 'vps-optimizer-zram.service'..."
     systemctl disable --now vps-optimizer-zram.service > /dev/null 2>&1
     rm -f /etc/systemd/system/vps-optimizer-zram.service
     
-    fn_log "INFO" "  -> [v2.10] 正在卸载 'zram-tools'..."
+    fn_log "INFO" "  -> [v2.11] 正在卸载 'zram-tools'..."
     apt purge -y zram-tools >/dev/null 2>&1
     
     # 卸载 v2.9 (编译) 的残留
-    fn_log "INFO" "  -> [v2.10] 正在清理编译版 (zram-generator) 的残留..."
+    fn_log "INFO" "  -> [v2.11] 正在清理编译版 (zram-generator) 的残留..."
     systemctl disable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
     rm -f /etc/systemd/zram-generator.conf
     rm -f /usr/local/lib/systemd/system-generators/zram-generator
@@ -517,7 +515,7 @@ fn_optimize_auto() {
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
     # 步骤 4: ZRAM
-    fn_log "INFO" "[4/10] 安装与配置 ZRAM (自定义服务 v2.10)..."
+    fn_log "INFO" "[4/10] 安装与配置 ZRAM (自定义服务 v2.11)..."
     if ! fn_setup_zram; then
         fn_log "ERROR" "ZRAM 安装失败。正在中止优化。"
         return 1
@@ -683,7 +681,7 @@ fn_restore_state() {
     fi
 
     # 步骤 2: 卸载 ZRAM
-    fn_log "INFO" "[2/11] 卸载 ZRAM (v2.10)..."
+    fn_log "INFO" "[2/11] 卸载 ZRAM (v2.11)..."
     fn_restore_zram
 
     # 步骤 3: 恢复 fstab
