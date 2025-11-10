@@ -118,7 +118,7 @@ fn_fix_apt_sources() {
         local codename
         codename=$(lsb_release -cs)
         cat > /etc/apt/sources.list <<EOF
-# Configured by Prime Optimizer v$VERSION
+# Configured by VPS Optimizer v$VERSION
 deb http://deb.debian.org/debian/ $codename main contrib non-free
 deb-src http://deb.debian.org/debian/ $codename main contrib non-free
 
@@ -132,7 +132,7 @@ EOF
         local codename
         codename=$(lsb_release -cs)
         cat > /etc/apt/sources.list <<EOF
-# Configured by Prime Optimizer v$VERSION
+# Configured by VPS Optimizer v$VERSION
 deb http://archive.ubuntu.com/ubuntu/ $codename main restricted universe multiverse
 deb-src http://archive.ubuntu.com/ubuntu/ $codename main restricted universe multiverse
 
@@ -226,7 +226,7 @@ EOF
     if [ "$configure_zram_tools" = true ]; then
         [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
         cat > /etc/default/zramswap <<EOF
-# Configured by Prime Optimizer v$VERSION
+# Configured by VPS Optimizer v$VERSION
 ALGO=zstd
 SIZE=${ZRAM_SIZE_MB}M
 EOF
@@ -428,7 +428,7 @@ EOF
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v1.0 Fused Tuning ===
+# === VPS Optimizer v1.0 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -553,7 +553,7 @@ fn_restore_state() {
     fi
 
     if [ "$restore_sysctl" = true ]; then
-        fn_log "INFO" "  -> G '  -> 正在恢复原始 Sysctl (BBR 将被禁用)..."
+        fn_log "INFO" "  -> 正在恢复原始 Sysctl (BBR 将被禁用)..."
         rm /etc/sysctl.d/99-prime-fused.conf 2>/dev/null
         rm -rf /etc/sysctl.d/
         [ -d "${USER_BACKUP_DIR}/sysctl.d.bak" ] && cp -r "${USER_BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/
@@ -619,7 +619,7 @@ fn_show_menu() {
     mkdir -p "$BACKUP_DIR"
     
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION"
+    echo " VPS Optimizer v$VERSION"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化"
