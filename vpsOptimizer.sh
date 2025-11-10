@@ -1,22 +1,18 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v16.0 (Hotfix)
-#
-# 变更 (V16.0):
-# 1. 修复 (关键): 强制将损坏的/慢速的 apt 镜像替换为官方 deb.debian.org CDN。
-# 2. 变更: 备份目录已移至 /etc/vps_optimize_backup。
-# 3. 修复: 移除了 apt-get install 的静默模式 (>/dev/null) 以进行调试。
-# 4. 保留: V15 的 ZRAM 稳定回退 (zram-tools) 逻辑。
+# VPS Optimizer v1.0
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
+# 功能:
+# 1. 自动优化 (ZRAM, 服务裁剪, CPU, Sysctl, 日志, 安全)
+# 2. 撤销优化 (完全恢复原始状态)
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="16.0"
+VERSION="1.0"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
-# 关键变更: 固定备份目录
 BACKUP_DIR="/etc/vps_optimize_backup"
 LOG_FILE="${BACKUP_DIR}/optimize.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -107,7 +103,7 @@ fn_detect_os() {
 
 # --- [2. 核心功能 (备份, 优化, 恢复)] ---
 
-# (V16.0 修复) 强制 APT 镜像源修复
+# 强制 APT 镜像源修复
 fn_fix_apt_sources() {
     fn_log "INFO" "[*] 正在强制替换为官方 Debian/Ubuntu 镜像源..."
     
@@ -179,7 +175,7 @@ fn_backup_state() {
 
 # 动态服务裁剪
 fn_trim_services() {
-    fn_log "INFO" "[5/10] 裁剪非必要服务 (动态检测)..."
+    fn_log "INFO" "[6/10] 裁剪非必要服务 (动态检测)..."
     for service in "${FN_TRIM_SERVICES_LIST[@]}"; do
         if systemctl is-enabled "$service" >/dev/null 2>&1; then
             fn_log "INFO" "  -> 检测到: $service (已启用). 正在禁用..."
@@ -193,7 +189,7 @@ fn_trim_services() {
     fn_log "SUCCESS" "服务裁剪完成。"
 }
 
-# (V15.0 逻辑保留) 智能 ZRAM 安装
+# 智能 ZRAM 安装
 fn_setup_zram() {
     local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
@@ -222,13 +218,11 @@ EOF
         install_cmd="apt-get install -y systemd-zram-generator"
     fi
 
-    # 执行安装 (V16.0 修复: 移除 > /dev/null)
     if ! $install_cmd; then 
         fn_log "ERROR" "ZRAM 软件包安装失败。"; 
         return 1; 
     fi
 
-    # 执行配置
     if [ "$configure_zram_tools" = true ]; then
         [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
         cat > /etc/default/zramswap <<EOF
@@ -245,24 +239,26 @@ EOF
     return 0
 }
 
-# ZRAM 恢复
+# ZRAM 恢复 (卸载)
 fn_restore_zram() {
     # Debian 10, 11 / Ubuntu 20.04
     if ( [ "$OS_ID" = "debian" ] && [ "$OS_VERSION_ID" = "10" ] ) || \
        ( [ "$OS_ID" = "debian" ] && [ "$OS_VERSION_ID" = "11" ] ) || \
        ( [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION_ID" = "20.04" ] );
     then
-        fn_log "INFO" "  -> 正在禁用 'zramswap.service'..."
+        fn_log "INFO" "  -> 正在卸载 'zram-tools'..."
         systemctl disable --now zramswap.service 2>/dev/null
         rm /etc/default/zramswap 2>/dev/null
+        apt-get purge -y zram-tools
         if [ -f "${BACKUP_DIR}/zramswap.bak" ]; then
             cp "${BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
         fi
     # Debian 12+ / Ubuntu 22.04+
     else
-        fn_log "INFO" "  -> 正在禁用 'systemd-zram-setup'..."
+        fn_log "INFO" "  -> 正在卸载 'systemd-zram-generator'..."
         systemctl disable --now systemd-zram-setup@zram0.service 2>/dev/null
         rm /etc/systemd/zram-generator.conf 2>/dev/null
+        apt-get purge -y systemd-zram-generator
     fi
 }
 
@@ -302,7 +298,7 @@ fn_detect_selinux() {
 
 # 状态报告
 fn_show_status_report() {
-    echo "--- [系统运行状态报告] ---"
+    echo "--- [系统状态] ---"
     
     if [ -z "$PRETTY_NAME" ] && [ -f /etc/os-release ]; then
         source /etc/os-release
@@ -351,7 +347,7 @@ fn_optimize_auto() {
     # 步骤 0: 备份 (必须在 APT 修复前，以保存原始 sources.list)
     fn_backup_state
 
-    # 步骤 1: 修复 APT (V16.0)
+    # 步骤 1: 修复 APT
     fn_log "INFO" "[1/10] 检查并修复 APT 软件源..."
     if ! fn_fix_apt_sources; then
         fn_log "ERROR" "APT 修复失败。正在中止优化。"
@@ -367,7 +363,7 @@ fn_optimize_auto() {
     swapoff -a
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
-    # 步骤 4: ZRAM (V16.0)
+    # 步骤 4: ZRAM
     fn_log "INFO" "[4/10] 安装与配置 ZRAM (稳定回退)..."
     if ! fn_setup_zram; then
         fn_log "ERROR" "ZRAM 安装失败。正在中止优化。"
@@ -376,7 +372,6 @@ fn_optimize_auto() {
 
     # 步骤 5: Fail2ban
     fn_log "INFO" "[5/10] 安装并启用 Fail2ban..."
-    # (V16.0 修复: 移除 > /dev/null)
     if ! apt-get install -y fail2ban; then 
         fn_log "ERROR" "Fail2ban 安装失败。请检查 apt。"
         return 1
@@ -433,7 +428,7 @@ EOF
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v16.0 Fused Tuning ===
+# === Prime Optimizer v1.0 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -492,11 +487,11 @@ EOF
     fn_show_status_report
 }
 
-# 菜单 2: 撤销优化 (智能检测)
+# 菜单 2: 撤销优化
 fn_restore_state() {
     fn_log "WARN" "开始撤销优化..."
     
-    local USER_BACKUP_DIR="$BACKUP_DIR" # V16.0
+    local USER_BACKUP_DIR="$BACKUP_DIR"
 
     if [ ! -d "$USER_BACKUP_DIR" ] || [ ! -f "${USER_BACKUP_DIR}/fstab.bak" ]; then
         fn_log "ERROR" "未找到备份目录: $USER_BACKUP_DIR"
@@ -518,27 +513,30 @@ fn_restore_state() {
     LOG_FILE="${USER_BACKUP_DIR}/restore.log"
     fn_log "INFO" "正在从 $USER_BACKUP_DIR 恢复... 日志: $LOG_FILE"
 
-    # 恢复 APT 源
-    fn_log "INFO" "[1/10] 恢复 APT 软件源..."
+    # 步骤 1: 恢复 APT 源 (必须在卸载前)
+    fn_log "INFO" "[1/11] 恢复 APT 软件源..."
     if [ -f "${USER_BACKUP_DIR}/apt.sources.list.bak" ]; then
         cp "${USER_BACKUP_DIR}/apt.sources.list.bak" /etc/apt/sources.list
     fi
 
-    fn_log "INFO" "[2/10] 禁用 ZRAM..."
+    # 步骤 2: 卸载 ZRAM
+    fn_log "INFO" "[2/11] 卸载 ZRAM..."
     fn_restore_zram
 
-    fn_log "INFO" "[3/10] 恢复 /etc/fstab..."
+    # 步骤 3: 恢复 fstab
+    fn_log "INFO" "[3/11] 恢复 /etc/fstab..."
     cp "${USER_BACKUP_DIR}/fstab.bak" /etc/fstab
     fn_log "INFO" "尝试重新激活旧的 Swap..."
     swapon -a
 
-    fn_log "INFO" "[4/10] 恢复 journald 配置..."
+    # 步骤 4: 恢复 journald
+    fn_log "INFO" "[4/11] 恢复 journald 配置..."
     rm -rf /etc/systemd/journald.conf.d/
     [ -d "${USER_BACKUP_DIR}/journald.conf.d.bak" ] && cp -r "${USER_BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/
     systemctl restart systemd-journald
 
-    # BBR 恢复提示
-    fn_log "INFO" "[5/10] 恢复 Sysctl 配置 (含IPv6/BBR)..."
+    # 步骤 5: BBR 恢复提示
+    fn_log "INFO" "[5/11] 恢复 Sysctl 配置 (含IPv6/BBR)..."
     local algo_bak=$(cat "${USER_BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || echo "cubic")
     local algo_now=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
     local restore_sysctl=true
@@ -555,7 +553,7 @@ fn_restore_state() {
     fi
 
     if [ "$restore_sysctl" = true ]; then
-        fn_log "INFO" "  -> 正在恢复原始 Sysctl (BBR 将被禁用)..."
+        fn_log "INFO" "  -> G '  -> 正在恢复原始 Sysctl (BBR 将被禁用)..."
         rm /etc/sysctl.d/99-prime-fused.conf 2>/dev/null
         rm -rf /etc/sysctl.d/
         [ -d "${USER_BACKUP_DIR}/sysctl.d.bak" ] && cp -r "${USER_BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/
@@ -563,29 +561,34 @@ fn_restore_state() {
         sysctl --system > /dev/null
     fi
 
-    fn_log "INFO" "[6/10] 恢复 DNS (systemd-resolved)..."
+    # 步骤 6: 恢复 DNS
+    fn_log "INFO" "[6/11] 恢复 DNS (systemd-resolved)..."
     if [ -f "${USER_BACKUP_DIR}/resolved.conf.bak" ]; then
         fn_log "INFO" "  -> 正在恢复 systemd-resolved 原始配置..."
         cp "${USER_BACKUP_DIR}/resolved.conf.bak" /etc/systemd/resolved.conf
         systemctl restart systemd-resolved.service
     fi
 
-    fn_log "INFO" "[7/10] 恢复 CPU 默认模式..."
+    # 步骤 7: 恢复 CPU
+    fn_log "INFO" "[7/11] 恢复 CPU 默认模式..."
     systemctl disable --now cpugov-performance.service 2>/dev/null
     rm /etc/systemd/system/cpugov-performance.service 2>/dev/null
     fn_log "INFO" "  -> CPU governor 将在重启后恢复为系统默认值。"
     
-    fn_log "INFO" "[8/10] 恢复 SELinux..."
+    # 步骤 8: 恢复 SELinux
+    fn_log "INFO" "[8/11] 恢复 SELinux..."
     if [ -f "${USER_BACKUP_DIR}/selinux.config.bak" ]; then
         fn_log "INFO" "  -> 正在恢复 SELinux 原始配置..."
         cp "${USER_BACKUP_DIR}/selinux.config.bak" /etc/selinux/config
     fi
 
-    fn_log "INFO" "[9/10] 禁用 Fail2ban..."
-    systemctl disable --now fail2ban.service 2>/dev/null
-    fn_log "INFO" "  -> Fail2ban 已禁用 (未卸载)。"
+    # 步骤 9: 卸载 Fail2ban
+    fn_log "INFO" "[9/11] 卸载 Fail2ban..."
+    apt-get purge -y fail2ban
+    fn_log "INFO" "  -> Fail2ban 已卸载 (purged)。"
 
-    fn_log "INFO" "[10/10] 恢复被禁用的服务 (根据备份日志)..."
+    # 步骤 10: 恢复服务
+    fn_log "INFO" "[10/11] 恢复被禁用的服务 (根据备份日志)..."
     local touched_services_file="${USER_BACKUP_DIR}/touched_services.txt"
     
     if [ -f "$touched_services_file" ]; then
@@ -600,6 +603,10 @@ fn_restore_state() {
     fi
     
     systemctl daemon-reload
+    
+    # 步骤 11: 刷新 APT
+    fn_log "INFO" "[11/11] 刷新 APT 软件源..."
+    apt-get update
 
     fn_log "SUCCESS" "撤销优化完成！"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以使所有原始服务生效。"
@@ -612,10 +619,10 @@ fn_show_menu() {
     mkdir -p "$BACKUP_DIR"
     
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION (APT 强制修复)"
+    echo " Prime Optimizer v$VERSION"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
-    echo "  1) 自动优化 (推荐)"
+    echo "  1) 自动优化"
     echo "  2) 撤销优化"
     echo "  0) 退出"
     echo "============================================================"
