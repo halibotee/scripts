@@ -1,15 +1,16 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.0
+# VPS Optimizer v2.1 (Hotfix)
+#
+# 变更 (v2.1):
+# 1. 修复 (关键): 动态检测 Swap 状态。
+#    如果 Swap 已禁用，则跳过 'swapoff -a'，防止在某些 KVM 上挂起。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
-# 功能:
-# 1. 自动优化 (ZRAM, 服务裁剪, CPU, Sysctl, 日志, 安全)
-# 2. 撤销优化 (完全恢复原始状态)
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="2.0"
+VERSION="2.1"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -296,7 +297,7 @@ fn_detect_selinux() {
     fi
 }
 
-# V2.0 状态报告
+# V2.1 状态报告
 fn_show_status_report() {
     echo "--- [系统状态] ---"
     
@@ -304,6 +305,7 @@ fn_show_status_report() {
     if [ -z "$PRETTY_NAME" ] && [ -f /etc/os-release ]; then
         source /etc/os-release
     fi
+    
     local os_info="$PRETTY_NAME"
     local virt_info=$(systemd-detect-virt 2>/dev/null || echo "KVM")
     local arch_info=$(uname -m)
@@ -339,7 +341,7 @@ fn_show_status_report() {
         echo "  Swap 状态: 已禁用 (无 Swap)"
     elif echo "$swap_info" | grep -q "zram"; then
         local zram_size=$(free -m | grep Swap | awk '{print $2}')
-        echo "  Swap 状态: 已启用ZRAM (${zram_size}M)" # 采纳的用户措辞
+        echo "  Swap 状态: 已启用ZRAM (${zram_size}M)"
     else
         local swap_size=$(free -m | grep Swap | awk '{print $2}')
         echo "  Swap 状态: 已启用文件Swap (${swap_size}M)"
@@ -413,7 +415,7 @@ fn_show_status_report() {
     
     # Services
     if [ -f "${BACKUP_DIR}/touched_services.txt" ]; then
-        echo "  服务状态: 已优化" # 采纳的用户措辞
+        echo "  服务状态: 已优化"
     else
         local optimizable_count=0
         for service in "${FN_TRIM_SERVICES_LIST[@]}"; do
@@ -458,9 +460,14 @@ fn_optimize_auto() {
     fn_log "INFO" "[2/10] 动态检测 SELinux..."
     fn_detect_selinux
 
-    # 步骤 3: 禁用 Swap
+    # 步骤 3: 禁用 Swap (V2.1 修复)
     fn_log "INFO" "[3/10] 禁用现有文件 Swap..."
-    swapoff -a > /dev/null 2>&1
+    if swapon -s | grep -q 'partition\|file'; then
+        fn_log "INFO" "  -> 检测到活动 Swap... 正在禁用。"
+        swapoff -a > /dev/null 2>&1
+    else
+        fn_log "INFO" "  -> 未检测到活动 Swap。跳过 swapoff。"
+    fi
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
     # 步骤 4: ZRAM
@@ -528,7 +535,7 @@ EOF
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === VPS Optimizer v2.0 Fused Tuning ===
+# === VPS Optimizer v2.1 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -719,7 +726,7 @@ fn_show_menu() {
     mkdir -p "$BACKUP_DIR"
     
     echo "============================================================"
-    echo " VPS Optimizer v$VERSION"
+    echo " VPS Optimizer v$VERSION (Swap 挂起修复)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化"
