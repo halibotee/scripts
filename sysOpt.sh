@@ -1,25 +1,12 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.6 (基于 v2.5 优化)
-#
-# 变更 (v2.6 - 社区优化):
-# 1. (安全) 'fn_fix_apt_sources': 不再删除 'sources.list.d', 而是将其备份。
-# 2. (安全) 'fn_restore_state': 增加恢复 'sources.list.d' 的逻辑。
-# 3. (日志) 'fn_optimize_auto': 增加明确的 'Storage=volatile' 警告日志。
-# 4. (实践) 统一使用 'apt-get' 替代 'apt' 以提高脚本稳定性。
-# 5. (实践) 为 $zram_config_content 和 $CPU 变量添加引号。
-# 6. (实践) 将 DNS 服务器 (8.8.8.8, 1.1.1.1) 提取为全局变量。
-#
-# 变更 (v2.5):
-# 1. 修复 (关键): 'fn_setup_zram' 中 zram-tools 的配置。
-#    从 'SIZE=970M' (被忽略) 更改为 'FRACTION=100' (正确)
-#    以确保 ZRAM 设置为 100% 的物理 RAM。
+# VPS Optimizer v2.1
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="2.6"
+VERSION="2.1"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -27,10 +14,6 @@ BACKUP_DIR="/etc/vps_optimize_backup"
 LOG_FILE="${BACKUP_DIR}/optimize.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
 
-DNS_PRIMARY="8.8.8.8"
-DNS_SECONDARY="1.1.1.1"
-
-# V2.3 修复: 强制非交互模式
 export DEBIAN_FRONTEND=noninteractive
 
 # “安全裁剪”服务列表
@@ -80,7 +63,7 @@ fn_check_root() {
     fi
 }
 
-# (V2.4) 检查 APT 锁
+# 检查 APT 锁
 fn_check_apt_lock() {
     fn_log "INFO" "[*] 检查 APT 锁..."
     # 使用 fuser (更标准) 检查锁文件
@@ -144,15 +127,8 @@ fn_fix_apt_sources() {
     if [ -f /etc/apt/sources.list ]; then
         cp /etc/apt/sources.list "${BACKUP_DIR}/apt.sources.list.bak"
     fi
-    
-    # (v2.6 优化) 备份 .d 目录，而不是删除
-    fn_log "INFO" "  -> 正在备份 /etc/apt/sources.list.d/ ..."
-    mkdir -p "${BACKUP_DIR}/apt.sources.list.d.bak"
-    if ls /etc/apt/sources.list.d/*.list > /dev/null 2>&1; then
-        mv /etc/apt/sources.list.d/*.list "${BACKUP_DIR}/apt.sources.list.d.bak/"
-        fn_log "INFO" "  -> 已备份第三方源。"
-    fi
-
+    # 清理旧的 .d 目录
+    rm -f /etc/apt/sources.list.d/*.list
 
     if [ "$OS_ID" = "debian" ]; then
         local codename
@@ -229,7 +205,7 @@ fn_trim_services() {
     fn_log "SUCCESS" "服务裁剪完成。"
 }
 
-# (V2.5 修复) 智能 ZRAM 安装
+# 智能 ZRAM 安装
 fn_setup_zram() {
     local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
@@ -249,13 +225,13 @@ EOF
        ( [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION_ID" = "20.04" ] ); then
         
         fn_log "INFO" "  -> 使用 'zram-tools' (稳定回退) 适用于 $OS_ID $OS_VERSION_ID"
-        install_cmd="apt-get install -y zram-tools"
+        install_cmd="apt install -y zram-tools"
         configure_zram_tools=true
         
     # 分支 2: Debian 12+, Ubuntu 22.04+ (systemd-zram-generator from main)
     else
         fn_log "INFO" "  -> 使用 'systemd-zram-generator' (来自 Main Repo)"
-        install_cmd="apt-get install -y systemd-zram-generator"
+        install_cmd="apt install -y systemd-zram-generator"
     fi
 
     if ! $install_cmd; then 
@@ -263,7 +239,6 @@ EOF
         return 1; 
     fi
 
-    # V2.5 修复: 使用 FRACTION=100 替代 SIZE
     if [ "$configure_zram_tools" = true ]; then
         [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
         cat > /etc/default/zramswap <<EOF
@@ -278,7 +253,6 @@ EOF
         systemctl restart zramswap.service > /dev/null 2>&1
         systemctl enable zramswap.service > /dev/null 2>&1
     else
-        # (v2.6 优化) 增加引号
         echo "$zram_config_content" > /etc/systemd/zram-generator.conf
         systemctl daemon-reload > /dev/null 2>&1
         systemctl enable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
@@ -296,7 +270,7 @@ fn_restore_zram() {
         fn_log "INFO" "  -> 正在卸载 'zram-tools'..."
         systemctl disable --now zramswap.service > /dev/null 2>&1
         rm /etc/default/zramswap 2>/dev/null
-        apt-get purge -y zram-tools
+        apt purge -y zram-tools
         if [ -f "${BACKUP_DIR}/zramswap.bak" ]; then
             cp "${BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
         fi
@@ -305,7 +279,7 @@ fn_restore_zram() {
         fn_log "INFO" "  -> 正在卸载 'systemd-zram-generator'..."
         systemctl disable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
         rm /etc/systemd/zram-generator.conf 2>/dev/null
-        apt-get purge -y systemd-zram-generator
+        apt purge -y systemd-zram-generator
     fi
 }
 
@@ -434,8 +408,8 @@ fn_show_status_report() {
     local dns_info
     if systemctl is-active --quiet systemd-resolved; then
         dns_info=$(grep -E "^DNS=" /etc/systemd/resolved.conf | sed 's/DNS=//' | awk '{print $1, $2}')
-        if [[ "$dns_info" == "$DNS_PRIMARY $DNS_SECONDARY" ]]; then
-            echo "  DNS 状态: $DNS_PRIMARY, $DNS_SECONDARY (已应用)"
+        if [[ "$dns_info" == "8.8.8.8 1.1.1.1" ]]; then
+            echo "  DNS 状态: 8.8.8.8, 1.1.1.1 (已应用)"
         else
             dns_info=$(systemd-resolve --status | grep "Current DNS Server:" | awk '{print $4}' | head -n 1)
             [ -z "$dns_info" ] && dns_info=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n 1)
@@ -485,7 +459,6 @@ fn_optimize_auto() {
     
     fn_log "INFO" "将使用固定备份目录: $BACKUP_DIR"
     
-    # V2.4 修复: 检查 APT 锁
     if ! fn_check_apt_lock; then
         return 1
     fi
@@ -511,7 +484,7 @@ fn_optimize_auto() {
     fn_log "INFO" "[2/10] 动态检测 SELinux..."
     fn_detect_selinux
 
-    # 步骤 3: 禁用 Swap (V2.1 修复)
+    # 步骤 3: 禁用 Swap
     fn_log "INFO" "[3/10] 禁用现有文件 Swap..."
     if swapon -s | grep -q 'partition\|file'; then
         fn_log "INFO" "  -> 检测到活动 Swap... 正在禁用。"
@@ -530,8 +503,7 @@ fn_optimize_auto() {
 
     # 步骤 5: Fail2ban
     fn_log "INFO" "[5/10] 安装并启用 Fail2ban..."
-    # (v2.6 优化) 使用 apt-get
-    if ! apt-get install -y fail2ban; then 
+    if ! apt install -y fail2ban; then 
         fn_log "ERROR" "Fail2ban 安装失败。请检查 apt。"
         return 1
     fi
@@ -552,9 +524,6 @@ fn_optimize_auto() {
     fi
     fn_log "INFO" "  -> RAM: ${MEM_MB}MB, Journald 限制: $journald_ram_limit"
     
-    # (v2.6 优化) 添加 'volatile' 警告
-    fn_log "WARN" "  -> 将 journald 存储设置为 'volatile'。日志将仅保存在内存中，重启后会丢失。"
-
     mkdir -p /etc/systemd/journald.conf.d/
     cat <<EOF > /etc/systemd/journald.conf.d/10-ram-only.conf
 [Journal]
@@ -567,14 +536,13 @@ EOF
     fn_log "INFO" "[8/10] CPU 调速器持久化 (动态检测)..."
     if echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null; then
         fn_log "INFO" "  -> CPU governor 写入权限已确认。"
-        # (v2.6 优化) 增加引号
         cat > /etc/systemd/system/cpugov-performance.service <<'EOF'
 [Unit]
 Description=Set CPU governor to performance
 After=network.target
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c "for CPU in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > \"$CPU\" 2>/dev/null; done"
+ExecStart=/bin/sh -c "for CPU in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > $CPU 2>/dev/null; done"
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
@@ -591,7 +559,7 @@ EOF
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === VPS Optimizer v2.6 Fused Tuning ===
+# === VPS Optimizer v2.1 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -626,13 +594,13 @@ EOF
     # 步骤 10: DNS
     fn_log "INFO" "[10/10] 配置 DNS (systemd-resolved 动态检测)..."
     if systemctl is-active --quiet systemd-resolved.service && [ -f /etc/systemd/resolved.conf ]; then
-        fn_log "INFO" "  -> 检测到 systemd-resolved。正在配置 $DNS_PRIMARY & $DNS_SECONDARY..."
+        fn_log "INFO" "  -> 检测到 systemd-resolved。正在配置 8.8.8.8 & 1.1.1.1..."
         # 备份已在 fn_backup_state 中完成
-        sed -i "s/#DNS=.*/DNS=${DNS_PRIMARY} ${DNS_SECONDARY}/g" /etc/systemd/resolved.conf
+        sed -i 's/#DNS=.*/DNS=8.8.8.8 1.1.1.1/g' /etc/systemd/resolved.conf
         sed -i 's/#FallbackDNS=.*/FallbackDNS=/g' /etc/systemd/resolved.conf
         
         if ! grep -q "^DNS=" /etc/systemd/resolved.conf; then
-            sed -i "/\[Resolve\]/a DNS=${DNS_PRIMARY} ${DNS_SECONDARY}" /etc/systemd/resolved.conf
+            sed -i '/\[Resolve\]/a DNS=8.8.8.8 1.1.1.1' /etc/systemd/resolved.conf
         fi
         
         systemctl restart systemd-resolved.service > /dev/null 2>&1
@@ -676,7 +644,6 @@ fn_restore_state() {
     LOG_FILE="${USER_BACKUP_DIR}/restore.log"
     fn_log "INFO" "正在从 $USER_BACKUP_DIR 恢复... 日志: $LOG_FILE"
 
-    # V2.4 修复: 检查 APT 锁
     if ! fn_check_apt_lock; then
         return 1
     fi
@@ -685,13 +652,6 @@ fn_restore_state() {
     fn_log "INFO" "[1/11] 恢复 APT 软件源..."
     if [ -f "${USER_BACKUP_DIR}/apt.sources.list.bak" ]; then
         cp "${USER_BACKUP_DIR}/apt.sources.list.bak" /etc/apt/sources.list
-    fi
-
-    # (v2.6 优化) 恢复 .d 目录
-    fn_log "INFO" "[1.5/11] 恢复 APT .d 软件源..."
-    if [ -d "${USER_BACKUP_DIR}/apt.sources.list.d.bak" ]; then
-        rm -f /etc/apt/sources.list.d/*.list 2>/dev/null
-        cp -r "${USER_BACKUP_DIR}/apt.sources.list.d.bak/"* /etc/apt/sources.list.d/ 2>/dev/null || true
     fi
 
     # 步骤 2: 卸载 ZRAM
@@ -759,8 +719,7 @@ fn_restore_state() {
 
     # 步骤 9: 卸载 Fail2ban
     fn_log "INFO" "[9/11] 卸载 Fail2ban..."
-    # (v2.6 优化) 使用 apt-get
-    apt-get purge -y fail2ban
+    apt purge -y fail2ban
     fn_log "INFO" "  -> Fail2ban 已卸载 (purged)。"
 
     # 步骤 10: 恢复服务
@@ -770,7 +729,7 @@ fn_restore_state() {
     if [ -f "$touched_services_file" ]; then
         grep -vE '^(#|$|selinux|skipped-cpugov|fail2ban.service)' "$touched_services_file" | while read -r service; do
             if [ -n "$service" ]; then
-                fn_log "INFO" "  -> G正在重新启用: $service"
+                fn_log "INFO" "  -> 正在重新启用: $service"
                 systemctl enable "$service" >/dev/null 2>&1
             fi
         done
@@ -782,8 +741,7 @@ fn_restore_state() {
     
     # 步骤 11: 刷新 APT
     fn_log "INFO" "[11/11] 刷新 APT 软件源..."
-    # (v2.6 优化) 使用 apt-get
-    apt-get update -y
+    apt update -y
 
     fn_log "SUCCESS" "撤销优化完成！"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以使所有原始服务生效。"
@@ -796,7 +754,7 @@ fn_show_menu() {
     mkdir -p "$BACKUP_DIR"
     
     echo "============================================================"
-    echo " VPS Optimizer v$VERSION (基于 v2.5 优化)"
+    echo " VPS Optimizer v$VERSION"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化"
