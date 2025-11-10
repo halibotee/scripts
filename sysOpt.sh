@@ -1,23 +1,27 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.2 (Hotfix)
+# VPS Optimizer v2.3 (Hotfix)
 #
-# 变更 (v2.2):
-# 1. 修复 (关键): 移除所有 apt-get install/purge 的静默模式 (>/dev/null)
-#    以诊断 'zram-tools' 安装挂起的原因。
-# 2. 保留 (v2.1): Swap 挂起修复。
+# 变更 (v2.3):
+# 1. 修复 (关键): 增加 'DEBIAN_FRONTEND=noninteractive' 
+#    以防止 apt/dpkg 在安装时挂起。
+# 2. 修复: 根据用户测试，将 'apt-get install/purge' 替换为 'apt install/purge'。
+# 3. 修复: 移除 apt install 的静默模式以进行调试。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="2.2"
+VERSION="2.3"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
 BACKUP_DIR="/etc/vps_optimize_backup"
 LOG_FILE="${BACKUP_DIR}/optimize.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
+
+# V2.3 修复: 强制非交互模式
+export DEBIAN_FRONTEND=noninteractive
 
 # “安全裁剪”服务列表
 FN_TRIM_SERVICES_LIST=(
@@ -211,16 +215,18 @@ EOF
        ( [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION_ID" = "20.04" ] ); then
         
         fn_log "INFO" "  -> 使用 'zram-tools' (稳定回退) 适用于 $OS_ID $OS_VERSION_ID"
-        install_cmd="apt-get install -y zram-tools"
+        # V2.3 修复: 使用 apt
+        install_cmd="apt install -y zram-tools"
         configure_zram_tools=true
         
     # 分支 2: Debian 12+, Ubuntu 22.04+ (systemd-zram-generator from main)
     else
         fn_log "INFO" "  -> 使用 'systemd-zram-generator' (来自 Main Repo)"
-        install_cmd="apt-get install -y systemd-zram-generator"
+        # V2.3 修复: 使用 apt
+        install_cmd="apt install -y systemd-zram-generator"
     fi
 
-    # V2.2 修复: 移除 > /dev/null 2>&1
+    # V2.3 修复: 移除 > /dev/null 2>&1
     if ! $install_cmd; then 
         fn_log "ERROR" "ZRAM 软件包安装失败。"; 
         return 1; 
@@ -252,8 +258,8 @@ fn_restore_zram() {
         fn_log "INFO" "  -> 正在卸载 'zram-tools'..."
         systemctl disable --now zramswap.service > /dev/null 2>&1
         rm /etc/default/zramswap 2>/dev/null
-        # V2.2 修复: 移除 > /dev/null 2>&1
-        apt-get purge -y zram-tools
+        # V2.3 修复: 使用 apt
+        apt purge -y zram-tools
         if [ -f "${BACKUP_DIR}/zramswap.bak" ]; then
             cp "${BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
         fi
@@ -262,8 +268,8 @@ fn_restore_zram() {
         fn_log "INFO" "  -> 正在卸载 'systemd-zram-generator'..."
         systemctl disable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
         rm /etc/systemd/zram-generator.conf 2>/dev/null
-        # V2.2 修复: 移除 > /dev/null 2>&1
-        apt-get purge -y systemd-zram-generator
+        # V2.3 修复: 使用 apt
+        apt purge -y systemd-zram-generator
     fi
 }
 
@@ -483,8 +489,8 @@ fn_optimize_auto() {
 
     # 步骤 5: Fail2ban
     fn_log "INFO" "[5/10] 安装并启用 Fail2ban..."
-    # V2.2 修复: 移除 > /dev/null 2>&1
-    if ! apt-get install -y fail2ban; then 
+    # V2.3 修复: 使用 apt
+    if ! apt install -y fail2ban; then 
         fn_log "ERROR" "Fail2ban 安装失败。请检查 apt。"
         return 1
     fi
@@ -540,7 +546,7 @@ EOF
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === VPS Optimizer v2.2 Fused Tuning ===
+# === VPS Optimizer v2.3 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -696,8 +702,8 @@ fn_restore_state() {
 
     # 步骤 9: 卸载 Fail2ban
     fn_log "INFO" "[9/11] 卸载 Fail2ban..."
-    # V2.2 修复: 移除 > /dev/null 2>&1
-    apt-get purge -y fail2ban
+    # V2.3 修复: 使用 apt
+    apt purge -y fail2ban
     fn_log "INFO" "  -> Fail2ban 已卸载 (purged)。"
 
     # 步骤 10: 恢复服务
@@ -719,8 +725,8 @@ fn_restore_state() {
     
     # 步骤 11: 刷新 APT
     fn_log "INFO" "[11/11] 刷新 APT 软件源..."
-    # V2.2 修复: 移除 > /dev/null 2>&1
-    apt-get update
+    # V2.3 修复: 使用 apt
+    apt update -y
 
     fn_log "SUCCESS" "撤销优化完成！"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以使所有原始服务生效。"
