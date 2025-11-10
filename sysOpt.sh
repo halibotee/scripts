@@ -1,12 +1,12 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.1
+# VPS Optimizer v2.2
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="2.1"
+VERSION="2.2"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -249,8 +249,14 @@ FRACTION=100
 # SIZE is ignored if FRACTION is set
 # SIZE=${ZRAM_SIZE_MB}M
 EOF
-        # 重启服务以应用 FRACTION=100
-        systemctl restart zramswap.service > /dev/null 2>&1
+        
+        # 强制停止服务以卸载默认的 zram 设备
+        fn_log "INFO" "  -> 正在停止 zramswap 以应用新配置..."
+        systemctl stop zramswap.service > /dev/null 2>&1
+        
+        # 启动服务以读取新配置并创建新设备
+        fn_log "INFO" "  -> 正在启动 zramswap..."
+        systemctl start zramswap.service > /dev/null 2>&1
         systemctl enable zramswap.service > /dev/null 2>&1
     else
         echo "$zram_config_content" > /etc/systemd/zram-generator.conf
@@ -559,7 +565,7 @@ EOF
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === VPS Optimizer v2.1 Fused Tuning ===
+# === VPS Optimizer v2.2 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -754,7 +760,7 @@ fn_show_menu() {
     mkdir -p "$BACKUP_DIR"
     
     echo "============================================================"
-    echo " VPS Optimizer v$VERSION"
+    echo " VPS Optimizer v $VERSION" 
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化"
