@@ -1,12 +1,12 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.8
+# VPS Optimizer v2.9
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-SCRIPT_VERSION="2.8"
+SCRIPT_VERSION="2.9"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -205,16 +205,15 @@ fn_trim_services() {
     fn_log "SUCCESS" "服务裁剪完成。"
 }
 
-# 智能 ZRAM 安装 (v2.8 - 从源码编译)
+# 智能 ZRAM 安装 (v2.9 - 从源码编译)
 fn_setup_zram() {
     local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
     
-    # --- [!!! 修复 v2.8 !!!] ---
-    # 策略: 从源码编译 'systemd-zram-generator'
-    # zram-tools 在 Debian 11 上不可靠, systemd-zram-generator 不在 main repo
+    # --- [!!! 修复 v2.9 !!!] ---
+    # 策略: 编译 'systemd-zram-generator', 不再依赖 'cd'
 
-    fn_log "INFO" "  -> [FIX v2.8] 正在彻底卸载 zram-tools (如果存在)..."
+    fn_log "INFO" "  -> [FIX v2.9] 正在彻底卸载 zram-tools (如果存在)..."
     systemctl disable --now zramswap.service >/dev/null 2>&1
     apt purge -y zram-tools >/dev/null 2>&1
     rm -f /etc/default/zramswap
@@ -223,48 +222,59 @@ fn_setup_zram() {
     systemctl disable --now vps-optimizer-zram.service >/dev/null 2>&1
     rm -f /etc/systemd/system/vps-optimizer-zram.service
 
-    fn_log "INFO" "  -> [FIX v2.8] 正在安装编译依赖 (git, build-essential, meson, libsystemd-dev)..."
-    if ! apt install -y git build-essential meson ninja-build pkg-config libsystemd-dev; then
+    local ZRAM_BUILD_DEPS=("git" "build-essential" "meson" "ninja-build" "pkg-config" "libsystemd-dev")
+    fn_log "INFO" "  -> [FIX v2.9] 正在安装编译依赖 (${ZRAM_BUILD_DEPS[*]})..."
+    if ! apt install -y "${ZRAM_BUILD_DEPS[@]}"; then
         fn_log "ERROR" "编译依赖项安装失败。"
         return 1
     fi
     
     local ZRAM_GEN_SRC_DIR="/usr/local/src/zram-generator"
     rm -rf "$ZRAM_GEN_SRC_DIR"
-    fn_log "INFO" "  -> [FIX v2.8] 正在从 GitHub 克隆 zram-generator..."
+    fn_log "INFO" "  -> [FIX v2.9] 正在从 GitHub 克隆 zram-generator..."
     if ! git clone https://github.com/systemd/zram-generator.git "$ZRAM_GEN_SRC_DIR"; then
         fn_log "ERROR" "Git 克隆失败。"
         return 1
     fi
     
-    cd "$ZRAM_GEN_SRC_DIR"
+    # [FIX v2.9] 显式检查克隆是否成功 (文件是否存在)
+    if [ ! -f "$ZRAM_GEN_SRC_DIR/meson.build" ]; then
+        fn_log "ERROR" "Git 克隆后未找到 'meson.build' 文件。克隆失败或仓库已更改。"
+        rm -rf "$ZRAM_GEN_SRC_DIR"
+        return 1
+    fi
     
-    fn_log "INFO" "  -> [FIX v2.8] 正在配置 (meson)..."
-    if ! meson setup build; then
+    local ZRAM_BUILD_DIR="$ZRAM_GEN_SRC_DIR/build"
+
+    fn_log "INFO" "  -> [FIX v2.9] 正在配置 (meson) - 不依赖 'cd'..."
+    # 语法: meson setup <build_dir> <source_dir>
+    if ! meson setup "$ZRAM_BUILD_DIR" "$ZRAM_GEN_SRC_DIR"; then
         fn_log "ERROR" "Meson 配置失败。"
-        cd /
+        rm -rf "$ZRAM_GEN_SRC_DIR"
         return 1
     fi
 
-    fn_log "INFO" "  -> [FIX v2.8] 正在编译 (ninja)..."
-    if ! ninja -C build; then
+    fn_log "INFO" "  -> [FIX v2.9] 正在编译 (ninja)..."
+    if ! ninja -C "$ZRAM_BUILD_DIR"; then
         fn_log "ERROR" "Ninja 编译失败。"
-        cd /
+        rm -rf "$ZRAM_GEN_SRC_DIR"
         return 1
     fi
     
-    fn_log "INFO" "  -> [FIX v2.8] 正在安装 (meson install)..."
-    # 这将安装到 /usr/local/lib/systemd/...
-    if ! meson install -C build; then
+    fn_log "INFO" "  -> [FIX v2.9] 正在安装 (meson install)..."
+    if ! meson install -C "$ZRAM_BUILD_DIR"; then
         fn_log "ERROR" "Meson 安装失败。"
-        cd /
+        rm -rf "$ZRAM_GEN_SRC_DIR"
         return 1
     fi
     
-    fn_log "INFO" "  -> [FIX v2.8] 清理编译目录..."
-    cd /
+    fn_log "INFO" "  -> [FIX v2.9] 清理编译目录..."
     rm -rf "$ZRAM_GEN_SRC_DIR"
     
+    fn_log "INFO" "  -> [FIX v2.9] 正在卸载编译依赖项..."
+    apt purge -y "${ZRAM_BUILD_DEPS[@]}" >/dev/null 2>&1
+    apt autoremove -y >/dev/null 2>&1
+
     # --- 配置 ---
     
     local zram_config_content
@@ -298,14 +308,14 @@ EOF
 
 # ZRAM 恢复 (卸载)
 fn_restore_zram() {
-    fn_log "INFO" "  -> [v2.8] 正在卸载 'systemd-zram-generator' (编译版)..."
+    fn_log "INFO" "  -> [v2.9] 正在卸载 'systemd-zram-generator' (编译版)..."
     systemctl disable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
     
     # 移除配置文件
     rm -f /etc/systemd/zram-generator.conf
     
     # 移除 'meson install' 默认安装的文件 (前缀 /usr/local)
-    fn_log "INFO" "  -> [v2.8] 正在移除已安装的文件..."
+    fn_log "INFO" "  -> [v2.9] 正在移除已安装的文件..."
     rm -f /usr/local/lib/systemd/system-generators/zram-generator
     rm -f /usr/local/lib/systemd/system/systemd-zram-setup@.service
     rm -f /usr/local/share/man/man8/zram-generator.8.gz
@@ -318,7 +328,7 @@ fn_restore_zram() {
     # 卸载 zram-tools（以防万一）
     apt purge -y zram-tools >/dev/null 2>&1
     
-    fn_log "INFO" "  -> [v2.8] 正在重载 systemd daemon..."
+    fn_log "INFO" "  -> [v2.9] 正在重载 systemd daemon..."
     systemctl daemon-reload
     
     # 恢复旧的(有bug的) zram-tools 配置 (如果存在)
@@ -545,7 +555,7 @@ fn_optimize_auto() {
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
     # 步骤 4: ZRAM
-    fn_log "INFO" "[4/10] 安装与配置 ZRAM (编译 v2.8)..."
+    fn_log "INFO" "[4/10] 安装与配置 ZRAM (编译 v2.9)..."
     if ! fn_setup_zram; then
         fn_log "ERROR" "ZRAM 安装失败。正在中止优化。"
         return 1
@@ -711,7 +721,7 @@ fn_restore_state() {
     fi
 
     # 步骤 2: 卸载 ZRAM
-    fn_log "INFO" "[2/11] 卸载 ZRAM (v2.8)..."
+    fn_log "INFO" "[2/11] 卸载 ZRAM (v2.9)..."
     fn_restore_zram
 
     # 步骤 3: 恢复 fstab
@@ -769,7 +779,7 @@ fn_restore_state() {
     # 步骤 8: 恢复 SELinux
     fn_log "INFO" "[8/11] 恢复 SELinux..."
     if [ -f "${USER_BACKUP_DIR}/selinux.config.bak" ]; then
-        fn_log "INFO" "  -> G 正在恢复 SELinux 原始配置..."
+        fn_log "INFO" "  -> 正在恢复 SELinux 原始配置..."
         cp "${USER_BACKUP_DIR}/selinux.config.bak" /etc/selinux/config
     fi
 
