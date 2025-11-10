@@ -1,17 +1,12 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v7.0
-#
-# 变更 (V7.0):
-# 1. 新增: 动态检测 SELinux 状态并询问是否禁用。
-# 2. 新增: 动态设置 Journald 内存限制 (基于 RAM)。
-# 3. 保留: V6.2 的 CPU Governor 和 ZRAM 动态检测。
+# Prime Optimizer v1.0
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="7.0"
+VERSION="9.0"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -77,7 +72,6 @@ fn_detect_os() {
         exit 1
     fi
     
-    # 获取内存大小 (MB)
     MEM_MB=$(($(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024))
     fn_log "INFO" "检测到物理内存: ${MEM_MB}MB"
 
@@ -116,13 +110,14 @@ fn_backup_state() {
     cp /etc/sysctl.conf "${BACKUP_DIR}/sysctl.conf.bak" 2>/dev/null || true
     cp -r /etc/systemd/journald.conf.d/ "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/null || true
     [ -f /etc/selinux/config ] && cp /etc/selinux/config "${BACKUP_DIR}/selinux.config.bak"
+    [ -f /etc/systemd/resolved.conf ] && cp /etc/systemd/resolved.conf "${BACKUP_DIR}/resolved.conf.bak"
     systemctl list-unit-files --type=service --state=enabled > "${BACKUP_DIR}/enabled_services.before.txt"
-    echo "# Services disabled by optimizer" > "$TOUCHED_SERVICES_FILE"
+    echo "# Services touched by optimizer" > "$TOUCHED_SERVICES_FILE"
 }
 
 # 动态服务裁剪
 fn_trim_services() {
-    fn_log "INFO" "[4/8] 裁剪非必要服务 (动态检测)..."
+    fn_log "INFO" "[5/10] 裁剪非必要服务 (动态检测)..."
     for service in "${FN_TRIM_SERVICES_LIST[@]}"; do
         if systemctl is-enabled "$service" >/dev/null 2>&1; then
             fn_log "INFO" "  -> 检测到: $service (已启用). 正在禁用..."
@@ -138,7 +133,6 @@ fn_trim_services() {
 
 # ZRAM 安装
 fn_setup_zram() {
-    # ZRAM 大小已在 fn_detect_os 中获取
     local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
 
@@ -195,7 +189,7 @@ fn_restore_zram() {
     fi
 }
 
-# 新增: 动态检测 SELinux
+# 动态检测 SELinux
 fn_detect_selinux() {
     if command -v getenforce >/dev/null 2>&1; then
         local selinux_status
@@ -203,23 +197,21 @@ fn_detect_selinux() {
 
         if [ "$selinux_status" != "Disabled" ]; then
             fn_log "WARN" "检测到 SELinux 状态为: $selinux_status"
-            fn_log "WARN" "SELinux 会导致性能问题并可能与优化冲突 (如 VNC 截图所示)。"
+            fn_log "WARN" "SELinux 会导致性能问题并可能与优化冲突。"
             echo "-----------------------------------------------------"
             echo "是否要将其永久禁用 (推荐)? (y/n)"
             read -r selinux_choice
             
             if [ "$selinux_choice" = "y" ] || [ "$selinux_choice" = "Y" ]; then
                 fn_log "INFO" "正在禁用 SELinux..."
-                # 立即设为宽容模式
                 setenforce 0 2>/dev/null
-                # 永久禁用 (备份已在 fn_backup_state 中完成)
                 if [ -f /etc/selinux/config ]; then
                     sed -i.bak 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
                     fn_log "SUCCESS" "SELinux 已永久禁用。需要重启生效。"
                 else
                     fn_log "ERROR" "未找到 /etc/selinux/config，无法永久禁用。"
                 fi
-                echo "selinux" >> "$TOUCHED_SERVICES_FILE" # 记录操作以便恢复
+                echo "selinux" >> "$TOUCHED_SERVICES_FILE"
             else
                 fn_log "WARN" "跳过禁用 SELinux。这可能导致后续步骤失败。"
             fi
@@ -235,7 +227,7 @@ fn_detect_selinux() {
 fn_optimize_auto() {
     if [ -f "/etc/systemd/zram-generator.conf" ] || [ -f "/etc/default/zramswap" ]; then
         fn_log "WARN" "检测到已存在的 ZRAM 配置。"
-        fn_log "WARN" "如果您想重新优化，请先运行 [3] 恢复备份。"
+        fn_log "WARN" "如果您想重新优化，请先运行 [2] 撤销优化。"
         return 1
     fi
 
@@ -247,24 +239,32 @@ fn_optimize_auto() {
     # 步骤 0: 备份
     fn_backup_state
 
-    # 步骤 1: 动态检测 SELinux (新增)
-    fn_log "INFO" "[1/8] 动态检测 SELinux..."
+    # 步骤 1: 动态检测 SELinux
+    fn_log "INFO" "[1/10] 动态检测 SELinux..."
     fn_detect_selinux
 
     # 步骤 2: 禁用 Swap
-    fn_log "INFO" "[2/8] 禁用现有文件 Swap..."
+    fn_log "INFO" "[2/10] 禁用现有文件 Swap..."
     swapoff -a
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
     # 步骤 3: ZRAM
-    fn_log "INFO" "[3/8] 安装与配置 ZRAM..."
+    fn_log "INFO" "[3/10] 安装与配置 ZRAM..."
     fn_setup_zram
 
-    # 步骤 4: 裁剪服务
+    # 步骤 4: 安装 Fail2ban
+    fn_log "INFO" "[4/10] 安装并启用 Fail2ban..."
+    apt-get update > /dev/null
+    apt-get install -y fail2ban > /dev/null
+    systemctl enable --now fail2ban.service
+    echo "fail2ban.service" >> "$TOUCHED_SERVICES_FILE"
+    fn_log "SUCCESS" "  -> Fail2ban 已安装并启动。"
+
+    # 步骤 5: 裁剪服务
     fn_trim_services
 
-    # 步骤 5: Journald (动态内存)
-    fn_log "INFO" "[5/8] 配置 journald (动态 RAM 限制)..."
+    # 步骤 6: Journald (动态内存)
+    fn_log "INFO" "[6/10] 配置 journald (动态 RAM 限制)..."
     local journald_ram_limit="32M" # 默认 (RAM < 1.5G)
     if [ "$MEM_MB" -gt 4096 ]; then
         journald_ram_limit="128M"
@@ -281,8 +281,8 @@ RuntimeMaxUse=$journald_ram_limit
 EOF
     systemctl restart systemd-journald
 
-    # 步骤 6: CPU (动态检测)
-    fn_log "INFO" "[6/8] CPU 调速器持久化 (动态检测)..."
+    # 步骤 7: CPU (动态检测)
+    fn_log "INFO" "[7/10] CPU 调速器持久化 (动态检测)..."
     if echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null; then
         fn_log "INFO" "  -> CPU governor 写入权限已确认。"
         cat > /etc/systemd/system/cpugov-performance.service <<'EOF'
@@ -305,12 +305,20 @@ EOF
         echo "#skipped-cpugov" >> "$TOUCHED_SERVICES_FILE"
     fi
 
-    # 步骤 7: Sysctl
-    fn_log "INFO" "[7/8] 融合 Sysctl (TCP/UDP/Mem)..."
+    # 步骤 8: Sysctl (含 IPv6 禁用)
+    fn_log "INFO" "[8/10] 融合 Sysctl (TCP/UDP/Mem/IPv6)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v7.0 Fused Tuning (TCP/UDP/Mem) ===
+# === Prime Optimizer v9.0 Fused Tuning ===
+
+# 1. Disable IPv6
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+
+# 2. Memory & ZRAM
 vm.vfs_cache_pressure = 50
 vm.swappiness = 10
+
+# 3. TCP/UDP Tuning
 net.core.rmem_max = 26214400
 net.core.wmem_max = 26214400
 net.core.netdev_max_backlog = 4096
@@ -328,8 +336,27 @@ net.ipv4.udp_wmem_min = 16384
 EOF
     sysctl -p /etc/sysctl.d/99-prime-fused.conf
 
-    # 步骤 8: 报告
-    fn_log "INFO" "[8/8] 优化报告..."
+    # 步骤 9: DNS (动态检测)
+    fn_log "INFO" "[9/10] 配置 DNS (systemd-resolved 动态检测)..."
+    if systemctl is-active --quiet systemd-resolved.service && [ -f /etc/systemd/resolved.conf ]; then
+        fn_log "INFO" "  -> 检测到 systemd-resolved。正在配置 8.8.8.8 & 1.1.1.1..."
+        # 备份已在 fn_backup_state 中完成
+        sed -i 's/#DNS=.*/DNS=8.8.8.8 1.1.1.1/g' /etc/systemd/resolved.conf
+        sed -i 's/#FallbackDNS=.*/FallbackDNS=/g' /etc/systemd/resolved.conf
+        
+        if ! grep -q "^DNS=" /etc/systemd/resolved.conf; then
+            sed -i '/\[Resolve\]/a DNS=8.8.8.8 1.1.1.1' /etc/systemd/resolved.conf
+        fi
+        
+        systemctl restart systemd-resolved.service
+        fn_log "SUCCESS" "  -> systemd-resolved DNS 已更新。"
+    else
+        fn_log "WARN" "  -> 未检测到 systemd-resolved.service 或 resolved.conf。"
+        fn_log "WARN" "  -> 跳过 DNS 自动配置以确保稳定。"
+    fi
+
+    # 步骤 10: 报告
+    fn_log "INFO" "[10/10] 优化报告..."
     echo "--- 内存与 Swap (ZRAM) 状态:" | tee -a "$LOG_FILE"
     free -h | tee -a "$LOG_FILE"
     swapon --show | tee -a "$LOG_FILE"
@@ -341,76 +368,107 @@ EOF
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以应用所有更改。"
 }
 
-# 菜单 2: 手动优化
-fn_optimize_manual() {
-    fn_log "INFO" "手动优化提示"
-    echo "-----------------------------------------------------"
-    echo "手动优化涉及自行编辑配置文件。以下是关键文件："
-    echo
-    echo "1. 网络栈: /etc/sysctl.d/99-custom.conf"
-    echo "2. 日志:   /etc/systemd/journald.conf.d/10-ram.conf"
-    echo "3. 磁盘IO: /etc/fstab (添加 noatime,nodiratime 选项)"
-    echo "4. 服务:   使用 'systemctl disable <service.name>' 禁用服务"
-    echo
-    fn_log "INFO" "未执行任何自动更改。"
-}
-
-# 菜单 3: 恢复备份
+# 菜单 2: 撤销优化 (智能检测)
 fn_restore_state() {
-    fn_log "WARN" "开始恢复流程..."
+    fn_log "WARN" "开始撤销优化..."
     
-    echo "--- 可用的备份 ---"
-    ls -d /root/system_optimize_backup_* 2>/dev/null || echo "未找到任何备份。"
-    echo "---------------------"
-    
-    echo "请输入您要恢复的完整备份目录路径："
-    echo "(例如: /root/system_optimize_backup_1678886666)"
-    read -r USER_BACKUP_DIR
+    local backup_dirs=()
+    # 使用 mapfile 安全地将 find 结果读入数组，按时间倒序
+    mapfile -t backup_dirs < <(find /root -maxdepth 1 -type d -name 'system_optimize_backup_*' 2>/dev/null | sort -r)
+    local num_backups=${#backup_dirs[@]}
+    local USER_BACKUP_DIR=""
 
+    if [ "$num_backups" -eq 0 ]; then
+        fn_log "ERROR" "未找到任何备份目录。无法撤销。"
+        return 1
+        
+    elif [ "$num_backups" -eq 1 ]; then
+        USER_BACKUP_DIR="${backup_dirs[0]}"
+        fn_log "INFO" "检测到唯一的备份: $USER_BACKUP_DIR"
+        echo "-----------------------------------------------------"
+        echo "是否确认使用此备份进行恢复? (y/n)"
+        read -r confirm
+        if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+            fn_log "INFO" "操作已取消。"
+            return 0
+        fi
+        
+    else
+        fn_log "INFO" "检测到多个备份。请选择一个进行恢复:"
+        echo "-----------------------------------------------------"
+        select dir in "${backup_dirs[@]}"; do
+            if [ -n "$dir" ]; then
+                USER_BACKUP_DIR="$dir"
+                fn_log "INFO" "已选择: $USER_BACKUP_DIR"
+                break
+            else
+                fn_log "ERROR" "无效选择。请重新输入数字。"
+            fi
+        done
+        
+        if [ -z "$USER_BACKUP_DIR" ]; then
+            fn_log "INFO" "未选择, 操作已取消。"
+            return 0
+        fi
+    fi
+
+    # --- 开始恢复流程 ---
+    
     if [ ! -d "$USER_BACKUP_DIR" ] || [ ! -f "${USER_BACKUP_DIR}/fstab.bak" ]; then
-        fn_log "ERROR" "无效的备份目录: $USER_BACKUP_DIR"
+        fn_log "ERROR" "无效的备份目录 (缺少 fstab.bak): $USER_BACKUP_DIR"
         return 1
     fi
 
     LOG_FILE="${USER_BACKUP_DIR}/restore.log"
     fn_log "INFO" "正在从 $USER_BACKUP_DIR 恢复... 日志: $LOG_FILE"
 
-    fn_log "INFO" "[1/7] 禁用 ZRAM..."
+    fn_log "INFO" "[1/9] 禁用 ZRAM..."
     fn_restore_zram
 
-    fn_log "INFO" "[2/7] 恢复 /etc/fstab..."
+    fn_log "INFO" "[2/9] 恢复 /etc/fstab..."
     cp "${USER_BACKUP_DIR}/fstab.bak" /etc/fstab
     fn_log "INFO" "尝试重新激活旧的 Swap..."
     swapon -a
 
-    fn_log "INFO" "[3/7] 恢复 journald 配置..."
+    fn_log "INFO" "[3/9] 恢复 journald 配置..."
     rm -rf /etc/systemd/journald.conf.d/
     [ -d "${USER_BACKUP_DIR}/journald.conf.d.bak" ] && cp -r "${USER_BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/
     systemctl restart systemd-journald
 
-    fn_log "INFO" "[4/7] 恢复 Sysctl 配置..."
+    fn_log "INFO" "[4/9] 恢复 Sysctl 配置 (含IPv6)..."
     rm /etc/sysctl.d/99-prime-fused.conf 2>/dev/null
     rm -rf /etc/sysctl.d/
     [ -d "${USER_BACKUP_DIR}/sysctl.d.bak" ] && cp -r "${USER_BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/
     [ -f "${USER_BACKUP_DIR}/sysctl.conf.bak" ] && cp "${USER_BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf
     sysctl --system > /dev/null
 
-    fn_log "INFO" "[5/7] 恢复 CPU 默认模式..."
+    fn_log "INFO" "[5/9] 恢复 DNS (systemd-resolved)..."
+    if [ -f "${USER_BACKUP_DIR}/resolved.conf.bak" ]; then
+        fn_log "INFO" "  -> 正在恢复 systemd-resolved 原始配置..."
+        cp "${USER_BACKUP_DIR}/resolved.conf.bak" /etc/systemd/resolved.conf
+        systemctl restart systemd-resolved.service
+    fi
+
+    fn_log "INFO" "[6/9] 恢复 CPU 默认模式..."
     systemctl disable --now cpugov-performance.service 2>/dev/null
     rm /etc/systemd/system/cpugov-performance.service 2>/dev/null
     fn_log "INFO" "  -> CPU governor 将在重启后恢复为系统默认值。"
     
-    fn_log "INFO" "[6/7] 恢复 SELinux..."
+    fn_log "INFO" "[7/9] 恢复 SELinux..."
     if [ -f "${USER_BACKUP_DIR}/selinux.config.bak" ]; then
         fn_log "INFO" "  -> 正在恢复 SELinux 原始配置..."
         cp "${USER_BACKUP_DIR}/selinux.config.bak" /etc/selinux/config
     fi
 
-    fn_log "INFO" "[7/7] 恢复被禁用的服务 (根据备份日志)..."
+    fn_log "INFO" "[8/9] 禁用 Fail2ban..."
+    systemctl disable --now fail2ban.service 2>/dev/null
+    fn_log "INFO" "  -> Fail2ban 已禁用 (未卸载)。"
+
+    fn_log "INFO" "[9/9] 恢复被禁用的服务 (根据备份日志)..."
     local touched_services_file="${USER_BACKUP_DIR}/touched_services.txt"
     
     if [ -f "$touched_services_file" ]; then
-        grep -vE '^(#|$|selinux|skipped-cpugov)' "$touched_services_file" | while read -r service; do
+        grep -vE '^(#|$|selinux|skipped-cpugov|fail2ban.service)' "$touched_services_file" | while read -r service; do
             if [ -n "$service" ]; then
                 fn_log "INFO" "  -> 正在重新启用: $service"
                 systemctl enable "$service" >/dev/null 2>&1
@@ -422,7 +480,7 @@ fn_restore_state() {
     
     systemctl daemon-reload
 
-    fn_log "SUCCESS" "恢复完成！"
+    fn_log "SUCCESS" "撤销优化完成！"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以使所有原始服务生效。"
 }
 
@@ -431,13 +489,12 @@ fn_restore_state() {
 fn_show_menu() {
     clear
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION (增强动态检测)"
+    echo " Prime Optimizer v$VERSION (智能恢复)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化 (推荐)"
-    echo "  2) 手动优化 (查看提示)"
-    echo "  3) 恢复备份 (撤销优化)"
-    echo "  Q) 退出"
+    echo "  2) 撤销优化"
+    echo "  0) 退出"
     echo "============================================================"
     echo
     echo "请选择:"
@@ -448,12 +505,9 @@ fn_show_menu() {
             fn_optimize_auto
             ;;
         2)
-            fn_optimize_manual
-            ;;
-        3)
             fn_restore_state
             ;;
-        [qQ])
+        [0])
             fn_log "INFO" "退出。"
             exit 0
             ;;
