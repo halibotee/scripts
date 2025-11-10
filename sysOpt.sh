@@ -765,7 +765,7 @@ fn_show_menu() {
     mkdir -p "$BACKUP_DIR"
     
     echo "============================================================"
-    echo " VPS Optimizer v $VERSION"
+    echo " VPS Optimizer v$VERSION"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化"
