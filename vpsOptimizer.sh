@@ -1,17 +1,16 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v10.0
+# Prime Optimizer v11.0
 #
-# 变更 (V10.0):
-# 1. 新增: 自动在 sysctl 中启用 BBR + FQ。
-# 2. 新增: 优化后显示详细的状态报告 (系统, 算法)。
-# 3. 保留: V9.0 智能恢复流程。
+# 变更 (V11.0):
+# 1. 新增: 每次显示主菜单时，在底部自动刷新状态报告。
+# 2. 重构: fn_show_status_report 以便在菜单中干净地显示。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="10.0"
+VERSION="11.0"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -233,12 +232,16 @@ fn_detect_selinux() {
     fi
 }
 
-# 新增: 优化后显示状态报告
+# 优化后显示状态报告 (重构为无日志)
 fn_show_status_report() {
-    fn_log "INFO" "--- [系统运行状态报告] ---"
+    echo "--- [系统运行状态报告] ---"
     
     # Get Data
-    source /etc/os-release
+    # 确保 /etc/os-release 已加载 (如果 fn_detect_os 未运行)
+    if [ -z "$PRETTY_NAME" ] && [ -f /etc/os-release ]; then
+        source /etc/os-release
+    fi
+    
     local os_info="$PRETTY_NAME"
     local virt_info=$(systemd-detect-virt 2>/dev/null || echo "KVM")
     local arch_info=$(uname -m)
@@ -251,7 +254,6 @@ fn_show_status_report() {
     if [[ "$con_algo_post" == "bbr" ]]; then
         bbr_status="已启用 BBR 加速 (BBR + FQ)"
     else
-        # 检查内核是否 *支持* BBR
         if grep -q "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
             bbr_status="BBR 可用, 但未启用 (当前: $con_algo_post)"
         else
@@ -352,7 +354,7 @@ EOF
     # 步骤 8: Sysctl (含 IPv6 禁用 和 BBR 启用)
     fn_log "INFO" "[8/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v10.0 Fused Tuning ===
+# === Prime Optimizer v11.0 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -409,7 +411,7 @@ EOF
     fn_log "IMPORTANT" "备份数据保存在: $BACKUP_DIR"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以应用所有更改。"
     
-    # 最终状态报告 (新增)
+    # 最终状态报告 (V11.0)
     echo ""
     fn_show_status_report
 }
@@ -441,7 +443,6 @@ fn_restore_state() {
     else
         fn_log "INFO" "检测到多个备份。请选择一个进行恢复:"
         echo "-----------------------------------------------------"
-        # 模拟 'select' 但更安全
         local i=1
         for dir in "${backup_dirs[@]}"; do
             echo "  $i) $(basename "$dir")"
@@ -541,14 +542,19 @@ fn_restore_state() {
 fn_show_menu() {
     clear
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION (BBR 启用 + 状态报告)"
+    echo " Prime Optimizer v$VERSION (菜单状态显示)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化 (推荐)"
     echo "  2) 撤销优化"
     echo "  0) 退出"
     echo "============================================================"
-    echo
+    
+    # V11.0: 每次都显示状态报告
+    echo ""
+    fn_show_status_report
+    echo ""
+    
     echo "请选择:"
     read -r choice
 
