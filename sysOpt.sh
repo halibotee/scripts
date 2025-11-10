@@ -1,12 +1,12 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.3
+# VPS Optimizer v2.4
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="2.3"
+SCRIPT_VERSION="2.4"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -134,7 +134,7 @@ fn_fix_apt_sources() {
         local codename
         codename=$(lsb_release -cs)
         cat > /etc/apt/sources.list <<EOF
-# Configured by VPS Optimizer v$VERSION
+# Configured by VPS Optimizer v$SCRIPT_VERSION
 deb http://deb.debian.org/debian/ $codename main contrib non-free
 deb-src http://deb.debian.org/debian/ $codename main contrib non-free
 
@@ -148,7 +148,7 @@ EOF
         local codename
         codename=$(lsb_release -cs)
         cat > /etc/apt/sources.list <<EOF
-# Configured by VPS Optimizer v$VERSION
+# Configured by VPS Optimizer v$SCRIPT_VERSION
 deb http://archive.ubuntu.com/ubuntu/ $codename main restricted universe multiverse
 deb-src http://archive.ubuntu.com/ubuntu/ $codename main restricted universe multiverse
 
@@ -242,7 +242,7 @@ EOF
     if [ "$configure_zram_tools" = true ]; then
         [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
         cat > /etc/default/zramswap <<EOF
-# Configured by VPS Optimizer v$VERSION
+# Configured by VPS Optimizer v$SCRIPT_VERSION
 ALGO=zstd
 # Use 100% of RAM.
 FRACTION=100
@@ -250,14 +250,17 @@ FRACTION=100
 # SIZE=${ZRAM_SIZE_MB}M
 EOF
         
-        # --- [!!! 已修复 v2.3 !!!] ---
-        # 移除 >/dev/null 2>&1 以显示错误，并增加 sleep
+        # --- [!!! 已修复 v2.4 !!!] ---
+        # 强力修复：在 'stop' 之前手动 'swapoff'
         
-        fn_log "INFO" "  -> 正在停止 zramswap 以应用新配置..."
+        fn_log "INFO" "  -> [FIX] 正在强制 swapoff /dev/zram0 (以移除旧设备)..."
+        swapoff /dev/zram0 2>/dev/null || true
+        
+        fn_log "INFO" "  -> 正在停止 zramswap 服务..."
         systemctl stop zramswap.service
         
-        fn_log "INFO" "  -> [FIX] 等待 2 秒确保设备已移除..."
-        sleep 2
+        fn_log "INFO" "  -> [FIX] 等待 1 秒..."
+        sleep 1
         
         fn_log "INFO" "  -> 正在启动 zramswap (应用新配置)..."
         systemctl start zramswap.service
@@ -334,6 +337,7 @@ fn_show_status_report() {
     
     # --- System ---
     if [ -z "$PRETTY_NAME" ] && [ -f /etc/os-release ]; then
+        # 重新 source 以防万一 (尽管 fn_detect_os 已经做了)
         source /etc/os-release
     fi
     
@@ -420,15 +424,20 @@ fn_show_status_report() {
     if systemctl is-active --quiet systemd-resolved; then
         dns_info=$(grep -E "^DNS=" /etc/systemd/resolved.conf | sed 's/DNS=//' | awk '{print $1, $2}')
         if [[ "$dns_info" == "8.8.8.8 1.1.1.1" ]]; then
-            echo "  DNS 状态: 8.8.8.8, 1.1.1.1 (已应用)"
+            echo "  DNS 状态: 8.8.8.8, 1.1.1.1 (已应用, systemd-resolved)"
         else
             dns_info=$(systemd-resolve --status | grep "Current DNS Server:" | awk '{print $4}' | head -n 1)
             [ -z "$dns_info" ] && dns_info=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n 1)
             echo "  DNS 状态: $dns_info (系统默认)"
         fi
     else
+        # [FIX v2.4] 优化非 resolved 系统的 DNS 状态检测
         dns_info=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n 1)
-        echo "  DNS 状态: $dns_info (系统默认)"
+        if [[ "$dns_info" == "8.8.8.8" ]] || [[ "$dns_info" == "1.1.1.1" ]]; then
+             echo "  DNS 状态: $dns_info (已应用, /etc/resolv.conf)"
+        else
+             echo "  DNS 状态: $dns_info (系统默认)"
+        fi
     fi
 
     # Fail2ban
@@ -545,8 +554,14 @@ EOF
 
     # 步骤 8: CPU
     fn_log "INFO" "[8/10] CPU 调速器持久化 (动态检测)..."
-    if echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null; then
+    
+    # [FIX v2.4] 检查文件是否存在且可写，以避免 "No such file" 错误
+    local gov_file="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+    
+    if [ -f "$gov_file" ] && [ -w "$gov_file" ]; then
         fn_log "INFO" "  -> CPU governor 写入权限已确认。"
+        echo performance > "$gov_file" 2>/dev/null
+        
         cat > /etc/systemd/system/cpugov-performance.service <<'EOF'
 [Unit]
 Description=Set CPU governor to performance
@@ -562,15 +577,15 @@ EOF
         systemctl enable --now cpugov-performance.service > /dev/null 2>&1
         fn_log "SUCCESS" "  -> CPU Performance 模式已持久化。"
     else
-        fn_log "WARN" "  -> 无法写入 CPU governor (权限拒绝或 KVM/LXC 限制)。"
+        fn_log "WARN" "  -> 无法写入 CPU governor (文件不存在或 KVM/LXC 限制)。"
         fn_log "WARN" "  -> 跳过 CPU Performance 服务创建。这是正常现象。"
         echo "#skipped-cpugov" >> "$TOUCHED_SERVICES_FILE"
     fi
 
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
-    cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === VPS Optimizer v2.3 Fused Tuning ===
+    cat > /etc/sysctl.d/99-prime-fused.conf <<EOF
+# === VPS Optimizer v$SCRIPT_VERSION Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -740,7 +755,7 @@ fn_restore_state() {
     if [ -f "$touched_services_file" ]; then
         grep -vE '^(#|$|selinux|skipped-cpugov|fail2ban.service)' "$touched_services_file" | while read -r service; do
             if [ -n "$service" ]; then
-                fn_log "INFO" "  -> G 正在重新启用: $service"
+                fn_log "INFO" "  -> 正在重新启用: $service"
                 systemctl enable "$service" >/dev/null 2>&1
             fi
         done
@@ -765,7 +780,7 @@ fn_show_menu() {
     mkdir -p "$BACKUP_DIR"
     
     echo "============================================================"
-    echo " VPS Optimizer v$VERSION"
+    echo " VPS Optimizer v$SCRIPT_VERSION"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化"
