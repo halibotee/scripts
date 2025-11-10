@@ -1314,7 +1314,7 @@ view_chain_client_config() {
         local uuid=$(jq -r '.inbounds[0].settings.clients[0].id' "$main_conf_path")
         local seed=$(jq -r '.inbounds[0].streamSettings.kcpSettings.seed' "$main_conf_path")
         local header_type=$(jq -r '.inbounds[0].streamSettings.kcpSettings.header.type' "$main_conf_path")
-        sub_link="vless://${uuid}@${client_udp2raw_host}:${client_udp2raw_port}?type=kcp&security=none&headerType=${header_type}&seed=${seed}#VLESS_Chain_${ip}_${id}"
+        sub_link="vless://${uuid}@${client_udp2raw_host}:${client_udp2raw_port}?type=kcp&security=none&headerType=${header_type}&seed=${seed}#vless_Chain_${ip}_${id}"
     fi
 
     cyan "--- ${title} 串联实例 ${id} 客户端配置 ---"; echo
