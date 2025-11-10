@@ -1,17 +1,22 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v2.0
+# Prime Optimizer v13.0
+#
+# 变更 (V13.0):
+# 1. 新增: 自动检测并修复 Debian 11 (Bullseye) 损坏的 Backports 软件源。
+# 2. 新增: 重构 ZRAM 安装逻辑，以智能处理 Bullseye (存档), Bookworm (main), Buster (zram-tools)。
+# 3. 修复: 启动时的 'tee' 日志错误。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="2.0"
+VERSION="13.0"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
-# 固定备份目录
-BACKUP_DIR="/etc/vps_optimize_backup"
+# 关键变更: 固定备份目录
+BACKUP_DIR="/root/system_optimize_backup"
 LOG_FILE="${BACKUP_DIR}/optimize.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
 
@@ -51,6 +56,8 @@ fn_log() {
         ERROR) color="$color_red" ;;
         *) color="$color_reset" ;;
     esac
+    # V12.1 修复: 确保目录存在
+    [ -n "$BACKUP_DIR" ] && mkdir -p "$BACKUP_DIR"
     echo -e "[${color}$1${color_reset}] $2" | tee -a "$LOG_FILE"
 }
 
@@ -63,6 +70,9 @@ fn_check_root() {
 
 # OS 检测与支持验证
 fn_detect_os() {
+    # V12.1 修复: 确保目录存在
+    mkdir -p "$BACKUP_DIR"
+    
     if [ -f /etc/os-release ]; then
         source /etc/os-release
         OS_ID=$ID
@@ -103,9 +113,42 @@ fn_detect_os() {
 
 # --- [2. 核心功能 (备份, 优化, 恢复)] ---
 
+# (新增) 自动 APT 修复
+fn_fix_apt_sources() {
+    fn_log "INFO" "[*] 检查并修复 APT 软件源..."
+    
+    # 第一次尝试
+    if apt-get update > /dev/null 2>&1; then
+        fn_log "SUCCESS" "  -> APT 软件源状态良好。"
+        return 0
+    fi
+    
+    # 仅当系统是 Bullseye (Debian 11) 时才尝试修复 Backports
+    if [ "$OS_ID" = "debian" ] && [ "$OS_VERSION_ID" = "11" ]; then
+        fn_log "WARN" "  -> 'apt-get update' 失败。正在尝试修复 Debian 11 (Bullseye) Backports..."
+        
+        # (清理)
+        rm -f /etc/apt/sources.list.d/backports.list
+        sed -i.bak '/backports/d' /etc/apt/sources.list
+        
+        # (替换) 使用官方存档 (Archive) 镜像
+        echo "deb https://archive.debian.org/debian/ bullseye-backports main" > /etc/apt/sources.list.d/backports.list
+        
+        # (验证)
+        fn_log "INFO" "  -> 正在使用存档库 (Archive) 刷新 (允许未签名)..."
+        if apt-get update --allow-insecure-repositories > /dev/null 2>&1; then
+            fn_log "SUCCESS" "  -> APT 软件源已修复并指向存档库。"
+            return 0
+        fi
+    fi
+    
+    fn_log "ERROR" "  -> APT 软件源修复失败。无法继续安装软件包。"
+    fn_log "ERROR" "  -> 请手动运行 'apt-get update' 检查错误。"
+    return 1 # 返回失败
+}
+
 fn_backup_state() {
     fn_log "INFO" "创建备份目录: $BACKUP_DIR"
-    mkdir -p "$BACKUP_DIR"
     cp /etc/fstab "${BACKUP_DIR}/fstab.bak"
     cp -r /etc/sysctl.d/ "${BACKUP_DIR}/sysctl.d.bak" 2>/dev/null || true
     cp /etc/sysctl.conf "${BACKUP_DIR}/sysctl.conf.bak" 2>/dev/null || true
@@ -123,7 +166,7 @@ fn_backup_state() {
 
 # 动态服务裁剪
 fn_trim_services() {
-    fn_log "INFO" "[5/10] 裁剪非必要服务 (动态检测)..."
+    fn_log "INFO" "[6/11] 裁剪非必要服务 (动态检测)..."
     for service in "${FN_TRIM_SERVICES_LIST[@]}"; do
         if systemctl is-enabled "$service" >/dev/null 2>&1; then
             fn_log "INFO" "  -> 检测到: $service (已启用). 正在禁用..."
@@ -137,42 +180,58 @@ fn_trim_services() {
     fn_log "SUCCESS" "服务裁剪完成。"
 }
 
-# ZRAM 安装
+# (重构) 智能 ZRAM 安装
 fn_setup_zram() {
     local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
+    local zram_config_content
+    zram_config_content=$(cat <<EOF
+[zram0]
+zram-size = ${ZRAM_SIZE_MB}M
+compression-algorithm = zstd
+EOF
+)
+    local install_cmd=""
+    local configure_zram_tools=false
 
-    # Debian 10 / Ubuntu 20.04
+    # 分支 1: Debian 10 / Ubuntu 20.04 (zram-tools)
     if ( [ "$OS_ID" = "debian" ] && [ "$OS_VERSION_ID" = "10" ] ) || \
        ( [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION_ID" = "20.04" ] ); then
         
         fn_log "INFO" "  -> 使用 'zram-tools' 适用于 $OS_ID $OS_VERSION_ID"
-        apt-get update > /dev/null
-        apt-get install -y zram-tools > /dev/null
+        install_cmd="apt-get install -y zram-tools"
+        configure_zram_tools=true
         
+    # 分支 2: Debian 11 (Bullseye) (systemd-zram-generator from backports)
+    elif [ "$OS_ID" = "debian" ] && [ "$OS_VERSION_ID" = "11" ]; then
+        fn_log "INFO" "  -> 使用 'systemd-zram-generator' (来自 Bullseye Backports)"
+        install_cmd="apt-get install -y --allow-unauthenticated -t bullseye-backports systemd-zram-generator"
+
+    # 分支 3: Debian 12+, Ubuntu 22.04+ (systemd-zram-generator from main)
+    else
+        fn_log "INFO" "  -> 使用 'systemd-zram-generator' (来自 Main Repo)"
+        install_cmd="apt-get install -y systemd-zram-generator"
+    fi
+
+    # 执行安装
+    $install_cmd > /dev/null
+    if [ $? -ne 0 ]; then fn_log "ERROR" "ZRAM 软件包安装失败。"; return 1; fi
+
+    # 执行配置
+    if [ "$configure_zram_tools" = true ]; then
         [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
-        
         cat > /etc/default/zramswap <<EOF
 # Configured by Prime Optimizer v$VERSION
 ALGO=zstd
 SIZE=${ZRAM_SIZE_MB}M
 EOF
         systemctl enable --now zramswap.service
-        
-    # Debian 11+ / Ubuntu 22.04+
     else
-        fn_log "INFO" "  -> 使用 'systemd-zram-generator' 适用于 $OS_ID $OS_VERSION_ID"
-        apt-get update > /dev/null
-        apt-get install -y systemd-zram-generator > /dev/null
-        
-        cat > /etc/systemd/zram-generator.conf <<EOF
-[zram0]
-zram-size = ${ZRAM_SIZE_MB}M
-compression-algorithm = zstd
-EOF
+        echo "$zram_config_content" > /etc/systemd/zram-generator.conf
         systemctl daemon-reload
         systemctl enable --now systemd-zram-setup@zram0.service
     fi
+    return 0
 }
 
 # ZRAM 恢复
@@ -231,7 +290,7 @@ fn_detect_selinux() {
 
 # 状态报告
 fn_show_status_report() {
-    echo "--- [系统运行状态] ---"
+    echo "--- [系统运行状态报告] ---"
     
     if [ -z "$PRETTY_NAME" ] && [ -f /etc/os-release ]; then
         source /etc/os-release
@@ -266,13 +325,14 @@ fn_show_status_report() {
 
 # 菜单 1: 自动优化
 fn_optimize_auto() {
-    # 关键变更: 始终使用固定备份目录
+    # V12.1 修复: 立即创建目录
+    mkdir -p "$BACKUP_DIR"
+    
     fn_log "INFO" "将使用固定备份目录: $BACKUP_DIR"
     
-    # 关键变更: 强制删除旧备份 (确保单一备份)
-    if [ -d "$BACKUP_DIR" ]; then
+    if [ -f "${BACKUP_DIR}/fstab.bak" ]; then
         fn_log "WARN" "检测到旧备份...正在强制删除以创建新备份。"
-        rm -rf "$BACKUP_DIR"
+        rm -rf "${BACKUP_DIR:?}/"*
     fi
 
     fn_log "SUCCESS" "开始自动优化... 日志将保存到: $LOG_FILE"
@@ -280,32 +340,45 @@ fn_optimize_auto() {
     # 步骤 0: 备份
     fn_backup_state
 
-    # 步骤 1: 动态检测 SELinux
-    fn_log "INFO" "[1/10] 动态检测 SELinux..."
+    # 步骤 1: 修复 APT (V13.0)
+    fn_log "INFO" "[1/11] 检查并修复 APT 软件源..."
+    if ! fn_fix_apt_sources; then
+        fn_log "ERROR" "APT 修复失败。正在中止优化。"
+        return 1
+    fi
+
+    # 步骤 2: SELinux
+    fn_log "INFO" "[2/11] 动态检测 SELinux..."
     fn_detect_selinux
 
-    # 步骤 2: 禁用 Swap
-    fn_log "INFO" "[2/10] 禁用现有文件 Swap..."
+    # 步骤 3: 禁用 Swap
+    fn_log "INFO" "[3/11] 禁用现有文件 Swap..."
     swapoff -a
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
-    # 步骤 3: ZRAM
-    fn_log "INFO" "[3/10] 安装与配置 ZRAM..."
-    fn_setup_zram
+    # 步骤 4: ZRAM (V13.0)
+    fn_log "INFO" "[4/11] 安装与配置 ZRAM (智能)..."
+    if ! fn_setup_zram; then
+        fn_log "ERROR" "ZRAM 安装失败。正在中止优化。"
+        return 1
+    fi
 
-    # 步骤 4: 安装 Fail2ban
-    fn_log "INFO" "[4/10] 安装并启用 Fail2ban..."
-    apt-get update > /dev/null
+    # 步骤 5: Fail2ban
+    fn_log "INFO" "[5/11] 安装并启用 Fail2ban..."
     apt-get install -y fail2ban > /dev/null
+    if [ $? -ne 0 ]; then 
+        fn_log "ERROR" "Fail2ban 安装失败。请检查 apt。"
+        return 1
+    fi
     systemctl enable --now fail2ban.service
     echo "fail2ban.service" >> "$TOUCHED_SERVICES_FILE"
     fn_log "SUCCESS" "  -> Fail2ban 已安装并启动。"
 
-    # 步骤 5: 裁剪服务
+    # 步骤 6: 裁剪服务
     fn_trim_services
 
-    # 步骤 6: Journald (动态内存)
-    fn_log "INFO" "[6/10] 配置 journald (动态 RAM 限制)..."
+    # 步骤 7: Journald
+    fn_log "INFO" "[7/11] 配置 journald (动态 RAM 限制)..."
     local journald_ram_limit="32M" # 默认 (RAM < 1.5G)
     if [ "$MEM_MB" -gt 4096 ]; then
         journald_ram_limit="128M"
@@ -322,8 +395,8 @@ RuntimeMaxUse=$journald_ram_limit
 EOF
     systemctl restart systemd-journald
 
-    # 步骤 7: CPU (动态检测)
-    fn_log "INFO" "[7/10] CPU 调速器持久化 (动态检测)..."
+    # 步骤 8: CPU
+    fn_log "INFO" "[8/11] CPU 调速器持久化 (动态检测)..."
     if echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null; then
         fn_log "INFO" "  -> CPU governor 写入权限已确认。"
         cat > /etc/systemd/system/cpugov-performance.service <<'EOF'
@@ -346,10 +419,10 @@ EOF
         echo "#skipped-cpugov" >> "$TOUCHED_SERVICES_FILE"
     fi
 
-    # 步骤 8: Sysctl (含 IPv6 禁用 和 BBR 启用)
-    fn_log "INFO" "[8/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
+    # 步骤 9: Sysctl
+    fn_log "INFO" "[9/11] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v12.0 Fused Tuning ===
+# === Prime Optimizer v13.0 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -381,8 +454,8 @@ net.ipv4.udp_wmem_min = 16384
 EOF
     sysctl -p /etc/sysctl.d/99-prime-fused.conf
 
-    # 步骤 9: DNS (动态检测)
-    fn_log "INFO" "[9/10] 配置 DNS (systemd-resolved 动态检测)..."
+    # 步骤 10: DNS
+    fn_log "INFO" "[10/11] 配置 DNS (systemd-resolved 动态检测)..."
     if systemctl is-active --quiet systemd-resolved.service && [ -f /etc/systemd/resolved.conf ]; then
         fn_log "INFO" "  -> 检测到 systemd-resolved。正在配置 8.8.8.8 & 1.1.1.1..."
         # 备份已在 fn_backup_state 中完成
@@ -400,8 +473,8 @@ EOF
         fn_log "WARN" "  -> 跳过 DNS 自动配置以确保稳定。"
     fi
 
-    # 步骤 10: 报告
-    fn_log "INFO" "[10/10] 优化报告..."
+    # 步骤 11: 报告
+    fn_log "INFO" "[11/11] 优化报告..."
     fn_log "SUCCESS" "自动优化完成！"
     fn_log "IMPORTANT" "备份数据保存在: $BACKUP_DIR"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以应用所有更改。"
@@ -414,7 +487,6 @@ EOF
 fn_restore_state() {
     fn_log "WARN" "开始撤销优化..."
     
-    # 关键变更: 自动查找固定目录
     local USER_BACKUP_DIR="/root/system_optimize_backup"
 
     if [ ! -d "$USER_BACKUP_DIR" ] || [ ! -f "${USER_BACKUP_DIR}/fstab.bak" ]; then
@@ -450,7 +522,7 @@ fn_restore_state() {
     [ -d "${USER_BACKUP_DIR}/journald.conf.d.bak" ] && cp -r "${USER_BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/
     systemctl restart systemd-journald
 
-    # 关键变更: BBR 恢复提示
+    # BBR 恢复提示
     fn_log "INFO" "[4/9] 恢复 Sysctl 配置 (含IPv6/BBR)..."
     local algo_bak=$(cat "${USER_BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || echo "cubic")
     local algo_now=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
@@ -522,11 +594,14 @@ fn_restore_state() {
 
 fn_show_menu() {
     clear
+    # V12.1 修复: 确保目录存在
+    mkdir -p "$BACKUP_DIR"
+    
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION (单一备份 + BBR 恢复提示)"
+    echo " Prime Optimizer v$VERSION (自动 APT 修复)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
-    echo "  1) 自动优化"
+    echo "  1) 自动优化 (推荐)"
     echo "  2) 撤销优化"
     echo "  0) 退出"
     echo "============================================================"
