@@ -1,17 +1,17 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.4 (Hotfix)
+# VPS Optimizer v2.5 (Hotfix)
 #
-# 变更 (v2.4):
-# 1. 修复 (关键): 新增 'fn_check_apt_lock'。
-#    在优化前检测 APT 锁，如果检测到锁，则安全退出，防止挂起。
-# 2. 保留 (v2.3): 强制非交互模式和 'apt' 替换。
+# 变更 (v2.5):
+# 1. 修复 (关键): 'fn_setup_zram' 中 zram-tools 的配置。
+#    从 'SIZE=970M' (被忽略) 更改为 'FRACTION=100' (正确)
+#    以确保 ZRAM 设置为 100% 的物理 RAM。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="2.4"
+VERSION="2.5"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -69,7 +69,7 @@ fn_check_root() {
     fi
 }
 
-# (V2.4 新增) 检查 APT 锁
+# (V2.4) 检查 APT 锁
 fn_check_apt_lock() {
     fn_log "INFO" "[*] 检查 APT 锁..."
     # 使用 fuser (更标准) 检查锁文件
@@ -211,7 +211,7 @@ fn_trim_services() {
     fn_log "SUCCESS" "服务裁剪完成。"
 }
 
-# 智能 ZRAM 安装
+# (V2.5 修复) 智能 ZRAM 安装
 fn_setup_zram() {
     local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
@@ -245,14 +245,20 @@ EOF
         return 1; 
     fi
 
+    # V2.5 修复: 使用 FRACTION=100 替代 SIZE
     if [ "$configure_zram_tools" = true ]; then
         [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
         cat > /etc/default/zramswap <<EOF
 # Configured by VPS Optimizer v$VERSION
 ALGO=zstd
-SIZE=${ZRAM_SIZE_MB}M
+# Use 100% of RAM.
+FRACTION=100
+# SIZE is ignored if FRACTION is set
+# SIZE=${ZRAM_SIZE_MB}M
 EOF
-        systemctl enable --now zramswap.service > /dev/null 2>&1
+        # 重启服务以应用 FRACTION=100
+        systemctl restart zramswap.service > /dev/null 2>&1
+        systemctl enable zramswap.service > /dev/null 2>&1
     else
         echo "$zram_config_content" > /etc/systemd/zram-generator.conf
         systemctl daemon-reload > /dev/null 2>&1
@@ -562,7 +568,7 @@ EOF
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === VPS Optimizer v2.4 Fused Tuning ===
+# === VPS Optimizer v2.5 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
