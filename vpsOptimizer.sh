@@ -1,19 +1,23 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v6.1 (Hotfix)
+# Prime Optimizer v6.2 (Hotfix)
+#
+# 变更:
+# 1. 动态检测 CPU governor 写入权限，防止在 KVM/LXC 上创建失败的服务。
+# 2. 移除 networking.service (来自 v6.1)。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="6.1"
+VERSION="6.2"
 OS_ID=""
 OS_VERSION_ID=""
 BACKUP_DIR=""
 LOG_FILE="/dev/null"
 TOUCHED_SERVICES_FILE=""
 
-# “安全裁剪”服务列表 
+# “安全裁剪”服务列表
 FN_TRIM_SERVICES_LIST=(
     "apparmor.service"
     "atop.service"
@@ -217,8 +221,11 @@ RuntimeMaxUse=32M
 EOF
     systemctl restart systemd-journald
 
-    fn_log "INFO" "[5/7] CPU 调速器持久化为 Performance 模式..."
-    cat > /etc/systemd/system/cpugov-performance.service <<'EOF'
+    fn_log "INFO" "[5/7] CPU 调速器持久化 (动态检测)..."
+    # 动态检测 CPU 调速器写入权限
+    if echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null; then
+        fn_log "INFO" "  -> CPU governor 写入权限已确认。"
+        cat > /etc/systemd/system/cpugov-performance.service <<'EOF'
 [Unit]
 Description=Set CPU governor to performance
 After=network.target
@@ -229,12 +236,19 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable --now cpugov-performance.service
+        systemctl daemon-reload
+        systemctl enable --now cpugov-performance.service
+        fn_log "SUCCESS" "  -> CPU Performance 模式已持久化。"
+    else
+        fn_log "WARN" "  -> 无法写入 CPU governor (权限拒绝或 KVM/LXC 限制)。"
+        fn_log "WARN" "  -> 跳过 CPU Performance 服务创建。这是正常现象。"
+        # 记录此跳过操作，以便恢复
+        echo "#skipped-cpugov" >> "$TOUCHED_SERVICES_FILE"
+    fi
 
     fn_log "INFO" "[6/7] 融合 Sysctl (TCP/UDP/Mem)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v6.1 Fused Tuning (TCP/UDP/Mem) ===
+# === Prime Optimizer v6.2 Fused Tuning (TCP/UDP/Mem) ===
 vm.vfs_cache_pressure = 50
 vm.swappiness = 10
 net.core.rmem_max = 26214400
@@ -339,11 +353,6 @@ fn_restore_state() {
         fn_log "WARN" "未找到 'touched_services.txt'. 跳过服务恢复。"
     fi
     
-    # 关键: 确保 networking.service 被重新启用 (如果它在恢复日志中)
-    # 并且，即使用户之前手动恢复，也要确保它被启用，因为它现在被认为是关键服务
-    fn_log "INFO" "  -> 确保 'networking.service' (关键服务) 已启用..."
-    systemctl enable networking.service >/dev/null 2>&1
-    
     systemctl daemon-reload
 
     fn_log "SUCCESS" "恢复完成！"
@@ -355,7 +364,7 @@ fn_restore_state() {
 fn_show_menu() {
     clear
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION (Hotfix, 稳定性优先)"
+    echo " Prime Optimizer v$VERSION (KVM 稳定性修复)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化 (推荐)"
