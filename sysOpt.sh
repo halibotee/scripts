@@ -1,12 +1,17 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.1 (Hotfix)
+# VPS Optimizer v2.2 (Hotfix)
+#
+# 变更 (v2.2):
+# 1. 修复 (关键): 移除所有 apt-get install/purge 的静默模式 (>/dev/null)
+#    以诊断 'zram-tools' 安装挂起的原因。
+# 2. 保留 (v2.1): Swap 挂起修复。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="2.1"
+VERSION="2.2"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -215,7 +220,8 @@ EOF
         install_cmd="apt-get install -y systemd-zram-generator"
     fi
 
-    if ! $install_cmd > /dev/null 2>&1; then 
+    # V2.2 修复: 移除 > /dev/null 2>&1
+    if ! $install_cmd; then 
         fn_log "ERROR" "ZRAM 软件包安装失败。"; 
         return 1; 
     fi
@@ -246,7 +252,8 @@ fn_restore_zram() {
         fn_log "INFO" "  -> 正在卸载 'zram-tools'..."
         systemctl disable --now zramswap.service > /dev/null 2>&1
         rm /etc/default/zramswap 2>/dev/null
-        apt-get purge -y zram-tools > /dev/null 2>&1
+        # V2.2 修复: 移除 > /dev/null 2>&1
+        apt-get purge -y zram-tools
         if [ -f "${BACKUP_DIR}/zramswap.bak" ]; then
             cp "${BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
         fi
@@ -255,7 +262,8 @@ fn_restore_zram() {
         fn_log "INFO" "  -> 正在卸载 'systemd-zram-generator'..."
         systemctl disable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
         rm /etc/systemd/zram-generator.conf 2>/dev/null
-        apt-get purge -y systemd-zram-generator > /dev/null 2>&1
+        # V2.2 修复: 移除 > /dev/null 2>&1
+        apt-get purge -y systemd-zram-generator
     fi
 }
 
@@ -293,7 +301,7 @@ fn_detect_selinux() {
     fi
 }
 
-# V2.1 状态报告
+# 状态报告
 fn_show_status_report() {
     echo "--- [系统状态] ---"
     
@@ -475,7 +483,8 @@ fn_optimize_auto() {
 
     # 步骤 5: Fail2ban
     fn_log "INFO" "[5/10] 安装并启用 Fail2ban..."
-    if ! apt-get install -y fail2ban > /dev/null 2>&1; then 
+    # V2.2 修复: 移除 > /dev/null 2>&1
+    if ! apt-get install -y fail2ban; then 
         fn_log "ERROR" "Fail2ban 安装失败。请检查 apt。"
         return 1
     fi
@@ -531,7 +540,7 @@ EOF
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === VPS Optimizer v2.1 Fused Tuning ===
+# === VPS Optimizer v2.2 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -624,7 +633,7 @@ fn_restore_state() {
 
     # 步骤 2: 卸载 ZRAM
     fn_log "INFO" "[2/11] 卸载 ZRAM..."
-    fn_restore_zram > /dev/null 2>&1
+    fn_restore_zram
 
     # 步骤 3: 恢复 fstab
     fn_log "INFO" "[3/11] 恢复 /etc/fstab..."
@@ -687,7 +696,8 @@ fn_restore_state() {
 
     # 步骤 9: 卸载 Fail2ban
     fn_log "INFO" "[9/11] 卸载 Fail2ban..."
-    apt-get purge -y fail2ban > /dev/null 2>&1
+    # V2.2 修复: 移除 > /dev/null 2>&1
+    apt-get purge -y fail2ban
     fn_log "INFO" "  -> Fail2ban 已卸载 (purged)。"
 
     # 步骤 10: 恢复服务
@@ -709,7 +719,8 @@ fn_restore_state() {
     
     # 步骤 11: 刷新 APT
     fn_log "INFO" "[11/11] 刷新 APT 软件源..."
-    apt-get update > /dev/null 2>&1
+    # V2.2 修复: 移除 > /dev/null 2>&1
+    apt-get update
 
     fn_log "SUCCESS" "撤销优化完成！"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以使所有原始服务生效。"
@@ -722,7 +733,7 @@ fn_show_menu() {
     mkdir -p "$BACKUP_DIR"
     
     echo "============================================================"
-    echo " VPS Optimizer v$VERSION (Swap 挂起修复)"
+    echo " VPS Optimizer v$VERSION (Hotfix)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化"
