@@ -1,18 +1,20 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v6.2 (Hotfix)
+# Prime Optimizer v7.0
 #
-# 变更:
-# 1. 动态检测 CPU governor 写入权限，防止在 KVM/LXC 上创建失败的服务。
-# 2. 移除 networking.service (来自 v6.1)。
+# 变更 (V7.0):
+# 1. 新增: 动态检测 SELinux 状态并询问是否禁用。
+# 2. 新增: 动态设置 Journald 内存限制 (基于 RAM)。
+# 3. 保留: V6.2 的 CPU Governor 和 ZRAM 动态检测。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="6.2"
+VERSION="7.0"
 OS_ID=""
 OS_VERSION_ID=""
+MEM_MB=0
 BACKUP_DIR=""
 LOG_FILE="/dev/null"
 TOUCHED_SERVICES_FILE=""
@@ -74,6 +76,10 @@ fn_detect_os() {
         fn_log "ERROR" "无法检测操作系统: /etc/os-release 不存在。"
         exit 1
     fi
+    
+    # 获取内存大小 (MB)
+    MEM_MB=$(($(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024))
+    fn_log "INFO" "检测到物理内存: ${MEM_MB}MB"
 
     case "$OS_ID" in
         debian)
@@ -109,13 +115,14 @@ fn_backup_state() {
     cp -r /etc/sysctl.d/ "${BACKUP_DIR}/sysctl.d.bak" 2>/dev/null || true
     cp /etc/sysctl.conf "${BACKUP_DIR}/sysctl.conf.bak" 2>/dev/null || true
     cp -r /etc/systemd/journald.conf.d/ "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/null || true
+    [ -f /etc/selinux/config ] && cp /etc/selinux/config "${BACKUP_DIR}/selinux.config.bak"
     systemctl list-unit-files --type=service --state=enabled > "${BACKUP_DIR}/enabled_services.before.txt"
     echo "# Services disabled by optimizer" > "$TOUCHED_SERVICES_FILE"
 }
 
 # 动态服务裁剪
 fn_trim_services() {
-    fn_log "INFO" "[3/7] 裁剪非必要服务 (动态检测)..."
+    fn_log "INFO" "[4/8] 裁剪非必要服务 (动态检测)..."
     for service in "${FN_TRIM_SERVICES_LIST[@]}"; do
         if systemctl is-enabled "$service" >/dev/null 2>&1; then
             fn_log "INFO" "  -> 检测到: $service (已启用). 正在禁用..."
@@ -131,8 +138,8 @@ fn_trim_services() {
 
 # ZRAM 安装
 fn_setup_zram() {
-    MEM_MB=$(($(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024))
-    ZRAM_SIZE_MB=$MEM_MB
+    # ZRAM 大小已在 fn_detect_os 中获取
+    local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
 
     # Debian 10 / Ubuntu 20.04
@@ -188,6 +195,42 @@ fn_restore_zram() {
     fi
 }
 
+# 新增: 动态检测 SELinux
+fn_detect_selinux() {
+    if command -v getenforce >/dev/null 2>&1; then
+        local selinux_status
+        selinux_status=$(getenforce)
+
+        if [ "$selinux_status" != "Disabled" ]; then
+            fn_log "WARN" "检测到 SELinux 状态为: $selinux_status"
+            fn_log "WARN" "SELinux 会导致性能问题并可能与优化冲突 (如 VNC 截图所示)。"
+            echo "-----------------------------------------------------"
+            echo "是否要将其永久禁用 (推荐)? (y/n)"
+            read -r selinux_choice
+            
+            if [ "$selinux_choice" = "y" ] || [ "$selinux_choice" = "Y" ]; then
+                fn_log "INFO" "正在禁用 SELinux..."
+                # 立即设为宽容模式
+                setenforce 0 2>/dev/null
+                # 永久禁用 (备份已在 fn_backup_state 中完成)
+                if [ -f /etc/selinux/config ]; then
+                    sed -i.bak 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+                    fn_log "SUCCESS" "SELinux 已永久禁用。需要重启生效。"
+                else
+                    fn_log "ERROR" "未找到 /etc/selinux/config，无法永久禁用。"
+                fi
+                echo "selinux" >> "$TOUCHED_SERVICES_FILE" # 记录操作以便恢复
+            else
+                fn_log "WARN" "跳过禁用 SELinux。这可能导致后续步骤失败。"
+            fi
+        else
+             fn_log "INFO" "SELinux 状态: Disabled (良好)。"
+        fi
+    else
+        fn_log "INFO" "未检测到 SELinux (正常)。"
+    fi
+}
+
 # 菜单 1: 自动优化
 fn_optimize_auto() {
     if [ -f "/etc/systemd/zram-generator.conf" ] || [ -f "/etc/default/zramswap" ]; then
@@ -201,28 +244,45 @@ fn_optimize_auto() {
     TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
     fn_log "SUCCESS" "开始自动优化... 日志将保存到: $LOG_FILE"
     
+    # 步骤 0: 备份
     fn_backup_state
 
-    fn_log "INFO" "[1/7] 禁用现有文件 Swap..."
+    # 步骤 1: 动态检测 SELinux (新增)
+    fn_log "INFO" "[1/8] 动态检测 SELinux..."
+    fn_detect_selinux
+
+    # 步骤 2: 禁用 Swap
+    fn_log "INFO" "[2/8] 禁用现有文件 Swap..."
     swapoff -a
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
-    fn_log "INFO" "[2/7] 安装与配置 ZRAM..."
+    # 步骤 3: ZRAM
+    fn_log "INFO" "[3/8] 安装与配置 ZRAM..."
     fn_setup_zram
 
+    # 步骤 4: 裁剪服务
     fn_trim_services
 
-    fn_log "INFO" "[4/7] 配置 journald (RAM 内存日志)..."
+    # 步骤 5: Journald (动态内存)
+    fn_log "INFO" "[5/8] 配置 journald (动态 RAM 限制)..."
+    local journald_ram_limit="32M" # 默认 (RAM < 1.5G)
+    if [ "$MEM_MB" -gt 4096 ]; then
+        journald_ram_limit="128M"
+    elif [ "$MEM_MB" -gt 1536 ]; then
+        journald_ram_limit="64M"
+    fi
+    fn_log "INFO" "  -> RAM: ${MEM_MB}MB, Journald 限制: $journald_ram_limit"
+    
     mkdir -p /etc/systemd/journald.conf.d/
     cat <<EOF > /etc/systemd/journald.conf.d/10-ram-only.conf
 [Journal]
 Storage=volatile
-RuntimeMaxUse=32M
+RuntimeMaxUse=$journald_ram_limit
 EOF
     systemctl restart systemd-journald
 
-    fn_log "INFO" "[5/7] CPU 调速器持久化 (动态检测)..."
-    # 动态检测 CPU 调速器写入权限
+    # 步骤 6: CPU (动态检测)
+    fn_log "INFO" "[6/8] CPU 调速器持久化 (动态检测)..."
     if echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null; then
         fn_log "INFO" "  -> CPU governor 写入权限已确认。"
         cat > /etc/systemd/system/cpugov-performance.service <<'EOF'
@@ -242,13 +302,13 @@ EOF
     else
         fn_log "WARN" "  -> 无法写入 CPU governor (权限拒绝或 KVM/LXC 限制)。"
         fn_log "WARN" "  -> 跳过 CPU Performance 服务创建。这是正常现象。"
-        # 记录此跳过操作，以便恢复
         echo "#skipped-cpugov" >> "$TOUCHED_SERVICES_FILE"
     fi
 
-    fn_log "INFO" "[6/7] 融合 Sysctl (TCP/UDP/Mem)..."
+    # 步骤 7: Sysctl
+    fn_log "INFO" "[7/8] 融合 Sysctl (TCP/UDP/Mem)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v6.2 Fused Tuning (TCP/UDP/Mem) ===
+# === Prime Optimizer v7.0 Fused Tuning (TCP/UDP/Mem) ===
 vm.vfs_cache_pressure = 50
 vm.swappiness = 10
 net.core.rmem_max = 26214400
@@ -268,7 +328,8 @@ net.ipv4.udp_wmem_min = 16384
 EOF
     sysctl -p /etc/sysctl.d/99-prime-fused.conf
 
-    fn_log "INFO" "[7/7] 优化报告..."
+    # 步骤 8: 报告
+    fn_log "INFO" "[8/8] 优化报告..."
     echo "--- 内存与 Swap (ZRAM) 状态:" | tee -a "$LOG_FILE"
     free -h | tee -a "$LOG_FILE"
     swapon --show | tee -a "$LOG_FILE"
@@ -314,36 +375,42 @@ fn_restore_state() {
     LOG_FILE="${USER_BACKUP_DIR}/restore.log"
     fn_log "INFO" "正在从 $USER_BACKUP_DIR 恢复... 日志: $LOG_FILE"
 
-    fn_log "INFO" "[1/6] 禁用 ZRAM..."
+    fn_log "INFO" "[1/7] 禁用 ZRAM..."
     fn_restore_zram
 
-    fn_log "INFO" "[2/6] 恢复 /etc/fstab..."
+    fn_log "INFO" "[2/7] 恢复 /etc/fstab..."
     cp "${USER_BACKUP_DIR}/fstab.bak" /etc/fstab
     fn_log "INFO" "尝试重新激活旧的 Swap..."
     swapon -a
 
-    fn_log "INFO" "[3/6] 恢复 journald 配置..."
+    fn_log "INFO" "[3/7] 恢复 journald 配置..."
     rm -rf /etc/systemd/journald.conf.d/
     [ -d "${USER_BACKUP_DIR}/journald.conf.d.bak" ] && cp -r "${USER_BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/
     systemctl restart systemd-journald
 
-    fn_log "INFO" "[4/6] 恢复 Sysctl 配置..."
+    fn_log "INFO" "[4/7] 恢复 Sysctl 配置..."
     rm /etc/sysctl.d/99-prime-fused.conf 2>/dev/null
     rm -rf /etc/sysctl.d/
     [ -d "${USER_BACKUP_DIR}/sysctl.d.bak" ] && cp -r "${USER_BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/
     [ -f "${USER_BACKUP_DIR}/sysctl.conf.bak" ] && cp "${USER_BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf
     sysctl --system > /dev/null
 
-    fn_log "INFO" "[5/6] 恢复 CPU 默认模式..."
+    fn_log "INFO" "[5/7] 恢复 CPU 默认模式..."
     systemctl disable --now cpugov-performance.service 2>/dev/null
     rm /etc/systemd/system/cpugov-performance.service 2>/dev/null
     fn_log "INFO" "  -> CPU governor 将在重启后恢复为系统默认值。"
+    
+    fn_log "INFO" "[6/7] 恢复 SELinux..."
+    if [ -f "${USER_BACKUP_DIR}/selinux.config.bak" ]; then
+        fn_log "INFO" "  -> 正在恢复 SELinux 原始配置..."
+        cp "${USER_BACKUP_DIR}/selinux.config.bak" /etc/selinux/config
+    fi
 
-    fn_log "INFO" "[6/6] 恢复被禁用的服务 (根据备份日志)..."
+    fn_log "INFO" "[7/7] 恢复被禁用的服务 (根据备份日志)..."
     local touched_services_file="${USER_BACKUP_DIR}/touched_services.txt"
     
     if [ -f "$touched_services_file" ]; then
-        grep -vE '^(#|$)' "$touched_services_file" | while read -r service; do
+        grep -vE '^(#|$|selinux|skipped-cpugov)' "$touched_services_file" | while read -r service; do
             if [ -n "$service" ]; then
                 fn_log "INFO" "  -> 正在重新启用: $service"
                 systemctl enable "$service" >/dev/null 2>&1
@@ -364,7 +431,7 @@ fn_restore_state() {
 fn_show_menu() {
     clear
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION (KVM 稳定性修复)"
+    echo " Prime Optimizer v$VERSION (增强动态检测)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化 (推荐)"
