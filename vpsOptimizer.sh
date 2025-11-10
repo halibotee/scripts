@@ -1,22 +1,19 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v11.0
-#
-# 变更 (V11.0):
-# 1. 新增: 每次显示主菜单时，在底部自动刷新状态报告。
-# 2. 重构: fn_show_status_report 以便在菜单中干净地显示。
+# Prime Optimizer v2.0
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="11.1"
+VERSION="12.0"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
-BACKUP_DIR=""
-LOG_FILE="/dev/null"
-TOUCHED_SERVICES_FILE=""
+# 固定备份目录
+BACKUP_DIR="/etc/vps_optimize_backup"
+LOG_FILE="${BACKUP_DIR}/optimize.log"
+TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
 
 # “安全裁剪”服务列表
 FN_TRIM_SERVICES_LIST=(
@@ -187,8 +184,8 @@ fn_restore_zram() {
         fn_log "INFO" "  -> 正在禁用 'zramswap.service'..."
         systemctl disable --now zramswap.service 2>/dev/null
         rm /etc/default/zramswap 2>/dev/null
-        if [ -f "${USER_BACKUP_DIR}/zramswap.bak" ]; then
-            cp "${USER_BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
+        if [ -f "${BACKUP_DIR}/zramswap.bak" ]; then
+            cp "${BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
         fi
     # Debian 11+ / Ubuntu 22.04+
     else
@@ -232,12 +229,10 @@ fn_detect_selinux() {
     fi
 }
 
-# 优化后显示状态报告 (重构为无日志)
+# 状态报告
 fn_show_status_report() {
-    echo "--- [系统运行状态报告] ---"
+    echo "--- [系统运行状态] ---"
     
-    # Get Data
-    # 确保 /etc/os-release 已加载 (如果 fn_detect_os 未运行)
     if [ -z "$PRETTY_NAME" ] && [ -f /etc/os-release ]; then
         source /etc/os-release
     fi
@@ -271,15 +266,15 @@ fn_show_status_report() {
 
 # 菜单 1: 自动优化
 fn_optimize_auto() {
-    if [ -f "/etc/systemd/zram-generator.conf" ] || [ -f "/etc/default/zramswap" ]; then
-        fn_log "WARN" "检测到已存在的 ZRAM 配置。"
-        fn_log "WARN" "如果您想重新优化，请先运行 [2] 撤销优化。"
-        return 1
+    # 关键变更: 始终使用固定备份目录
+    fn_log "INFO" "将使用固定备份目录: $BACKUP_DIR"
+    
+    # 关键变更: 强制删除旧备份 (确保单一备份)
+    if [ -d "$BACKUP_DIR" ]; then
+        fn_log "WARN" "检测到旧备份...正在强制删除以创建新备份。"
+        rm -rf "$BACKUP_DIR"
     fi
 
-    BACKUP_DIR="/root/system_optimize_backup_$(date +%s)"
-    LOG_FILE="${BACKUP_DIR}/optimize.log"
-    TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
     fn_log "SUCCESS" "开始自动优化... 日志将保存到: $LOG_FILE"
     
     # 步骤 0: 备份
@@ -354,7 +349,7 @@ EOF
     # 步骤 8: Sysctl (含 IPv6 禁用 和 BBR 启用)
     fn_log "INFO" "[8/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v11.0 Fused Tuning ===
+# === Prime Optimizer v12.0 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -411,7 +406,6 @@ EOF
     fn_log "IMPORTANT" "备份数据保存在: $BACKUP_DIR"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以应用所有更改。"
     
-    # 最终状态报告 (V11.0)
     echo ""
     fn_show_status_report
 }
@@ -420,58 +414,26 @@ EOF
 fn_restore_state() {
     fn_log "WARN" "开始撤销优化..."
     
-    local backup_dirs=()
-    mapfile -t backup_dirs < <(find /root -maxdepth 1 -type d -name 'system_optimize_backup_*' 2>/dev/null | sort -r)
-    local num_backups=${#backup_dirs[@]}
-    local USER_BACKUP_DIR=""
+    # 关键变更: 自动查找固定目录
+    local USER_BACKUP_DIR="/root/system_optimize_backup"
 
-    if [ "$num_backups" -eq 0 ]; then
-        fn_log "ERROR" "未找到任何备份目录。无法撤销。"
+    if [ ! -d "$USER_BACKUP_DIR" ] || [ ! -f "${USER_BACKUP_DIR}/fstab.bak" ]; then
+        fn_log "ERROR" "未找到备份目录: $USER_BACKUP_DIR"
+        fn_log "ERROR" "无法撤销。请先运行 [1] 自动优化。"
         return 1
+    fi
         
-    elif [ "$num_backups" -eq 1 ]; then
-        USER_BACKUP_DIR="${backup_dirs[0]}"
-        fn_log "INFO" "检测到唯一的备份: $USER_BACKUP_DIR"
-        echo "-----------------------------------------------------"
-        echo "是否确认使用此备份进行恢复? (y/n)"
-        read -r confirm
-        if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-            fn_log "INFO" "操作已取消。"
-            return 0
-        fi
-        
-    else
-        fn_log "INFO" "检测到多个备份。请选择一个进行恢复:"
-        echo "-----------------------------------------------------"
-        local i=1
-        for dir in "${backup_dirs[@]}"; do
-            echo "  $i) $(basename "$dir")"
-            i=$((i+1))
-        done
-        echo "  0) 取消"
-        
-        local choice
-        read -r choice
-        
-        if [ "$choice" -eq 0 ] 2>/dev/null; then
-            fn_log "INFO" "操作已取消。"
-            return 0
-        elif [ "$choice" -gt 0 ] && [ "$choice" -le "$num_backups" ] 2>/dev/null; then
-            USER_BACKUP_DIR="${backup_dirs[$((choice-1))]}"
-            fn_log "INFO" "已选择: $USER_BACKUP_DIR"
-        else
-            fn_log "ERROR" "无效选择。操作已取消。"
-            return 1
-        fi
+    fn_log "INFO" "检测到唯一的备份: $USER_BACKUP_DIR"
+    echo "-----------------------------------------------------"
+    echo "是否确认使用此备份进行恢复? (y/n)"
+    read -r confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        fn_log "INFO" "操作已取消。"
+        return 0
     fi
 
     # --- 开始恢复流程 ---
     
-    if [ ! -d "$USER_BACKUP_DIR" ] || [ ! -f "${USER_BACKUP_DIR}/fstab.bak" ]; then
-        fn_log "ERROR" "无效的备份目录 (缺少 fstab.bak): $USER_BACKUP_DIR"
-        return 1
-    fi
-
     LOG_FILE="${USER_BACKUP_DIR}/restore.log"
     fn_log "INFO" "正在从 $USER_BACKUP_DIR 恢复... 日志: $LOG_FILE"
 
@@ -488,12 +450,31 @@ fn_restore_state() {
     [ -d "${USER_BACKUP_DIR}/journald.conf.d.bak" ] && cp -r "${USER_BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/
     systemctl restart systemd-journald
 
+    # 关键变更: BBR 恢复提示
     fn_log "INFO" "[4/9] 恢复 Sysctl 配置 (含IPv6/BBR)..."
-    rm /etc/sysctl.d/99-prime-fused.conf 2>/dev/null
-    rm -rf /etc/sysctl.d/
-    [ -d "${USER_BACKUP_DIR}/sysctl.d.bak" ] && cp -r "${USER_BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/
-    [ -f "${USER_BACKUP_DIR}/sysctl.conf.bak" ] && cp "${USER_BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf
-    sysctl --system > /dev/null
+    local algo_bak=$(cat "${USER_BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || echo "cubic")
+    local algo_now=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local restore_sysctl=true
+
+    if [ "$algo_now" = "bbr" ] && [ "$algo_bak" != "bbr" ]; then
+        fn_log "WARN" "检测到 BBR 已启用 (原始算法: $algo_bak)。"
+        echo "-----------------------------------------------------"
+        echo "是否要禁用 BBR 并恢复为 $algo_bak? (y/n)"
+        read -r restore_choice
+        if [ "$restore_choice" != "y" ] && [ "$restore_choice" != "Y" ]; then
+            restore_sysctl=false
+            fn_log "INFO" "跳过 Sysctl 恢复，BBR 将保持启用。"
+        fi
+    fi
+
+    if [ "$restore_sysctl" = true ]; then
+        fn_log "INFO" "  -> 正在恢复原始 Sysctl (BBR 将被禁用)..."
+        rm /etc/sysctl.d/99-prime-fused.conf 2>/dev/null
+        rm -rf /etc/sysctl.d/
+        [ -d "${USER_BACKUP_DIR}/sysctl.d.bak" ] && cp -r "${USER_BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/
+        [ -f "${USER_BACKUP_DIR}/sysctl.conf.bak" ] && cp "${USER_BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf
+        sysctl --system > /dev/null
+    fi
 
     fn_log "INFO" "[5/9] 恢复 DNS (systemd-resolved)..."
     if [ -f "${USER_BACKUP_DIR}/resolved.conf.bak" ]; then
@@ -542,15 +523,14 @@ fn_restore_state() {
 fn_show_menu() {
     clear
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION (菜单状态显示)"
+    echo " Prime Optimizer v$VERSION (单一备份 + BBR 恢复提示)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
-    echo "  1) 自动优化 (推荐)"
+    echo "  1) 自动优化"
     echo "  2) 撤销优化"
     echo "  0) 退出"
     echo "============================================================"
     
-    # V11.0: 每次都显示状态报告
     echo ""
     fn_show_status_report
     echo ""
