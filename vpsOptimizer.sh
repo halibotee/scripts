@@ -1,11 +1,6 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v13.0
-#
-# 变更 (V13.0):
-# 1. 新增: 自动检测并修复 Debian 11 (Bullseye) 损坏的 Backports 软件源。
-# 2. 新增: 重构 ZRAM 安装逻辑，以智能处理 Bullseye (存档), Bookworm (main), Buster (zram-tools)。
-# 3. 修复: 启动时的 'tee' 日志错误。
+# Prime Optimizer v3.0
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
