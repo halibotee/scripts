@@ -1,12 +1,12 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.9
+# VPS Optimizer v2.10
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-SCRIPT_VERSION="2.9"
+SCRIPT_VERSION="2.10"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -205,102 +205,69 @@ fn_trim_services() {
     fn_log "SUCCESS" "服务裁剪完成。"
 }
 
-# 智能 ZRAM 安装 (v2.9 - 从源码编译)
+# 智能 ZRAM 安装 (v2.10 - 自定义 systemd 服务)
 fn_setup_zram() {
     local ZRAM_SIZE_MB=$MEM_MB
     fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
     
-    # --- [!!! 修复 v2.9 !!!] ---
-    # 策略: 编译 'systemd-zram-generator', 不再依赖 'cd'
+    # --- [!!! 修复 v2.10 !!!] ---
+    # 策略: 编译 (v2.9) 失败, zram-tools (v2.1-v2.5) 不可靠。
+    # 回到 v2.7 的自定义服务方案, 但这次要确保 zram-tools 的服务被彻底清除。
 
-    fn_log "INFO" "  -> [FIX v2.9] 正在彻底卸载 zram-tools (如果存在)..."
+    fn_log "INFO" "  -> [FIX v2.10] 正在彻底清除旧的 zram-tools 服务 (以防万一)..."
     systemctl disable --now zramswap.service >/dev/null 2>&1
     apt purge -y zram-tools >/dev/null 2>&1
+    
+    # 清理 v2.9 (编译) 的残留
+    systemctl disable --now systemd-zram-setup@zram0.service >/dev/null 2>&1
+    rm -f /etc/systemd/zram-generator.conf
+    rm -f /usr/local/lib/systemd/system-generators/zram-generator
+    
+    # 备份并移除旧配置
+    [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
     rm -f /etc/default/zramswap
-    
-    # 卸载 v2.7 的自定义服务（以防万一）
-    systemctl disable --now vps-optimizer-zram.service >/dev/null 2>&1
-    rm -f /etc/systemd/system/vps-optimizer-zram.service
 
-    local ZRAM_BUILD_DEPS=("git" "build-essential" "meson" "ninja-build" "pkg-config" "libsystemd-dev")
-    fn_log "INFO" "  -> [FIX v2.9] 正在安装编译依赖 (${ZRAM_BUILD_DEPS[*]})..."
-    if ! apt install -y "${ZRAM_BUILD_DEPS[@]}"; then
-        fn_log "ERROR" "编译依赖项安装失败。"
-        return 1
+    fn_log "INFO" "  -> [FIX v2.10] 正在安装 zram-tools (仅为 'zramctl' 依赖)..."
+    if ! apt install -y zram-tools; then 
+        fn_log "ERROR" "ZRAM 软件包 'zram-tools' 安装失败。"; 
+        return 1; 
     fi
     
-    local ZRAM_GEN_SRC_DIR="/usr/local/src/zram-generator"
-    rm -rf "$ZRAM_GEN_SRC_DIR"
-    fn_log "INFO" "  -> [FIX v2.9] 正在从 GitHub 克隆 zram-generator..."
-    if ! git clone https://github.com/systemd/zram-generator.git "$ZRAM_GEN_SRC_DIR"; then
-        fn_log "ERROR" "Git 克隆失败。"
-        return 1
-    fi
+    fn_log "INFO" "  -> [FIX v2.10] 再次确认禁用有 bug 的 'zramswap.service'..."
+    systemctl disable --now zramswap.service >/dev/null 2>&1
     
-    # [FIX v2.9] 显式检查克隆是否成功 (文件是否存在)
-    if [ ! -f "$ZRAM_GEN_SRC_DIR/meson.build" ]; then
-        fn_log "ERROR" "Git 克隆后未找到 'meson.build' 文件。克隆失败或仓库已更改。"
-        rm -rf "$ZRAM_GEN_SRC_DIR"
-        return 1
-    fi
-    
-    local ZRAM_BUILD_DIR="$ZRAM_GEN_SRC_DIR/build"
-
-    fn_log "INFO" "  -> [FIX v2.9] 正在配置 (meson) - 不依赖 'cd'..."
-    # 语法: meson setup <build_dir> <source_dir>
-    if ! meson setup "$ZRAM_BUILD_DIR" "$ZRAM_GEN_SRC_DIR"; then
-        fn_log "ERROR" "Meson 配置失败。"
-        rm -rf "$ZRAM_GEN_SRC_DIR"
-        return 1
-    fi
-
-    fn_log "INFO" "  -> [FIX v2.9] 正在编译 (ninja)..."
-    if ! ninja -C "$ZRAM_BUILD_DIR"; then
-        fn_log "ERROR" "Ninja 编译失败。"
-        rm -rf "$ZRAM_GEN_SRC_DIR"
-        return 1
-    fi
-    
-    fn_log "INFO" "  -> [FIX v2.9] 正在安装 (meson install)..."
-    if ! meson install -C "$ZRAM_BUILD_DIR"; then
-        fn_log "ERROR" "Meson 安装失败。"
-        rm -rf "$ZRAM_GEN_SRC_DIR"
-        return 1
-    fi
-    
-    fn_log "INFO" "  -> [FIX v2.9] 清理编译目录..."
-    rm -rf "$ZRAM_GEN_SRC_DIR"
-    
-    fn_log "INFO" "  -> [FIX v2.9] 正在卸载编译依赖项..."
-    apt purge -y "${ZRAM_BUILD_DEPS[@]}" >/dev/null 2>&1
-    apt autoremove -y >/dev/null 2>&1
-
-    # --- 配置 ---
-    
-    local zram_config_content
-    zram_config_content=$(cat <<EOF
+    # 创建我们自己的 systemd 服务
+    fn_log "INFO" "  -> [FIX v2.10] 正在创建自定义 ZRAM systemd 服务 (vps-optimizer-zram.service)..."
+    cat > /etc/systemd/system/vps-optimizer-zram.service <<EOF
 # Configured by VPS Optimizer v$SCRIPT_VERSION
-[zram0]
-zram-size = ${ZRAM_SIZE_MB}M
-compression-algorithm = zstd
+# This service manually configures ZRAM, bypassing the faulty zram-tools scripts.
+[Unit]
+Description=VPS Optimizer Custom ZRAM Setup
+After=multi-user.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/sbin/modprobe zram
+ExecStartPre=/usr/bin/zramctl --reset /dev/zram0
+ExecStart=/usr/bin/zramctl --find --size ${ZRAM_SIZE_MB}M --algorithm zstd
+ExecStart=/sbin/mkswap /dev/zram0
+ExecStart=/sbin/swapon /dev/zram0
+ExecStop=/sbin/swapoff /dev/zram0
+ExecStop=/usr/bin/zramctl --reset /dev/zram0
+[Install]
+WantedBy=multi-user.target
 EOF
-)
-    
-    fn_log "INFO" "  -> 正在写入 ZRAM 配置到 /etc/systemd/zram-generator.conf"
-    echo "$zram_config_content" > /etc/systemd/zram-generator.conf
-    
-    fn_log "INFO" "  -> 正在重载并启动 systemd-zram-setup@zram0.service..."
+
+    fn_log "INFO" "  -> 正在重载并启动 vps-optimizer-zram.service..."
     systemctl daemon-reload
+    systemctl enable --now vps-optimizer-zram.service >/dev/null 2>&1
     
-    # 启动新编译的服务
-    systemctl restart systemd-zram-setup@zram0.service > /dev/null 2>&1
-    systemctl enable systemd-zram-setup@zram0.service > /dev/null 2>&1
-    
+    # 验证
     sleep 1
-    if swapon -s | grep -q 'zram'; then
-        fn_log "SUCCESS" "  -> ZRAM 已通过编译的 'systemd-zram-generator' 成功启动。"
+    if swapon -s | grep -q 'zram0'; then
+        fn_log "SUCCESS" "  -> ZRAM 已通过自定义服务启动并配置。"
     else
-        fn_log "WARN" "  -> ZRAM 服务启动后未检测到 swap。可能需要重启。"
+        fn_log "WARN" "  -> ZRAM 自定义服务启动后未检测到 swap。可能需要重启。"
     fi
     
     return 0
@@ -308,27 +275,22 @@ EOF
 
 # ZRAM 恢复 (卸载)
 fn_restore_zram() {
-    fn_log "INFO" "  -> [v2.9] 正在卸载 'systemd-zram-generator' (编译版)..."
+    fn_log "INFO" "  -> [v2.10] 正在卸载自定义 'vps-optimizer-zram.service'..."
+    systemctl disable --now vps-optimizer-zram.service > /dev/null 2>&1
+    rm -f /etc/systemd/system/vps-optimizer-zram.service
+    
+    fn_log "INFO" "  -> [v2.10] 正在卸载 'zram-tools'..."
+    apt purge -y zram-tools >/dev/null 2>&1
+    
+    # 卸载 v2.9 (编译) 的残留
+    fn_log "INFO" "  -> [v2.10] 正在清理编译版 (zram-generator) 的残留..."
     systemctl disable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
-    
-    # 移除配置文件
     rm -f /etc/systemd/zram-generator.conf
-    
-    # 移除 'meson install' 默认安装的文件 (前缀 /usr/local)
-    fn_log "INFO" "  -> [v2.9] 正在移除已安装的文件..."
     rm -f /usr/local/lib/systemd/system-generators/zram-generator
     rm -f /usr/local/lib/systemd/system/systemd-zram-setup@.service
     rm -f /usr/local/share/man/man8/zram-generator.8.gz
     rm -f /usr/local/share/man/man5/zram-generator.conf.5.gz
     
-    # 移除 v2.7 的自定义服务（以防万一）
-    systemctl disable --now vps-optimizer-zram.service > /dev/null 2>&1
-    rm -f /etc/systemd/system/vps-optimizer-zram.service
-
-    # 卸载 zram-tools（以防万一）
-    apt purge -y zram-tools >/dev/null 2>&1
-    
-    fn_log "INFO" "  -> [v2.9] 正在重载 systemd daemon..."
     systemctl daemon-reload
     
     # 恢复旧的(有bug的) zram-tools 配置 (如果存在)
@@ -493,8 +455,8 @@ fn_show_status_report() {
     # --- Optimization ---
     echo "[ 优化 ]"
     
-    # Services
-    if [ -f "${BACKUP_DIR}/touched_services.txt" ]; then
+    # [FIX v2.10] 检查 $TOUCHED_SERVICES_FILE 是否存在
+    if [ -f "$TOUCHED_SERVICES_FILE" ]; then
         echo "  服务状态: 已优化"
     else
         local optimizable_count=0
@@ -555,7 +517,7 @@ fn_optimize_auto() {
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
     # 步骤 4: ZRAM
-    fn_log "INFO" "[4/10] 安装与配置 ZRAM (编译 v2.9)..."
+    fn_log "INFO" "[4/10] 安装与配置 ZRAM (自定义服务 v2.10)..."
     if ! fn_setup_zram; then
         fn_log "ERROR" "ZRAM 安装失败。正在中止优化。"
         return 1
@@ -721,7 +683,7 @@ fn_restore_state() {
     fi
 
     # 步骤 2: 卸载 ZRAM
-    fn_log "INFO" "[2/11] 卸载 ZRAM (v2.9)..."
+    fn_log "INFO" "[2/11] 卸载 ZRAM (v2.10)..."
     fn_restore_zram
 
     # 步骤 3: 恢复 fstab
@@ -768,6 +730,13 @@ fn_restore_state() {
         fn_log "INFO" "  -> 正在恢复 systemd-resolved 原始配置..."
         cp "${USER_BACKUP_DIR}/resolved.conf.bak" /etc/systemd/resolved.conf
         systemctl restart systemd-resolved.service > /dev/null 2>&1
+    else
+        # [FIX v2.10] 即使备份丢失也尝试恢复 (针对 v2.9 失败后备份丢失的情况)
+        fn_log "WARN" "  -> 未找到 'resolved.conf.bak'。尝试强制恢复默认值..."
+        if [ -f /etc/systemd/resolved.conf ]; then
+            sed -i 's/^DNS=8.8.8.8 1.1.1.1/#DNS=/g' /etc/systemd/resolved.conf
+            systemctl restart systemd-resolved.service > /dev/null 2>&1
+        fi
     fi
 
     # 步骤 7: 恢复 CPU
@@ -808,6 +777,9 @@ fn_restore_state() {
     # 步骤 11: 刷新 APT
     fn_log "INFO" "[11/11] 刷新 APT 软件源..."
     apt update -y
+
+    # [FIX v2.10] 移除状态文件以在报告中反映“未优化”
+    rm -f "$TOUCHED_SERVICES_FILE"
 
     fn_log "SUCCESS" "撤销优化完成！"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以使所有原始服务生效。"
