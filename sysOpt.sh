@@ -1,12 +1,12 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.12
+# VPS Optimizer v2.14
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-SCRIPT_VERSION="2.12"
+SCRIPT_VERSION="2.14"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -173,7 +173,7 @@ EOF
 
 
 fn_backup_state() {
-    fn_log "INFO" "创建备份目录: $BACKUP_DIR"
+    fn_log "INFO" "创建原始状态备份: $BACKUP_DIR"
     cp /etc/fstab "${BACKUP_DIR}/fstab.bak"
     cp -r /etc/sysctl.d/ "${BACKUP_DIR}/sysctl.d.bak" 2>/dev/null || true
     cp /etc/sysctl.conf "${BACKUP_DIR}/sysctl.conf.bak" 2>/dev/null || true
@@ -234,7 +234,7 @@ fn_setup_zram() {
         return 1; 
     fi
     
-    fn_log "INFO" "  -> 再次确认禁用 zram-tools 自带服务 (zramswap.service)..."
+    fn_log "INFO" "  -> 禁用 zram-tools 自带服务 (zramswap.service)..."
     systemctl disable --now zramswap.service >/dev/null 2>&1
     
     # 创建我们自己的 systemd 服务
@@ -249,7 +249,8 @@ After=multi-user.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/sbin/modprobe zram
-ExecStart=/bin/sh -c "zramctl --reset /dev/zram0 2>/dev/null || true; zramctl --find --size ${ZRAM_SIZE_MB}M --algorithm zstd; mkswap /dev/zram0; swapon /dev/zram0"
+# 显式重置并创建 /dev/zram0
+ExecStart=/bin/sh -c "zramctl --reset /dev/zram0 2>/dev/null || true; zramctl /dev/zram0 --size ${ZRAM_SIZE_MB}M --algorithm zstd; mkswap /dev/zram0; swapon /dev/zram0"
 ExecStop=/bin/sh -c "swapoff /dev/zram0 2>/dev/null || true; zramctl --reset /dev/zram0 2>/dev/null || true"
 [Install]
 WantedBy=multi-user.target
@@ -453,7 +454,7 @@ fn_show_status_report() {
     # --- Optimization ---
     echo "[ 优化 ]"
     
-    # 检查 $TOUCHED_SERVICES_FILE 是否存在
+    # 检查状态文件是否存在
     if [ -f "$TOUCHED_SERVICES_FILE" ]; then
         echo "  服务状态: 已优化"
     else
@@ -483,14 +484,17 @@ fn_optimize_auto() {
         return 1
     fi
     
-    if [ -f "${BACKUP_DIR}/fstab.bak" ]; then
-        fn_log "WARN" "检测到旧备份...正在强制删除以创建新备份。"
-        rm -rf "${BACKUP_DIR:?}/"*
+    # 检查是否已优化, 保护原始备份
+    if [ -f "${BACKUP_DIR}/touched_services.txt" ] || [ -f "${BACKUP_DIR}/fstab.bak" ]; then
+        fn_log "ERROR" "检测到系统已经优化过 (备份目录 $BACKUP_DIR 已存在)。"
+        fn_log "ERROR" "请先运行 '2) 撤销优化' 来恢复原始状态。"
+        fn_log "ERROR" "正在中止优化。"
+        return 1
     fi
 
     fn_log "SUCCESS" "开始自动优化... 日志将保存到: $LOG_FILE"
     
-    # 步骤 0: 备份
+    # 步骤 0: 备份 (仅在未优化时执行)
     fn_backup_state
 
     # 步骤 1: 修复 APT
@@ -515,7 +519,7 @@ fn_optimize_auto() {
     sed -i.bak '/swap/s/^/#/' /etc/fstab
 
     # 步骤 4: ZRAM
-    fn_log "INFO" "[4/10] 安装与配置 ZRAM (自定义服务 v2.12)..."
+    fn_log "INFO" "[4/10] 安装与配置 ZRAM (自定义服务)..."
     if ! fn_setup_zram; then
         fn_log "ERROR" "ZRAM 安装失败。正在中止优化。"
         return 1
@@ -728,7 +732,7 @@ fn_restore_state() {
         cp "${USER_BACKUP_DIR}/resolved.conf.bak" /etc/systemd/resolved.conf
         systemctl restart systemd-resolved.service > /dev/null 2>&1
     else
-        # 即使备份丢失也尝试恢复 (针对 v2.9 失败后备份丢失的情况)
+        # 即使备份丢失也尝试恢复
         fn_log "WARN" "  -> 未找到 'resolved.conf.bak'。尝试强制恢复默认值..."
         if [ -f /etc/systemd/resolved.conf ]; then
             sed -i 's/^DNS=8.8.8.8 1.1.1.1/#DNS=/g' /etc/systemd/resolved.conf
