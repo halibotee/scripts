@@ -1,12 +1,17 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.3 
+# VPS Optimizer v2.4 (Hotfix)
+#
+# 变更 (v2.4):
+# 1. 修复 (关键): 新增 'fn_check_apt_lock'。
+#    在优化前检测 APT 锁，如果检测到锁，则安全退出，防止挂起。
+# 2. 保留 (v2.3): 强制非交互模式和 'apt' 替换。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="2.3"
+VERSION="2.4"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -14,7 +19,7 @@ BACKUP_DIR="/etc/vps_optimize_backup"
 LOG_FILE="${BACKUP_DIR}/optimize.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
 
-# 强制非交互模式
+# V2.3 修复: 强制非交互模式
 export DEBIAN_FRONTEND=noninteractive
 
 # “安全裁剪”服务列表
@@ -63,6 +68,23 @@ fn_check_root() {
         exit 1
     fi
 }
+
+# (V2.4 新增) 检查 APT 锁
+fn_check_apt_lock() {
+    fn_log "INFO" "[*] 检查 APT 锁..."
+    # 使用 fuser (更标准) 检查锁文件
+    if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; then
+        fn_log "ERROR" "APT 锁被占用。检测到另一个 apt/dpkg 进程正在运行。"
+        fn_log "ERROR" "这通常是 'unattended-upgrades' (自动更新) 导致的。"
+        fn_log "ERROR" "请等待几分钟后重试。"
+        fn_log "ERROR" "如果问题持续存在，请运行 'sudo killall apt apt-get' 和 'sudo dpkg --configure -a'。"
+        fn_log "ERROR" "正在中止优化。"
+        return 1
+    fi
+    fn_log "SUCCESS" "  -> APT 锁检查通过。"
+    return 0
+}
+
 
 # OS 检测与支持验证
 fn_detect_os() {
@@ -209,18 +231,15 @@ EOF
        ( [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION_ID" = "20.04" ] ); then
         
         fn_log "INFO" "  -> 使用 'zram-tools' (稳定回退) 适用于 $OS_ID $OS_VERSION_ID"
-        # V2.3 修复: 使用 apt
         install_cmd="apt install -y zram-tools"
         configure_zram_tools=true
         
     # 分支 2: Debian 12+, Ubuntu 22.04+ (systemd-zram-generator from main)
     else
         fn_log "INFO" "  -> 使用 'systemd-zram-generator' (来自 Main Repo)"
-        # V2.3 修复: 使用 apt
         install_cmd="apt install -y systemd-zram-generator"
     fi
 
-    # V2.3 修复: 移除 > /dev/null 2>&1
     if ! $install_cmd; then 
         fn_log "ERROR" "ZRAM 软件包安装失败。"; 
         return 1; 
@@ -252,7 +271,6 @@ fn_restore_zram() {
         fn_log "INFO" "  -> 正在卸载 'zram-tools'..."
         systemctl disable --now zramswap.service > /dev/null 2>&1
         rm /etc/default/zramswap 2>/dev/null
-        # V2.3 修复: 使用 apt
         apt purge -y zram-tools
         if [ -f "${BACKUP_DIR}/zramswap.bak" ]; then
             cp "${BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
@@ -262,7 +280,6 @@ fn_restore_zram() {
         fn_log "INFO" "  -> 正在卸载 'systemd-zram-generator'..."
         systemctl disable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
         rm /etc/systemd/zram-generator.conf 2>/dev/null
-        # V2.3 修复: 使用 apt
         apt purge -y systemd-zram-generator
     fi
 }
@@ -443,6 +460,11 @@ fn_optimize_auto() {
     
     fn_log "INFO" "将使用固定备份目录: $BACKUP_DIR"
     
+    # V2.4 修复: 检查 APT 锁
+    if ! fn_check_apt_lock; then
+        return 1
+    fi
+    
     if [ -f "${BACKUP_DIR}/fstab.bak" ]; then
         fn_log "WARN" "检测到旧备份...正在强制删除以创建新备份。"
         rm -rf "${BACKUP_DIR:?}/"*
@@ -540,7 +562,7 @@ EOF
     # 步骤 9: Sysctl
     fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === VPS Optimizer v2.3 Fused Tuning ===
+# === VPS Optimizer v2.4 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -624,6 +646,11 @@ fn_restore_state() {
     
     LOG_FILE="${USER_BACKUP_DIR}/restore.log"
     fn_log "INFO" "正在从 $USER_BACKUP_DIR 恢复... 日志: $LOG_FILE"
+
+    # V2.4 修复: 检查 APT 锁
+    if ! fn_check_apt_lock; then
+        return 1
+    fi
 
     # 步骤 1: 恢复 APT 源 (必须在卸载前)
     fn_log "INFO" "[1/11] 恢复 APT 软件源..."
