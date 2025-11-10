@@ -1,12 +1,6 @@
 #!/bin/bash
 # =========================================================
-# VPS Optimizer v2.3 (Hotfix)
-#
-# 变更 (v2.3):
-# 1. 修复 (关键): 增加 'DEBIAN_FRONTEND=noninteractive' 
-#    以防止 apt/dpkg 在安装时挂起。
-# 2. 修复: 根据用户测试，将 'apt-get install/purge' 替换为 'apt install/purge'。
-# 3. 修复: 移除 apt install 的静默模式以进行调试。
+# VPS Optimizer v2.3 
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
@@ -20,7 +14,7 @@ BACKUP_DIR="/etc/vps_optimize_backup"
 LOG_FILE="${BACKUP_DIR}/optimize.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
 
-# V2.3 修复: 强制非交互模式
+# 强制非交互模式
 export DEBIAN_FRONTEND=noninteractive
 
 # “安全裁剪”服务列表
