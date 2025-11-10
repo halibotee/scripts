@@ -1,23 +1,19 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v6.0
+# Prime Optimizer v6.1 (Hotfix)
 #
-# 支持系统: Debian | Ubuntu 
-# 功能:
-# 1. 自动优化 (ZRAM, 服务裁剪, CPU, Sysctl, 日志)
-# 2. 手动优化
-# 3. 恢复备份
+# 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="6.0"
+VERSION="6.1"
 OS_ID=""
 OS_VERSION_ID=""
 BACKUP_DIR=""
 LOG_FILE="/dev/null"
 TOUCHED_SERVICES_FILE=""
 
-# “安全裁剪”服务列表
+# “安全裁剪”服务列表 
 FN_TRIM_SERVICES_LIST=(
     "apparmor.service"
     "atop.service"
@@ -35,7 +31,6 @@ FN_TRIM_SERVICES_LIST=(
     "qemu-guest-agent.service"
     "unattended-upgrades.service"
     "motd-news.service"
-    "networking.service"
 )
 
 # --- [1. 辅助功能 (日志与检测)] ---
@@ -173,15 +168,14 @@ EOF
 fn_restore_zram() {
     # Debian 10 / Ubuntu 20.04
     if ( [ "$OS_ID" = "debian" ] && [ "$OS_VERSION_ID" = "10" ] ) || \
-       ( [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION_ID" = "20.04" ] ); then
-        
+       ( [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION_ID" = "20.04" ] );
+    then
         fn_log "INFO" "  -> 正在禁用 'zramswap.service'..."
         systemctl disable --now zramswap.service 2>/dev/null
         rm /etc/default/zramswap 2>/dev/null
         if [ -f "${USER_BACKUP_DIR}/zramswap.bak" ]; then
             cp "${USER_BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
         fi
-        
     # Debian 11+ / Ubuntu 22.04+
     else
         fn_log "INFO" "  -> 正在禁用 'systemd-zram-setup'..."
@@ -240,7 +234,7 @@ EOF
 
     fn_log "INFO" "[6/7] 融合 Sysctl (TCP/UDP/Mem)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v6.0 Fused Tuning (TCP/UDP/Mem) ===
+# === Prime Optimizer v6.1 Fused Tuning (TCP/UDP/Mem) ===
 vm.vfs_cache_pressure = 50
 vm.swappiness = 10
 net.core.rmem_max = 26214400
@@ -337,13 +331,18 @@ fn_restore_state() {
     if [ -f "$touched_services_file" ]; then
         grep -vE '^(#|$)' "$touched_services_file" | while read -r service; do
             if [ -n "$service" ]; then
-                fn_log "INFO" "  -> D '  -> 正在重新启用: $service"
+                fn_log "INFO" "  -> 正在重新启用: $service"
                 systemctl enable "$service" >/dev/null 2>&1
             fi
         done
     else
         fn_log "WARN" "未找到 'touched_services.txt'. 跳过服务恢复。"
     fi
+    
+    # 关键: 确保 networking.service 被重新启用 (如果它在恢复日志中)
+    # 并且，即使用户之前手动恢复，也要确保它被启用，因为它现在被认为是关键服务
+    fn_log "INFO" "  -> 确保 'networking.service' (关键服务) 已启用..."
+    systemctl enable networking.service >/dev/null 2>&1
     
     systemctl daemon-reload
 
@@ -356,14 +355,14 @@ fn_restore_state() {
 fn_show_menu() {
     clear
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION (稳定性优先, 多系统)"
+    echo " Prime Optimizer v$VERSION (Hotfix, 稳定性优先)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化 (推荐)"
     echo "  2) 手动优化 (查看提示)"
     echo "  3) 恢复备份 (撤销优化)"
     echo "  Q) 退出"
-    echo "================================P==========================="
+    echo "============================================================"
     echo
     echo "请选择:"
     read -r choice
