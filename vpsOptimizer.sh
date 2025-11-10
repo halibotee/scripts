@@ -1,12 +1,17 @@
 #!/bin/bash
 # =========================================================
-# Prime Optimizer v1.0
+# Prime Optimizer v10.0
+#
+# 变更 (V10.0):
+# 1. 新增: 自动在 sysctl 中启用 BBR + FQ。
+# 2. 新增: 优化后显示详细的状态报告 (系统, 算法)。
+# 3. 保留: V9.0 智能恢复流程。
 #
 # 支持系统: Debian 10, 11, 12 | Ubuntu 20.04, 22.04, 24.04
 # =========================================================
 
 # --- [全局变量] ---
-VERSION="9.0"
+VERSION="10.0"
 OS_ID=""
 OS_VERSION_ID=""
 MEM_MB=0
@@ -111,6 +116,11 @@ fn_backup_state() {
     cp -r /etc/systemd/journald.conf.d/ "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/null || true
     [ -f /etc/selinux/config ] && cp /etc/selinux/config "${BACKUP_DIR}/selinux.config.bak"
     [ -f /etc/systemd/resolved.conf ] && cp /etc/systemd/resolved.conf "${BACKUP_DIR}/resolved.conf.bak"
+    
+    fn_log "INFO" "备份当前 sysctl 算法..."
+    sysctl -n net.ipv4.tcp_congestion_control > "${BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null
+    sysctl -n net.core.default_qdisc > "${BACKUP_DIR}/sysctl_q_algo.bak" 2>/dev/null
+
     systemctl list-unit-files --type=service --state=enabled > "${BACKUP_DIR}/enabled_services.before.txt"
     echo "# Services touched by optimizer" > "$TOUCHED_SERVICES_FILE"
 }
@@ -223,6 +233,40 @@ fn_detect_selinux() {
     fi
 }
 
+# 新增: 优化后显示状态报告
+fn_show_status_report() {
+    fn_log "INFO" "--- [系统运行状态报告] ---"
+    
+    # Get Data
+    source /etc/os-release
+    local os_info="$PRETTY_NAME"
+    local virt_info=$(systemd-detect-virt 2>/dev/null || echo "KVM")
+    local arch_info=$(uname -m)
+    local kernel_info=$(uname -r)
+    
+    local con_algo_post=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local q_algo_post=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    local bbr_status
+    if [[ "$con_algo_post" == "bbr" ]]; then
+        bbr_status="已启用 BBR 加速 (BBR + FQ)"
+    else
+        # 检查内核是否 *支持* BBR
+        if grep -q "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+            bbr_status="BBR 可用, 但未启用 (当前: $con_algo_post)"
+        else
+            bbr_status="内核不支持 BBR"
+        fi
+    fi
+
+    echo "  系统信息: $os_info $virt_info $arch_info $kernel_info"
+    echo "  当前状态: $bbr_status"
+    echo "  当前拥塞控制算法为: $con_algo_post"
+    echo "  当前队列算法为: $q_algo_post"
+    echo "-----------------------------------------------------"
+}
+
+
 # 菜单 1: 自动优化
 fn_optimize_auto() {
     if [ -f "/etc/systemd/zram-generator.conf" ] || [ -f "/etc/default/zramswap" ]; then
@@ -305,20 +349,24 @@ EOF
         echo "#skipped-cpugov" >> "$TOUCHED_SERVICES_FILE"
     fi
 
-    # 步骤 8: Sysctl (含 IPv6 禁用)
-    fn_log "INFO" "[8/10] 融合 Sysctl (TCP/UDP/Mem/IPv6)..."
+    # 步骤 8: Sysctl (含 IPv6 禁用 和 BBR 启用)
+    fn_log "INFO" "[8/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
     cat > /etc/sysctl.d/99-prime-fused.conf <<'EOF'
-# === Prime Optimizer v9.0 Fused Tuning ===
+# === Prime Optimizer v10.0 Fused Tuning ===
 
 # 1. Disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 
-# 2. Memory & ZRAM
+# 2. Enable BBR + FQ
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# 3. Memory & ZRAM
 vm.vfs_cache_pressure = 50
 vm.swappiness = 10
 
-# 3. TCP/UDP Tuning
+# 4. TCP/UDP Tuning
 net.core.rmem_max = 26214400
 net.core.wmem_max = 26214400
 net.core.netdev_max_backlog = 4096
@@ -357,15 +405,13 @@ EOF
 
     # 步骤 10: 报告
     fn_log "INFO" "[10/10] 优化报告..."
-    echo "--- 内存与 Swap (ZRAM) 状态:" | tee -a "$LOG_FILE"
-    free -h | tee -a "$LOG_FILE"
-    swapon --show | tee -a "$LOG_FILE"
-    echo "--- CPU 调速器状态:" | tee -a "$LOG_FILE"
-    cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor | tee -a "$LOG_FILE"
-
     fn_log "SUCCESS" "自动优化完成！"
     fn_log "IMPORTANT" "备份数据保存在: $BACKUP_DIR"
     fn_log "IMPORTANT" "建议立即重启 (reboot) 以应用所有更改。"
+    
+    # 最终状态报告 (新增)
+    echo ""
+    fn_show_status_report
 }
 
 # 菜单 2: 撤销优化 (智能检测)
@@ -373,7 +419,6 @@ fn_restore_state() {
     fn_log "WARN" "开始撤销优化..."
     
     local backup_dirs=()
-    # 使用 mapfile 安全地将 find 结果读入数组，按时间倒序
     mapfile -t backup_dirs < <(find /root -maxdepth 1 -type d -name 'system_optimize_backup_*' 2>/dev/null | sort -r)
     local num_backups=${#backup_dirs[@]}
     local USER_BACKUP_DIR=""
@@ -396,19 +441,26 @@ fn_restore_state() {
     else
         fn_log "INFO" "检测到多个备份。请选择一个进行恢复:"
         echo "-----------------------------------------------------"
-        select dir in "${backup_dirs[@]}"; do
-            if [ -n "$dir" ]; then
-                USER_BACKUP_DIR="$dir"
-                fn_log "INFO" "已选择: $USER_BACKUP_DIR"
-                break
-            else
-                fn_log "ERROR" "无效选择。请重新输入数字。"
-            fi
+        # 模拟 'select' 但更安全
+        local i=1
+        for dir in "${backup_dirs[@]}"; do
+            echo "  $i) $(basename "$dir")"
+            i=$((i+1))
         done
+        echo "  0) 取消"
         
-        if [ -z "$USER_BACKUP_DIR" ]; then
-            fn_log "INFO" "未选择, 操作已取消。"
+        local choice
+        read -r choice
+        
+        if [ "$choice" -eq 0 ] 2>/dev/null; then
+            fn_log "INFO" "操作已取消。"
             return 0
+        elif [ "$choice" -gt 0 ] && [ "$choice" -le "$num_backups" ] 2>/dev/null; then
+            USER_BACKUP_DIR="${backup_dirs[$((choice-1))]}"
+            fn_log "INFO" "已选择: $USER_BACKUP_DIR"
+        else
+            fn_log "ERROR" "无效选择。操作已取消。"
+            return 1
         fi
     fi
 
@@ -435,7 +487,7 @@ fn_restore_state() {
     [ -d "${USER_BACKUP_DIR}/journald.conf.d.bak" ] && cp -r "${USER_BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/
     systemctl restart systemd-journald
 
-    fn_log "INFO" "[4/9] 恢复 Sysctl 配置 (含IPv6)..."
+    fn_log "INFO" "[4/9] 恢复 Sysctl 配置 (含IPv6/BBR)..."
     rm /etc/sysctl.d/99-prime-fused.conf 2>/dev/null
     rm -rf /etc/sysctl.d/
     [ -d "${USER_BACKUP_DIR}/sysctl.d.bak" ] && cp -r "${USER_BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/
@@ -489,7 +541,7 @@ fn_restore_state() {
 fn_show_menu() {
     clear
     echo "============================================================"
-    echo " Prime Optimizer v$VERSION (智能恢复)"
+    echo " Prime Optimizer v$VERSION (BBR 启用 + 状态报告)"
     echo " 支持: Debian 10-12, Ubuntu 20.04-24.04"
     echo "============================================================"
     echo "  1) 自动优化 (推荐)"
