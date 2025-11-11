@@ -43,7 +43,7 @@ SS_DEFAULT_METHOD="2022-blake3-aes-256-gcm" # Shadowsocks 默认加密方式
 # --- 6. WARP 分流配置 ---
 DEFAULT_WARP_SOCKS_ADDR="127.0.0.1" # WARP SOCKS5 服务的默认监听地址
 DEFAULT_WARP_SOCKS_PORT="40000"   # WARP SOCKS5 服务的默认端口
-WARP_GEOSITE_LIST_JSON='"geosite:google", "geosite:openai", "geosite:perplexity","ip-api.com"'
+WARP_GEOSITE_LIST_JSON='"geosite:google","suffix:google.com","geosite:openai","suffix:openai.com","geosite:perplexity","suffix:perplexity.com","ip-api.com"'
 WARP_GEOSITE_LIST_YAML='- warp(suffix:ip-api.com)
     - warp(geosite:google)
     - warp(geoip:google)
