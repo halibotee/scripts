@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.2-final-mod2"
+SCRIPT_VERSION="2.2-final-mod3"
 BACKUP_DIR="/etc/sysopt_lowmem_backup"
 LOG_FILE="/var/log/sysopt_lowmem.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -226,6 +226,22 @@ fn_trim_services_auto() {
 fn_setup_zram_adaptive() {
     fn_log "信息" "尝试启用 ZRAM (100% 比例, lz4)。"
 
+    # 1. 检查并安装 systemd-zram-generator
+    fn_log "信息" "检查并安装 systemd-zram-generator..."
+    if ! dpkg -s systemd-zram-generator >/dev/null 2>&1; then
+        fn_log "信息" "systemd-zram-generator 未安装，正在尝试安装..."
+        if ! apt-get install -y systemd-zram-generator | tee -a "$LOG_FILE"; then
+            fn_log "警告" "systemd-zram-generator 安装失败。"
+            # 安装失败，直接转到回退
+            fn_setup_zram_fallback "ZRAM 生成器安装失败"
+            return $?
+        fi
+    else
+        fn_log "信息" "systemd-zram-generator 已安装。"
+    fi
+
+    # 2. 创建 zram 配置文件
+    fn_log "信息" "创建 zram 配置文件..."
     mem_mb="$MEM_MB"
     if [ -z "${mem_mb:-}" ] || [ "$mem_mb" -lt 1 ]; then
         mem_mb=512
@@ -241,41 +257,68 @@ fn_setup_zram_adaptive() {
     fi
     fn_log "信息" "计算 ZRAM 大小: ${zram_mb}MB (物理内存: ${mem_mb}MB)"
 
-    fn_log "信息" "确保 zram 内核模块已加载..."
-    modprobe zram || true
-
-    fn_log "信息" "尝试安装 systemd-zram-generator..."
-    if apt-get install -y systemd-zram-generator | tee -a "$LOG_FILE"; then
-        cat > /etc/systemd/zram-generator.conf <<EOF
+    cat > /etc/systemd/zram-generator.conf <<EOF
 [zram0]
 zram-size = ${zram_mb}M
 compression-algorithm = lz4
 swap-priority = 100
 EOF
-        fn_log "信息" "重载 systemd daemon (re-exec) 以运行生成器..."
-        systemctl daemon-reexec || true
-        
-        fn_log "信息" "尝试激活 zram0..."
-        # 移除 || true 以便在失败时暴露错误
-        systemctl restart systemd-zram-setup@zram0.service
-        sleep 1
 
+    # 3. 重载 systemd 并启动 zram
+    fn_log "信息" "确保 zram 内核模块已加载..."
+    modprobe zram || true
+
+    fn_log "信息" "重载 systemd daemon (re-exec) 以运行生成器..."
+    systemctl daemon-reexec || true
+    
+    fn_log "信息" "尝试激活 (restart) zram0..."
+    # 移除 || true 以便在失败时暴露错误
+    systemctl restart systemd-zram-setup@zram0.service
+    sleep 1
+
+    # 4. 检测 ZRAM 是否激活
+    fn_log "信息" "检测 ZRAM 是否激活..."
+    if [ -b /dev/zram0 ]; then
+        fn_log "成功" "ZRAM 设备 /dev/zram0 已创建。"
+        # 额外检查 swapon 状态
         if swapon -s | grep -q 'zram'; then
-            fn_log "成功" "ZRAM 已通过 zram-generator 启用。"
-            # 确保开机自启
+            fn_log "成功" "ZRAM 已作为 swap 激活。"
             systemctl enable systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
             echo "systemd-zram-setup@zram0.service" >> "$TOUCHED_SERVICES_FILE"
             return 0
         else
-            fn_log "警告" "systemd-zram-setup@zram0.service 启动后未检测到 zram swap。"
+            fn_log "警告" "ZRAM 设备已创建，但未激活为 swap。"
         fi
     else
-        fn_log "警告" "systemd-zram-generator 安装失败或不可用。"
+        fn_log "警告" "ZRAM 设备 /dev/zram0 未找到。"
+        # 尝试捕获日志
+        (
+            fn_log "信息" "[诊断] 捕获 zram 服务状态..."
+            systemctl status systemd-zram-setup@zram0.service --no-pager || true
+            journalctl -u systemd-zram-setup@zram0.service --no-pager --lines 20 || true
+        ) | tee -a "$LOG_FILE"
     fi
 
-    fn_log "警告" "ZRAM 激活失败。将创建小型 swapfile 作为最终回退方案。"
-    swapfile="/swapfile_sysopt_lowmem"
+    # 5. 回退
+    fn_setup_zram_fallback "ZRAM 激活失败"
+    return $?
+}
+
+# 辅助函数：ZRAM 失败时的回退逻辑
+fn_setup_zram_fallback() {
+    local reason="$1"
+    fn_log "警告" "$reason。将创建小型 swapfile 作为最终回退方案。"
     
+    mem_mb="$MEM_MB"
+    if [ -z "${mem_mb:-}" ] || [ "$mem_mb" -lt 1 ]; then
+        mem_mb=512
+    fi
+    zram_mb=$(( mem_mb > 512 ? 512 : mem_mb )) # 回退时最多 512MB
+    if [ "$zram_mb" -lt 256 ]; then # 最小 256
+        zram_mb=256
+    fi
+    
+    swapfile="/swapfile_sysopt_lowmem"
     local swapsize_mb
     if [ "$zram_mb" -gt 512 ]; then
         swapsize_mb=512
@@ -293,6 +336,7 @@ EOF
         swapon "$swapfile" >/dev/null 2>&1 || true
         echo "$swapfile" >> "${BACKUP_DIR}/created_swapfiles.txt"
     fi
+    
     if swapon -s | grep -q "$(basename "$swapfile")"; then
         fn_log "成功" "Swapfile 已作为回退方案启用 (${swapsize_mb}MB)。"
         return 0
@@ -569,7 +613,8 @@ fn_show_menu() {
     echo " 2) 撤销优化 (保留BBR)"
     echo " 3) 显示系统优化状态"
     echo " 0) 退出"
-    echo "==============================================="
+    echo "===============================================
+"
     read -rp "请选择: " CH
     case "$CH" in
         1) fn_optimize_auto ;;
