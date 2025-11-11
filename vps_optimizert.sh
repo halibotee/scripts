@@ -1,13 +1,13 @@
 #!/bin/bash
-# sysOpt_lowmem_auto_CN.sh (v2.1-final)
+# sysOpt_lowmem_auto_CN.sh (v2.2-final)
 # VPS 自动优化脚本 (低内存)
 #
 # 功能特性:
 # - 全中文菜单 (自动优化 / 撤销优化 / 显示状态)
 # - 动态检测系统 + 自动优化
 # - ZRAM 自动计算: 大小 = max(512MB, 物理内存 * 100%)
-# - ZRAM 优先 (lz4), 尝试顺序: zram-generator -> swapfile 回退
-# - 自动禁用非必要服务 (包括 rsyslog, atop, qemu-ga)
+# - ZRAM (lz4), 尝试 zram-generator, 失败则回退到 swapfile
+# - 自动屏蔽 (mask) 非必要服务 (包括 rsyslog, atop, qemu-ga)
 # - journald 日志: Storage=volatile (内存存储), RuntimeMaxUse=16M
 # - 自动启用 BBR+FQ
 # - "撤销优化" (选项2) 会恢复系统状态, 但会【保留 BBR+FQ】
@@ -18,7 +18,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # --- 全局变量 ---
-SCRIPT_VERSION="2.1-final"
+SCRIPT_VERSION="2.2-final"
 BACKUP_DIR="/etc/sysopt_lowmem_backup"
 LOG_FILE="/var/log/sysopt_lowmem.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -82,7 +82,7 @@ fn_check_root() {
     fi
 }
 
-# 检查 APT 锁
+# 检查 APT 锁 (仅检查)
 fn_check_apt_lock() {
     if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; then
         fn_log "警告" "检测到 APT 锁 (可能已有其他 apt/dpkg 进程在运行)。"
@@ -91,14 +91,14 @@ fn_check_apt_lock() {
     return 0
 }
 
-# [新增] 等待 APT 锁释放
+# 等待 APT 锁释放
 fn_wait_for_apt_lock() {
     local max_wait=120 # 最多等待 120 秒
     local count=0
     fn_log "信息" "检查 APT 锁..."
     while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
         if [ "$count" -ge "$max_wait" ]; then
-            fn_log "错误" "等待 APT 锁超时 (120 秒)。ZRAM 安装可能失败。"
+            fn_log "错误" "等待 APT 锁超时 (120 秒)。APT 操作可能失败。"
             return 1
         fi
         fn_log "警告" "检测到 APT 锁，等待 5 秒... ($count/$max_wait)"
@@ -134,7 +134,7 @@ fn_detect_os() {
 
 # --- 核心优化功能 ---
 
-# 1. 备份当前状态
+# 备份当前状态
 fn_backup_state() {
     fn_log "信息" "正在创建备份于 $BACKUP_DIR ..."
     mkdir -p "$BACKUP_DIR"
@@ -151,12 +151,14 @@ fn_backup_state() {
     fn_log "信息" "备份完成。"
 }
 
-# 2. 修复 APT 源 (仅在需要时)
+# (步骤 2) 修复 APT 源 (仅在需要时)
 fn_fix_apt_sources_if_needed() {
     fn_log "信息" "检查 APT 源健康状况..."
-    if fn_check_apt_lock; then # 检查锁，如果锁了就跳过（因为这是非关键步骤）
+    # 此时 APT 锁已释放，但我们仍然使用 fn_check_apt_lock 快速检查
+    if fn_check_apt_lock; then
+        # 我们在步骤 1 已经 update 过了，这里只检查是否能 update (如果源损坏)
         if apt-get update -qq >/dev/null 2>&1; then
-            fn_log "成功" "apt-get update 成功，APT 源正常。"
+            fn_log "成功" "APT 源正常。"
             return 0
         else
             fn_log "警告" "apt-get update 失败。将尝试保守替换 /etc/apt/sources.list"
@@ -203,7 +205,7 @@ EOF
     fi
 }
 
-# 3. 配置 Journald (内存日志)
+# (步骤 3) 配置 Journald (内存日志)
 fn_setup_journald_volatile() {
     fn_log "信息" "配置 journald 为 volatile (内存) 模式 (RuntimeMaxUse=16M)..."
     mkdir -p /etc/systemd/journald.conf.d
@@ -217,7 +219,7 @@ EOF
     fn_log "成功" "journald 已配置为 volatile 模式。"
 }
 
-# 4. 应用 Sysctl 调优 (包含 BBR+FQ)
+# (步骤 4) 应用 Sysctl 调优 (包含 BBR+FQ)
 fn_setup_sysctl_lowmem() {
     fn_log "信息" "应用 sysctl 低内存网络调优 (包含 BBR+FQ)..."
     cat > /etc/sysctl.d/99-vps-lowmem.conf <<'EOF'
@@ -245,13 +247,13 @@ EOF
     fn_log "成功" "sysctl 自适应调优 (含 BBR) 已应用。"
 }
 
-# 5. 自动精简服务
+# (步骤 5) 自动精简服务 (使用 MASK)
 fn_trim_services_auto() {
-    fn_log "信息" "服务精简: 自动禁用非必要服务。"
+    fn_log "信息" "服务精简: 自动屏蔽 (mask) 非必要服务。"
     for svc in "${FN_TRIM_SERVICES_LIST[@]}"; do
         if systemctl list-unit-files | grep -q "^${svc}"; then
-            fn_log "信息" "正在禁用 $svc"
-            systemctl disable --now "$svc" >/dev/null 2>&1 || true
+            fn_log "信息" "正在屏蔽 (mask) $svc"
+            systemctl mask --now "$svc" | tee -a "$LOG_FILE" || true
             echo "$svc" >> "$TOUCHED_SERVICES_FILE"
         else
             fn_log "信息" "服务 $svc 不存在，跳过。"
@@ -260,17 +262,17 @@ fn_trim_services_auto() {
 
     # 自动禁用 rsyslog
     if systemctl list-unit-files | grep -q "^rsyslog.service"; then
-        fn_log "信息" "正在禁用 rsyslog.service (日志将由 journald 处理)"
-        systemctl disable --now rsyslog.service >/dev/null 2>&1 || true
+        fn_log "信息" "正在屏蔽 (mask) rsyslog.service (日志将由 journald 处理)"
+        systemctl mask --now rsyslog.service | tee -a "$LOG_FILE" || true
         echo "rsyslog.service" >> "$TOUCHED_SERVICES_FILE"
     else
         fn_log "信息" "rsyslog.service 未安装，跳过。"
     fi
 }
 
-# 6. 配置 ZRAM (100% 比例, Generator 优先)
+# (步骤 6) 配置 ZRAM (100% 比例, 仅 Generator)
 fn_setup_zram_adaptive() {
-    fn_log "信息" "尝试启用 ZRAM (100% 比例, 优先 lz4)。"
+    fn_log "信息" "尝试启用 ZRAM (100% 比例, lz4)。"
 
     # 计算大小: 100% 内存, 最小 512MB, 上限为物理内存
     mem_mb="$MEM_MB"
@@ -288,38 +290,31 @@ fn_setup_zram_adaptive() {
     fi
     fn_log "信息" "计算 ZRAM 大小: ${zram_mb}MB (物理内存: ${mem_mb}MB)"
 
-    # 尝试路径 1: zram-generator (首选, 等待 APT 锁)
-    if fn_wait_for_apt_lock; then
-        fn_log "信息" "尝试路径 1: 安装 zram-generator..."
-        apt-get update -qq >/dev/null 2>&1 || true
-        if apt-get install -y zram-generator-defaults zram-generator >/dev/null 2>&1 || apt-get install -y zram-generator >/dev/null 2>&1; then
-            cat > /etc/systemd/zram-generator.conf <<EOF
+    # 尝试安装 zram-generator (APT 应该已在步骤 1 更新)
+    fn_log "信息" "尝试安装 zram-generator..."
+    if apt-get install -y zram-generator | tee -a "$LOG_FILE"; then
+        cat > /etc/systemd/zram-generator.conf <<EOF
 [zram0]
 zram-size = ${zram_mb}M
 compression-algorithm = lz4
 swap-priority = 100
 EOF
-            systemctl daemon-reload
-            systemctl enable --now systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
-            sleep 1
-            if swapon -s | grep -q 'zram'; then
-                fn_log "成功" "ZRAM 已通过 zram-generator 启用。"
-                echo "systemd-zram-setup@zram0.service" >> "$TOUCHED_SERVICES_FILE"
-                return 0
-            else
-                fn_log "警告" "zram-generator 安装了但未成功激活 zram。"
-            fi
+        systemctl daemon-reload
+        systemctl enable --now systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+        sleep 1
+        if swapon -s | grep -q 'zram'; then
+            fn_log "成功" "ZRAM 已通过 zram-generator 启用。"
+            echo "systemd-zram-setup@zram0.service" >> "$TOUCHED_SERVICES_FILE"
+            return 0
         else
-            fn_log "警告" "zram-generator 安装失败或不可用。"
+            fn_log "警告" "zram-generator 安装了但未成功激活 zram。"
         fi
     else
-        fn_log "警告" "APT 锁等待超时，跳过 zram-generator 尝试。"
+        fn_log "警告" "zram-generator 安装失败或不可用。"
     fi
 
-    # [已移除] 尝试路径 2: zram-tools
-
     # 最终回退方案: 创建磁盘 swapfile (限制大小)
-    fn_log "警告" "所有 ZRAM 方法均失败。将创建小型 swapfile 作为最终回退方案。"
+    fn_log "警告" "ZRAM 安装失败。将创建小型 swapfile 作为最终回退方案。"
     swapfile="/swapfile_sysopt_lowmem"
     # 回退方案使用较小的大小，避免占满 IO
     swapsize_mb=$(( zram_mb > 512 ? 512 : zram_mb )) 
@@ -342,7 +337,7 @@ EOF
     fi
 }
 
-# 7. 网络服务提权 (持久化)
+# (步骤 7) 网络服务提权 (持久化)
 fn_prioritize_network_services_auto() {
     fn_log "信息" "为网络核心服务设置持久化高优先级。"
     local changes_made=0
@@ -445,7 +440,18 @@ EOF
         cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt/sources.list 2>/dev/null || true
     fi
 
-    # 恢复服务: 重新启用备份中的服务
+    # 恢复服务: 1. 解除 MASK
+    fn_log "信息" "恢复服务: 正在解除(unmask)所有被屏蔽的服务..."
+    if [ -f "$TOUCHED_SERVICES_FILE" ]; then
+        while read -r svc; do
+            [ -z "$svc" ] && continue
+            if [[ "$svc" == *.service ]] || [[ "$svc" == *.timer ]] || [[ "$svc" == *.socket ]]; then
+                 systemctl unmask "$svc" >/dev/null 2>&1 || true
+            fi
+        done < <(grep -v '^#' "$TOUCHED_SERVICES_FILE")
+    fi
+
+    # 恢复服务: 2. 重新启用备份中的服务
     if [ -f "${BACKUP_DIR}/enabled_services.before.txt" ]; then
         fn_log "信息" "尝试从备份列表恢复服务启用状态..."
         while read -r s; do
@@ -511,9 +517,10 @@ fn_show_status_report() {
         local status_msg="[ 未优化 ]"
         local details="(预期: $expected, 实际: $actual)"
 
-        if [ "$actual" == "$expected" ]; then
+        # [已修复] 增加对 'masked' 状态的检查
+        if [ "$actual" == "$expected" ] || { [ "$expected" == "disabled" ] && [ "$actual" == "masked" ]; }; then
             status_msg="[ 已优化 ]"
-            details="(值: $actual)"
+            details="(状态: $actual)"
         elif [ "$expected" == "disabled" ] && [ "$actual" == "static" ]; then
             status_msg="[ 已优化 ]"
             details="(状态: static)"
@@ -594,26 +601,33 @@ fn_show_status_report() {
 fn_optimize_auto() {
     fn_backup_state
 
-    fn_log "信息" "步骤 1/6: 检查并修复 APT 源..."
+    fn_log "信息" "步骤 1/7: 等待 APT 锁并更新软件包列表..."
+    if ! fn_wait_for_apt_lock; then
+        fn_log "错误" "等待 APT 锁超时。脚本将继续，但 ZRAM 安装可能失败。"
+    else
+        apt-get update -qq | tee -a "$LOG_FILE" || fn_log "警告" "apt-get update 失败，但仍将继续..."
+    fi
+
+    fn_log "信息" "步骤 2/7: 检查并修复 APT 源..."
     fn_fix_apt_sources_if_needed || fn_log "警告" "APT 修复步骤出现问题，但仍继续。"
 
-    fn_log "信息" "步骤 2/6: 配置 journald 为内存模式..."
+    fn_log "信息" "步骤 3/7: 配置 journald 为内存模式..."
     fn_setup_journald_volatile
 
-    fn_log "信息" "步骤 3/6: 应用 sysctl 调优 (BBR+FQ)..."
+    fn_log "信息" "步骤 4/7: 应用 sysctl 调优 (BBR+FQ)..."
     fn_setup_sysctl_lowmem
 
-    fn_log "信息" "步骤 4/6: 精简非必要服务 (包括 ps 分析结果)..."
+    fn_log "信息" "步骤 5/7: 精简非必要服务 (使用 mask)..."
     fn_trim_services_auto
 
-    fn_log "信息" "步骤 5/6: 启用 ZRAM (100% 比例, Generator 优先)..."
+    fn_log "信息" "步骤 6/7: 启用 ZRAM (100% 比例)..."
     if fn_setup_zram_adaptive; then
         fn_log "成功" "ZRAM / Swap 设置成功。"
     else
         fn_log "错误" "ZRAM / Swap 设置失败。"
     fi
 
-    fn_log "信息" "步骤 6/6: 提升网络服务优先级..."
+    fn_log "信息" "步骤 7/7: 提升网络服务优先级..."
     fn_prioritize_network_services_auto
 
     fn_log "成功" "=== 优化已完成 ==="
@@ -639,7 +653,7 @@ fn_show_menu() {
     case "$CH" in
         1) fn_optimize_auto ;;
         2) fn_restore_all ;;
-        3) fn_show_status_report; read -rp "按回车返回菜单..." dummy ;; # [已修复] 3.0 -> 3
+        3) fn_show_status_report; read -rp "按回车返回菜单..." dummy ;;
         0) fn_log "信息" "退出。"; exit 0 ;;
         *) fn_log "错误" "无效选项。"; sleep 1; fn_show_menu ;;
     esac
