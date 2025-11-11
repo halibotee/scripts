@@ -43,7 +43,8 @@ SS_DEFAULT_METHOD="2022-blake3-aes-256-gcm" # Shadowsocks 默认加密方式
 # --- 6. WARP 分流配置 ---
 DEFAULT_WARP_SOCKS_ADDR="127.0.0.1" # WARP SOCKS5 服务的默认监听地址
 DEFAULT_WARP_SOCKS_PORT="40000"   # WARP SOCKS5 服务的默认端口
-WARP_GEOSITE_LIST_JSON='"geosite:google","suffix:google.com","geosite:openai","suffix:openai.com","geosite:perplexity","suffix:perplexity.com","ip-api.com"'
+WARP_GEOSITE_LIST_JSON='"geosite:google","geosite:openai","geosite:perplexity"'
+# WARP_GEOSITE_LIST_JSON='"geosite:google","suffix:google.com","geosite:openai","suffix:openai.com","geosite:perplexity","suffix:perplexity.com","ip-api.com"'
 WARP_GEOSITE_LIST_YAML='- warp(suffix:ip-api.com)
     - warp(geosite:google)
     - warp(geoip:google)
@@ -257,8 +258,9 @@ read -r -d '' XRAY_WARP_OUTBOUND_AND_ROUTING_BLOCK <<'EOM'
 "routing": {
     "domainStrategy": "IPIfNonMatch",
     "rules": [
-        { "type": "field", "outboundTag": "warp", "domain": [ __WARP_GEOSITE_LIST_JSON__ ] },
-        { "type": "field", "outboundTag": "block", "domain": [ "geosite:category-ads-all" ] }
+        { "type": "field", "outboundTag": "warp", "ip": [ __WARP_GEOSITE_LIST_JSON__ ] },
+        { "type": "field", "outboundTag": "warp", "domain": [ "suffix:ip-api.com" ] },
+        { "type": "field", "outboundTag": "block", "ip": [ "geosite:category-ads-all" ] }
     ]
 }
 EOM
