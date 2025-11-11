@@ -1,18 +1,4 @@
 #!/bin/bash
-# sysOpt_lowmem_auto_CN.sh (v2.0-auto-CN)
-# VPS 自动优化脚本 (低内存)
-#
-# 功能特性:
-# - 全中文菜单 (自动优化 / 撤销优化 / 显示状态)
-# - 动态检测系统 + 自动优化
-# - ZRAM 自动计算: 大小 = max(512MB, 物理内存 * 100%), 上限为物理内存
-# - ZRAM 优先 (lz4), 尝试顺序: zram-generator -> zram-tools -> swapfile 回退
-# - 自动禁用非必要服务及 rsyslog
-# - journald 日志: Storage=volatile (内存存储), RuntimeMaxUse=16M
-# - 自动启用 BBR+FQ
-# - "撤销优化" (选项2) 会恢复系统状态, 但会【保留 BBR+FQ】
-#
-# 用法: sudo bash ./sysOpt_lowmem_auto_CN.sh
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -30,7 +16,7 @@ RED='\033[0;31m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
-# 针对 1CPU/1GB 场景优化的服务列表 (rsyslog 将被单独禁用)
+# 优化的服务列表 
 FN_TRIM_SERVICES_LIST=(
     "apt-daily.timer"
     "apt-daily-upgrade.timer"
