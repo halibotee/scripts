@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.2-final-mod3"
+SCRIPT_VERSION="2.2-final-mod4"
 BACKUP_DIR="/etc/sysopt_lowmem_backup"
 LOG_FILE="/var/log/sysopt_lowmem.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -224,37 +224,16 @@ fn_trim_services_auto() {
 }
 
 fn_setup_zram_adaptive() {
-    fn_log "信息" "尝试启用 ZRAM (100% 比例, lz4)。"
+    fn_log "信息" "尝试启用 ZRAM (自适应大小, lz4)。"
 
-    # 1. 检查并安装 systemd-zram-generator
-    fn_log "信息" "检查并安装 systemd-zram-generator..."
     if ! dpkg -s systemd-zram-generator >/dev/null 2>&1; then
         fn_log "信息" "systemd-zram-generator 未安装，正在尝试安装..."
-        if ! apt-get install -y systemd-zram-generator | tee -a "$LOG_FILE"; then
-            fn_log "警告" "systemd-zram-generator 安装失败。"
-            # 安装失败，直接转到回退
-            fn_setup_zram_fallback "ZRAM 生成器安装失败"
-            return $?
-        fi
-    else
-        fn_log "信息" "systemd-zram-generator 已安装。"
+        apt-get install -y systemd-zram-generator | tee -a "$LOG_FILE" || fn_log "警告" "systemd-zram-generator 安装失败，稍后将使用 Swap 回退。"
     fi
 
-    # 2. 创建 zram 配置文件
-    fn_log "信息" "创建 zram 配置文件..."
     mem_mb="$MEM_MB"
-    if [ -z "${mem_mb:-}" ] || [ "$mem_mb" -lt 1 ]; then
-        mem_mb=512
-    fi
-    
-    zram_mb=$(( mem_mb ))
-    
-    if [ "$zram_mb" -lt 512 ]; then
-        zram_mb=512
-    fi
-    if [ "$zram_mb" -gt "$mem_mb" ]; then
-        zram_mb="$mem_mb"
-    fi
+    zram_mb=$(( mem_mb < 512 ? 512 : mem_mb ))
+    [ "$zram_mb" -gt "$mem_mb" ] && zram_mb="$mem_mb"
     fn_log "信息" "计算 ZRAM 大小: ${zram_mb}MB (物理内存: ${mem_mb}MB)"
 
     cat > /etc/systemd/zram-generator.conf <<EOF
@@ -264,84 +243,45 @@ compression-algorithm = lz4
 swap-priority = 100
 EOF
 
-    # 3. 重载 systemd 并启动 zram
-    fn_log "信息" "确保 zram 内核模块已加载..."
     modprobe zram || true
-
-    fn_log "信息" "重载 systemd daemon (re-exec) 以运行生成器..."
     systemctl daemon-reexec || true
-    
-    fn_log "信息" "尝试激活 (restart) zram0..."
-    # 移除 || true 以便在失败时暴露错误
-    systemctl restart systemd-zram-setup@zram0.service
-    sleep 1
+    systemctl restart systemd-zram-setup@zram0.service || fn_log "警告" "ZRAM 服务启动失败，将尝试 Swap 回退。"
 
-    # 4. 检测 ZRAM 是否激活
-    fn_log "信息" "检测 ZRAM 是否激活..."
-    if [ -b /dev/zram0 ]; then
-        fn_log "成功" "ZRAM 设备 /dev/zram0 已创建。"
-        # 额外检查 swapon 状态
-        if swapon -s | grep -q 'zram'; then
-            fn_log "成功" "ZRAM 已作为 swap 激活。"
-            systemctl enable systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
-            echo "systemd-zram-setup@zram0.service" >> "$TOUCHED_SERVICES_FILE"
-            return 0
-        else
-            fn_log "警告" "ZRAM 设备已创建，但未激活为 swap。"
-        fi
+    if [ -b /dev/zram0 ] && swapon -s | grep -q 'zram'; then
+        fn_log "成功" "ZRAM 已激活。"
+        systemctl enable systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+        echo "systemd-zram-setup@zram0.service" >> "$TOUCHED_SERVICES_FILE"
+        return 0
     else
-        fn_log "警告" "ZRAM 设备 /dev/zram0 未找到。"
-        # 尝试捕获日志
-        (
-            fn_log "信息" "[诊断] 捕获 zram 服务状态..."
-            systemctl status systemd-zram-setup@zram0.service --no-pager || true
-            journalctl -u systemd-zram-setup@zram0.service --no-pager --lines 20 || true
-        ) | tee -a "$LOG_FILE"
+        fn_log "信息" "启用 ZRAM 失败，创建 Swap 回退..."
+        fn_setup_zram_fallback "ZRAM 激活失败"
     fi
-
-    # 5. 回退
-    fn_setup_zram_fallback "ZRAM 激活失败"
-    return $?
 }
 
-# 辅助函数：ZRAM 失败时的回退逻辑
 fn_setup_zram_fallback() {
     local reason="$1"
-    fn_log "警告" "$reason。将创建小型 swapfile 作为最终回退方案。"
-    
+    fn_log "警告" "$reason。使用 swapfile 回退方案。"
+
     mem_mb="$MEM_MB"
-    if [ -z "${mem_mb:-}" ] || [ "$mem_mb" -lt 1 ]; then
-        mem_mb=512
-    fi
-    zram_mb=$(( mem_mb > 512 ? 512 : mem_mb )) # 回退时最多 512MB
-    if [ "$zram_mb" -lt 256 ]; then # 最小 256
-        zram_mb=256
-    fi
-    
-    swapfile="/swapfile_sysopt_lowmem"
-    local swapsize_mb
-    if [ "$zram_mb" -gt 512 ]; then
-        swapsize_mb=512
-    else
-        swapsize_mb="$zram_mb"
-    fi
-    
+    swapsize=$(( mem_mb > 512 ? 512 : mem_mb ))
+    [ "$swapsize" -lt 256 ] && swapsize=256
+
+    swapfile="/swapfile_zram"
     if [ -f "$swapfile" ]; then
-        fn_log "信息" "Swapfile 已存在，尝试启用它。"
         swapon "$swapfile" >/dev/null 2>&1 || true
     else
-        fallocate -l "${swapsize_mb}M" "$swapfile" >/dev/null 2>&1 || dd if=/dev/zero of="$swapfile" bs=1M count="$swapsize_mb" >/dev/null 2>&1
+        fallocate -l "${swapsize}M" "$swapfile" >/dev/null 2>&1 || dd if=/dev/zero of="$swapfile" bs=1M count="$swapsize" >/dev/null 2>&1
         chmod 600 "$swapfile"
         mkswap "$swapfile" >/dev/null 2>&1 || true
         swapon "$swapfile" >/dev/null 2>&1 || true
         echo "$swapfile" >> "${BACKUP_DIR}/created_swapfiles.txt"
     fi
-    
+
     if swapon -s | grep -q "$(basename "$swapfile")"; then
-        fn_log "成功" "Swapfile 已作为回退方案启用 (${swapsize_mb}MB)。"
+        fn_log "成功" "Swapfile 已启用 (${swapsize}MB)。"
         return 0
     else
-        fn_log "错误" "启用 swapfile 回退方案失败。"
+        fn_log "错误" "Swapfile 启用失败。"
         return 1
     fi
 }
@@ -351,11 +291,9 @@ fn_prioritize_network_services_auto() {
     local changes_made=0
     for svc in xray hysteria2 hysteria udp2raw kcptun; do
         if systemctl list-unit-files --quiet "${svc}.service"; then
-            fn_log "信息" "为 $svc 设置 Nice=-5, CPUQuota=70%。"
-            
-            local svc_conf_dir="/etc/systemd/system/${svc}.service.d"
-            mkdir -p "$svc_conf_dir"
-            cat > "${svc_conf_dir}/90-sysopt-lowmem.conf" <<EOF
+            fn_log "信息" "为 $svc 设置 Nice=-5, CPUQuota=70%."
+            mkdir -p "/etc/systemd/system/${svc}.service.d"
+            cat > "/etc/systemd/system/${svc}.service.d/90-sysopt-lowmem.conf" <<EOF
 [Service]
 Nice=-5
 CPUQuota=70%
@@ -365,122 +303,7 @@ EOF
         fi
     done
 
-    if [ "$changes_made" -eq 1 ]; then
-        fn_log "信息" "重载 systemd daemon 以应用服务优先级。"
-        systemctl daemon-reload
-    fi
-}
-
-fn_restore_zram_and_swap() {
-    fn_log "信息" "恢复 ZRAM / swap 状态: 禁用服务并移除创建的文件。"
-    systemctl disable --now vps-zram.service >/dev/null 2>&1 || true
-    systemctl disable --now zramswap.service >/dev/null 2>&1 || true
-    systemctl disable --now systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
-    rm -f /etc/systemd/system/vps-zram.service
-    rm -f /etc/systemd/zram-generator.conf
-    rm -f /etc/default/zramswap
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    if [ -f "${BACKUP_DIR}/created_swapfiles.txt" ]; then
-        while read -r sf; do
-            [ -z "$sf" ] && continue
-            if swapon -s | grep -q "$(basename "$sf")"; then
-                swapoff "$sf" >/dev/null 2>&1 || true
-            fi
-            rm -f "$sf" || true
-            fn_log "信息" "已移除 swapfile $sf"
-        done < "${BACKUP_DIR}/created_swapfiles.txt"
-    fi
-    swapoff -a >/dev/null 2>&1 || true
-    modprobe -r zram >/dev/null 2>&1 || true
-    fn_log "成功" "ZRAM / swap 恢复完成。"
-}
-
-fn_restore_all() {
-    fn_log "警告" "开始执行撤销优化... 将从 $BACKUP_DIR 恢复备份。"
-    
-    fn_log "信息" "恢复 sysctl (并保留 BBR+FQ)..."
-    
-    rm -f /etc/sysctl.d/99-vps-lowmem.conf
-
-    if [ -f "${BACKUP_DIR}/sysctl.conf.bak" ]; then
-        cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
-    fi
-    
-    if [ -d "${BACKUP_DIR}/sysctl.d.bak" ]; then
-        cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
-    fi
-
-    cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-EOF
-    
-    sysctl --system >/dev/null 2>&1 || true
-
-    fn_log "信息" "恢复 journald..."
-    if [ -d "${BACKUP_DIR}/journald.conf.d.bak" ]; then
-        rm -rf /etc/systemd/journald.conf.d/
-        cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
-        systemctl restart systemd-journald >/dev/null 2>&1 || true
-    else
-        rm -rf /etc/systemd/journald.conf.d/ || true
-        systemctl restart systemd-journald >/dev/null 2>&1 || true
-    fi
-
-    if [ -f "${BACKUP_DIR}/apt.sources.list.bak" ]; then
-        cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt/sources.list 2>/dev/null || true
-    fi
-
-    fn_log "信息" "恢复服务: 正在解除(unmask)所有被屏蔽的服务..."
-    if [ -f "$TOUCHED_SERVICES_FILE" ]; then
-        while read -r svc; do
-            [ -z "$svc" ] && continue
-            if [[ "$svc" == *.service ]] || [[ "$svc" == *.timer ]] || [[ "$svc" == *.socket ]]; then
-                 systemctl unmask "$svc" >/dev/null 2>&1 || true
-            fi
-        done < <(grep -v '^#' "$TOUCHED_SERVICES_FILE")
-    fi
-
-    if [ -f "${BACKUP_DIR}/enabled_services.before.txt" ]; then
-        fn_log "信息" "尝试从备份列表恢复服务启用状态..."
-        while read -r s; do
-            [ -z "$s" ] && continue
-            systemctl enable "$s" >/dev/null 2>&1 || true
-        done < "${BACKUP_DIR}/enabled_services.before.txt"
-    fi
-
-    if grep -q "^rsyslog.service$" "${BACKUP_DIR}/enabled_services.before.txt" 2>/dev/null; then
-        systemctl enable --now rsyslog.service >/dev/null 2>&1 || true
-    fi
-
-    if [ -f "${BACKUP_DIR}/fstab.bak" ]; then
-        cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
-        swapon -a >/dev/null 2>&1 || true
-    fi
-
-    fn_restore_zram_and_swap
-
-    fn_log "信息" "恢复服务优先级 (移除 drop-in 文件)..."
-    local configs_removed=0
-    if [ -f "$TOUCHED_SERVICES_FILE" ]; then
-        while read -r svc; do
-            [ -z "$svc" ] && continue
-            if [[ "$svc" == *.service ]]; then
-                local svc_conf_dir="/etc/systemd/system/${svc}.d"
-                if [ -d "$svc_conf_dir" ]; then
-                    rm -rf "$svc_conf_dir"
-                    fn_log "信息" "已移除 $svc_conf_dir"
-                    configs_removed=1
-                fi
-            fi
-        done < <(grep -v '^#' "$TOUCHED_SERVICES_FILE")
-    fi
-    
-    if [ "$configs_removed" -eq 1 ]; then
-        systemctl daemon-reload
-    fi
-
-    fn_log "成功" "撤销优化 (除 BBR 外) 已完成。请查看 $LOG_FILE 日志。"
+    [ "$changes_made" -eq 1 ] && systemctl daemon-reload
 }
 
 fn_show_status_report() {
@@ -492,142 +315,54 @@ fn_show_status_report() {
     printf "内核: %s\n" "$(uname -r)"
     echo "------------------------------------------------------"
 
-    fn_print_check() {
-        local name="$1"
-        local expected="$2"
-        local actual="$3"
-        local status_msg="[ 未优化 ]"
-        local details="(预期: $expected, 实际: $actual)"
-
-        if [ "$actual" == "$expected" ] || { [ "$expected" == "disabled" ] && [ "$actual" == "masked" ]; }; then
-            status_msg="[ 已优化 ]"
-            details="(状态: $actual)"
-        elif [ "$expected" == "disabled" ] && [ "$actual" == "static" ]; then
-            status_msg="[ 已优化 ]"
-            details="(状态: static)"
-        elif [ -z "$actual" ] || [ "$actual" == "not-found" ]; then
-             actual="未设置"
-             details="(预期: $expected, 实际: 未设置)"
-             if [ "$expected" == "disabled" ]; then
-                status_msg="[ 已优化 ]"
-                details="(未安装)"
-             fi
-        fi
-        printf "  %-35s %s %s\n" "$name" "$status_msg" "$details"
-    }
-
     echo "1. 网络优化 (Sysctl):"
-    fn_print_check "TCP 拥塞控制 (BBR)" "bbr" "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 'n/a')"
-    fn_print_check "网络队列算法 (FQ)" "fq" "$(sysctl -n net.core.default_qdisc 2>/dev/null || echo 'n/a')"
+    printf "  %-35s %s\n" "TCP 拥塞控制 (BBR)" "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 'n/a')"
+    printf "  %-35s %s\n" "网络队列算法 (FQ)" "$(sysctl -n net.core.default_qdisc 2>/dev/null || echo 'n/a')"
+    printf "  %-35s %s\n" "Swappiness" "$(sysctl -n vm.swappiness 2>/dev/null || echo 'n/a')"
+    printf "  %-35s %s\n" "VFS 缓存压力" "$(sysctl -n vm.vfs_cache_pressure 2>/dev/null || echo 'n/a')"
 
     echo "2. 日志 (Journald):"
-    local journal_storage
-    journal_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
-    fn_print_check "Journald 存储模式" "volatile" "${journal_storage:-disk}"
-    
+    journalctl_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
+    printf "  %-35s %s\n" "Journald 存储模式" "$journalctl_storage"
+
     echo "3. 交换空间 (Swap/ZRAM):"
     if swapon -s | grep -q 'zram'; then
         echo "  ZRAM 状态: [ 已激活 ]"
-    elif swapon -s | grep -q 'swapfile'; then
+    elif swapon -s | grep -q "$(basename /swapfile_zram)"; then
         echo "  Swapfile 状态: [ 已激活 (回退方案) ]"
     else
         echo "  Swap 状态: [ 未激活 ]"
     fi
-    echo "--- 当前内存与 Swap ---"
-    free -h
-    swapon -s || true
-    echo "------------------------"
+    echo "------------------------------------------------------"
 
     echo "4. 系统服务精简:"
-    local svc_status
     for svc in "${FN_TRIM_SERVICES_LIST[@]}"; do
-        svc_status=$(systemctl is-enabled "$svc" 2>/dev/null || echo "not-found")
-        if [ "$svc_status" != "not-found" ]; then
-            fn_print_check "服务: $svc" "disabled" "$svc_status"
-        fi
+        status=$(systemctl is-enabled "$svc" 2>/dev/null || echo "not-found")
+        printf "  %-35s %s\n" "$svc" "${status:-not-found}"
     done
-    svc_status=$(systemctl is-enabled "rsyslog.service" 2>/dev/null || echo "not-found")
-    fn_print_check "服务: rsyslog.service" "disabled" "$svc_status"
 
     echo "5. 网络服务提权 (Drop-in):"
-    local drop_in_found="no"
     for svc in xray hysteria2 hysteria udp2raw kcptun; do
         if [ -f "/etc/systemd/system/${svc}.service.d/90-sysopt-lowmem.conf" ]; then
-            echo "  提权配置: ${svc} [ 已配置 ]"
-            drop_in_found="yes"
+            echo "  $svc -> Drop-in 设置已存在"
         fi
     done
-    if [ "$drop_in_found" == "no" ]; then
-         echo "  (未检测到受支持的网络服务提权配置)"
-    fi
-    
     echo "======================================================"
 }
 
 fn_optimize_auto() {
+    fn_check_root
+    fn_detect_os
+    fn_wait_for_apt_lock
+    fn_fix_apt_sources_if_needed
     fn_backup_state
-
-    fn_log "信息" "步骤 1/7: 等待 APT 锁并更新软件包列表..."
-    if ! fn_wait_for_apt_lock; then
-        fn_log "错误" "等待 APT 锁超时。脚本将继续，但 ZRAM 安装可能失败。"
-    else
-        apt update -qq | tee -a "$LOG_FILE" || fn_log "警告" "apt update 失败，但仍将继续..."
-    fi
-
-    fn_log "信息" "步骤 2/7: 检查并修复 APT 源..."
-    fn_fix_apt_sources_if_needed || fn_log "警告" "APT 修复步骤出现问题，但仍继续。"
-
-    fn_log "信息" "步骤 3/7: 配置 journald 为内存模式..."
     fn_setup_journald_volatile
-
-    fn_log "信息" "步骤 4/7: 应用 sysctl 调优 (BBR+FQ)..."
     fn_setup_sysctl_lowmem
-
-    fn_log "信息" "步骤 5/7: 精简非必要服务 (使用 mask)..."
     fn_trim_services_auto
-
-    fn_log "信息" "步骤 6/7: 启用 ZRAM (100% 比例)..."
-    if fn_setup_zram_adaptive; then
-        fn_log "成功" "ZRAM / Swap 设置成功。"
-    else
-        fn_log "错误" "ZRAM / Swap 设置失败。"
-    fi
-
-    fn_log "信息" "步骤 7/7: 提升网络服务优先级..."
+    fn_setup_zram_adaptive
     fn_prioritize_network_services_auto
-
-    fn_log "成功" "=== 优化已完成 ==="
+    fn_log "信息" "系统优化完成。"
     fn_show_status_report
-    fn_log "重要" "请检查 $LOG_FILE 获取详细日志。建议在方便时重启系统以应用所有更改。"
 }
 
-fn_show_menu() {
-    clear
-    echo "==============================================="
-    echo " VPS 低内存自动优化脚本 (sysOpt_lowmem)"
-    echo " 脚本版本: $SCRIPT_VERSION"
-    echo " 备份目录: $BACKUP_DIR"
-    echo " 日志文件: $LOG_FILE"
-    echo "==============================================="
-    echo " 1) 执行系统优化 (全自动)"
-    echo " 2) 撤销优化 (保留BBR)"
-    echo " 3) 显示系统优化状态"
-    echo " 0) 退出"
-    echo "===============================================
-"
-    read -rp "请选择: " CH
-    case "$CH" in
-        1) fn_optimize_auto ;;
-        2) fn_restore_all ;;
-        3) fn_show_status_report; read -rp "按回车返回菜单..." dummy ;;
-        0) fn_log "信息" "退出。"; exit 0 ;;
-        *) fn_log "错误" "无效选项。"; sleep 1; fn_show_menu ;;
-    esac
-    read -rp "按回车返回主菜单..." dummy
-    fn_show_menu
-}
-
-fn_check_root
-fn_detect_os
-
-fn_show_menu
+fn_optimize_auto
