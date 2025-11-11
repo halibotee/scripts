@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.3"
+SCRIPT_VERSION="2.2-final-mod2"
 BACKUP_DIR="/etc/sysopt_lowmem_backup"
 LOG_FILE="/var/log/sysopt_lowmem.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -241,6 +241,9 @@ fn_setup_zram_adaptive() {
     fi
     fn_log "信息" "计算 ZRAM 大小: ${zram_mb}MB (物理内存: ${mem_mb}MB)"
 
+    fn_log "信息" "确保 zram 内核模块已加载..."
+    modprobe zram || true
+
     fn_log "信息" "尝试安装 systemd-zram-generator..."
     if apt-get install -y systemd-zram-generator | tee -a "$LOG_FILE"; then
         cat > /etc/systemd/zram-generator.conf <<EOF
@@ -249,21 +252,28 @@ zram-size = ${zram_mb}M
 compression-algorithm = lz4
 swap-priority = 100
 EOF
-        systemctl daemon-reload
-        systemctl enable --now systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+        fn_log "信息" "重载 systemd daemon (re-exec) 以运行生成器..."
+        systemctl daemon-reexec || true
+        
+        fn_log "信息" "尝试激活 zram0..."
+        # 移除 || true 以便在失败时暴露错误
+        systemctl restart systemd-zram-setup@zram0.service
         sleep 1
+
         if swapon -s | grep -q 'zram'; then
             fn_log "成功" "ZRAM 已通过 zram-generator 启用。"
+            # 确保开机自启
+            systemctl enable systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
             echo "systemd-zram-setup@zram0.service" >> "$TOUCHED_SERVICES_FILE"
             return 0
         else
-            fn_log "警告" "zram-generator 安装了但未成功激活 zram。"
+            fn_log "警告" "systemd-zram-setup@zram0.service 启动后未检测到 zram swap。"
         fi
     else
         fn_log "警告" "systemd-zram-generator 安装失败或不可用。"
     fi
 
-    fn_log "警告" "ZRAM 安装失败。将创建小型 swapfile 作为最终回退方案。"
+    fn_log "警告" "ZRAM 激活失败。将创建小型 swapfile 作为最终回退方案。"
     swapfile="/swapfile_sysopt_lowmem"
     
     local swapsize_mb
@@ -517,7 +527,7 @@ fn_optimize_auto() {
     if ! fn_wait_for_apt_lock; then
         fn_log "错误" "等待 APT 锁超时。脚本将继续，但 ZRAM 安装可能失败。"
     else
-        apt-get update -qq | tee -a "$LOG_FILE" || fn_log "警告" "apt update 失败，但仍将继续..."
+        apt update -qq | tee -a "$LOG_FILE" || fn_log "警告" "apt update 失败，但仍将继续..."
     fi
 
     fn_log "信息" "步骤 2/7: 检查并修复 APT 源..."
