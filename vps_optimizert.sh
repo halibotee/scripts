@@ -286,15 +286,88 @@ fn_log "成功" "撤销优化完成。"
 }
 
 fn_show_status_report() {
-clear
-[ -f /etc/os-release ] && source /etc/os-release
-printf "系统: %s\n" "${PRETTY_NAME:-unknown}"
-printf "内存: %s MB\n" "$MEM_MB"
-printf "内核: %s\n" "$(uname -r)"
-swapon -s
-lsblk | grep zram
-systemctl list-unit-files | grep -E 'masked|enabled'
+    clear
+    echo "==================== 系统优化状态 ===================="
+    [ -f /etc/os-release ] && source /etc/os-release
+    printf "系统: %s\n" "${PRETTY_NAME:-unknown}"
+    printf "内存: %s MB\n" "$MEM_MB"
+    printf "内核: %s\n" "$(uname -r)"
+    echo "------------------------------------------------------"
+
+    fn_print_check() {
+        local name="$1"
+        local expected="$2"
+        local actual="$3"
+        local status_msg="[ 未优化 ]"
+        local details=""
+
+        if [ "$actual" == "$expected" ] || \
+           { [ "$expected" == "disabled" ] && { [ "$actual" == "masked" ] || [ "$actual" == "static" ]; }; }; then
+            status_msg="[ 已优化 ]"
+        elif [ "$expected" == "disabled" ] && { [ "$actual" == "not-found" ] || [ -z "$actual" ]; }; then
+            status_msg="[ 已优化 ]"
+            details="(进程不存在)"
+        else
+            status_msg="[ 未优化 ]"
+            if [ "$actual" == "not-found" ] || [ -z "$actual" ]; then
+                details="(进程不存在)"
+            else
+                details="(状态: $actual)"
+            fi
+        fi
+        
+        printf "  %-35s %s %s\n" "$name" "$status_msg" "$details"
+    }
+
+    echo "1. 网络优化 (Sysctl):"
+    fn_print_check "TCP 拥塞控制 (BBR)" "bbr" "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 'n/a')"
+    fn_print_check "网络队列算法 (FQ)" "fq" "$(sysctl -n net.core.default_qdisc 2>/dev/null || echo 'n/a')"
+    fn_print_check "Swappiness" "10" "$(sysctl -n vm.swappiness 2>/dev/null || echo 'n/a')"
+    fn_print_check "VFS 缓存压力" "100" "$(sysctl -n vm.vfs_cache_pressure 2>/dev/null || echo 'n/a')"
+    fn_print_check "IPv6 (all.disable_ipv6)" "1" "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 'n/a')"
+
+    echo "2. 日志 (Journald):"
+    local journal_storage
+    journal_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
+    fn_print_check "Journald 存储模式" "volatile" "${journal_storage:-disk}"
+    
+    echo "3. 交换空间 (Swap/ZRAM):"
+    if swapon -s | grep -q 'zram'; then
+        echo "  ZRAM 状态: [ 已激活 ]"
+    elif swapon -s | grep -q "$(basename /swapfile_zram)"; then
+        echo "  Swapfile 状态: [ 已激活 (回退方案) ]"
+    else
+        echo "  Swap 状态: [ 未激活 ]"
+    fi
+    echo "--- 当前内存与 Swap ---"
+    free -h
+    swapon -s || true
+    echo "------------------------"
+
+    echo "4. 系统服务精简:"
+    local svc_status
+    for svc in "${FN_TRIM_SERVICES_LIST[@]}"; do
+        svc_status=$(systemctl is-enabled "$svc" 2>/dev/null || echo "not-found")
+        fn_print_check "服务: $svc" "disabled" "$svc_status"
+    done
+    svc_status=$(systemctl is-enabled "rsyslog.service" 2>/dev/null || echo "not-found")
+    fn_print_check "服务: rsyslog.service" "disabled" "$svc_status"
+
+    echo "5. 网络服务提权 (Drop-in):"
+    local drop_in_found="no"
+    for svc in xray hysteria2 hysteria udp2raw kcptun; do
+        if [ -f "/etc/systemd/system/${svc}.service.d/90-sysopt-lowmem.conf" ]; then
+            echo "  提权配置: ${svc} [ 已配置 ]"
+            drop_in_found="yes"
+        fi
+    done
+    if [ "$drop_in_found" == "no" ]; then
+         echo "  (未检测到受支持的网络服务提权配置)"
+    fi
+    
+    echo "======================================================"
 }
+
 
 fn_optimize_auto() {
 fn_backup_state
@@ -309,34 +382,33 @@ fn_log "成功" "系统优化完成。请重启系统以完全生效。"
 fn_show_status_report
 }
 
+fn_show_menu() {
+    clear
+    echo "==============================================="
+    echo " VPS 低内存自动优化脚本 (sysOpt_lowmem)"
+    echo " 脚本版本: $SCRIPT_VERSION"
+    echo " 备份目录: $BACKUP_DIR"
+    echo " 日志文件: $LOG_FILE"
+    echo "==============================================="
+    echo " 1) 执行系统优化 (全自动)"
+    echo " 2) 撤销优化 (保留BBR)"
+    echo " 3) 显示系统优化状态"
+    echo " 0) 退出"
+    echo "===============================================
+"
+    read -rp "请选择: " CH
+    case "$CH" in
+        1) fn_optimize_auto ;;
+        2) fn_restore_all ;;
+        3) fn_show_status_report; read -rp "按回车返回菜单..." dummy ;;
+        0) fn_log "信息" "退出。"; exit 0 ;;
+        *) fn_log "错误" "无效选项。"; sleep 1; fn_show_menu ;;
+    esac
+    read -rp "按回车返回主菜单..." dummy
+    fn_show_menu
+}
+
 fn_check_root
 fn_detect_os
 
-while true; do
-echo "================== 系统优化工具 =================="
-echo " 1) 执行系统优化 (全自动)"
-echo " 2) 撤销优化 (保留BBR)"
-echo " 3) 显示系统优化状态"
-echo " 0) 退出"
-echo "=================================================="
-read -rp "请输入选项 [0-3]: " choice
-case "$choice" in
-1)
-fn_optimize_auto
-;;
-2)
-fn_restore_all
-;;
-3)
-fn_show_status_report
-read -rp "按回车返回菜单..." dummy
-;;
-0)
-echo "退出脚本。"
-exit 0
-;;
-*)
-echo "无效选项，请输入 0-3。"
-;;
-esac
-done
+fn_show_menu
