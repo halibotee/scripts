@@ -1,840 +1,342 @@
 #!/bin/bash
-# =========================================================
-# VPS Optimizer v2.14
-# =========================================================
+set -euo pipefail
+IFS=$'\n\t'
 
-# --- [全局变量] ---
-SCRIPT_VERSION="2.14"
-OS_ID=""
-OS_VERSION_ID=""
-MEM_MB=0
-BACKUP_DIR="/etc/vps_optimize_backup"
-LOG_FILE="${BACKUP_DIR}/optimize.log"
+SCRIPT_VERSION="2.3"
+BACKUP_DIR="/etc/sysopt_lowmem_backup"
+LOG_FILE="/var/log/sysopt_lowmem.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
-
 export DEBIAN_FRONTEND=noninteractive
 
-# “安全裁剪”服务列表
 FN_TRIM_SERVICES_LIST=(
-    "apt-daily.timer"
-    "apt-daily-upgrade.timer"
-    "unattended-upgrades.service"
-    "motd-news.service"
-    "man-db.timer"
-    "sysstat.service"
-    "whoopsie.service"
-    "apport.service"
-    "snapd.service"
-    "snapd.socket"
-    "avahi-daemon.service"
-    "bluetooth.service"
-    "cups.service"
-    "cups-browsed.service"
-    "ModemManager.service"
-    "ssh-askpass.service"
-    "e2scrub_reap.timer"
-    "cloud-init.service"
-    "cloud-init-local.service"
-    "cloud-config.service"
-    "cloud-final.service"
-    "packagekit.service"
-    "thermald.service"
-    "qemu-guest-agent.service"
-    "atop.service"
-    "atopacctd.service"
+"apt-daily.timer"
+"apt-daily-upgrade.timer"
+"unattended-upgrades.service"
+"motd-news.service"
+"man-db.timer"
+"sysstat.service"
+"whoopsie.service"
+"apport.service"
+"snapd.service"
+"snapd.socket"
+"avahi-daemon.service"
+"bluetooth.service"
+"cups.service"
+"cups-browsed.service"
+"ModemManager.service"
+"ssh-askpass.service"
+"e2scrub_reap.timer"
+"cloud-init.service"
+"cloud-init-local.service"
+"cloud-config.service"
+"cloud-final.service"
+"packagekit.service"
+"thermald.service"
+"qemu-guest-agent.service"
+"atop.service"
+"atopacctd.service"
 )
 
-# --- [1. 辅助功能 (日志与检测)] ---
+mkdir -p "$BACKUP_DIR"
+touch "$LOG_FILE"
+touch "$TOUCHED_SERVICES_FILE"
 
 fn_log() {
-    local color_cyan="\033[0;36m"
-    local color_green="\033[0;32m"
-    local color_red="\033[0;31m"
-    local color_yellow="\033[0;33m"
-    local color_reset="\033[0m"
-    local color
-    case "$1" in
-        INFO) color="$color_cyan" ;;
-        SUCCESS) color="$color_green" ;;
-        WARN) color="$color_yellow" ;;
-        ERROR) color="$color_red" ;;
-        *) color="$color_reset" ;;
-    esac
-    [ -n "$BACKUP_DIR" ] && mkdir -p "$BACKUP_DIR"
-    echo -e "[${color}$1${color_reset}] $2" | tee -a "$LOG_FILE"
+local level="$1"; shift
+local msg="$*"
+local ts
+ts=$(date '+%F %T')
+printf '%s [%s] %s\n' "$ts" "$level" "$msg" | tee -a "$LOG_FILE"
 }
 
 fn_check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        fn_log "ERROR" "此脚本必须以 root 权限运行。"
-        exit 1
-    fi
+if [ "$EUID" -ne 0 ]; then
+fn_log "错误" "本脚本必须以 root 权限运行。"
+exit 1
+fi
 }
 
-# 检查 APT 锁
 fn_check_apt_lock() {
-    fn_log "INFO" "[*] 检查 APT 锁..."
-    # 使用 fuser (更标准) 检查锁文件
-    if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; then
-        fn_log "ERROR" "APT 锁被占用。检测到另一个 apt/dpkg 进程正在运行。"
-        fn_log "ERROR" "这通常是 'unattended-upgrades' (自动更新) 导致的。"
-        fn_log "ERROR" "请等待几分钟后重试。"
-        fn_log "ERROR" "如果问题持续存在，请运行 'sudo killall apt apt-get' 和 'sudo dpkg --configure -a'。"
-        fn_log "ERROR" "正在中止优化。"
-        return 1
-    fi
-    fn_log "SUCCESS" "  -> APT 锁检查通过。"
-    return 0
+if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; then
+fn_log "警告" "检测到 APT 锁 (可能已有其他 apt/dpkg 进程在运行)。"
+return 1
+fi
+return 0
 }
 
+fn_wait_for_apt_lock() {
+local max_wait=120
+local count=0
+fn_log "信息" "检查 APT 锁..."
+while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
+if [ "$count" -ge "$max_wait" ]; then
+fn_log "错误" "等待 APT 锁超时 (120 秒)。APT 操作可能失败。"
+return 1
+fi
+fn_log "警告" "检测到 APT 锁，等待 5 秒... ($count/$max_wait)"
+sleep 5
+count=$((count + 5))
+done
+fn_log "信息" "APT 锁已释放。"
+return 0
+}
 
-# OS 检测与支持验证
 fn_detect_os() {
-    mkdir -p "$BACKUP_DIR"
-    
-    if [ -f /etc/os-release ]; then
-        source /etc/os-release
-        OS_ID=$ID
-        OS_VERSION_ID=$VERSION_ID
-        fn_log "INFO" "检测到系统: $PRETTY_NAME"
-    else
-        fn_log "ERROR" "无法检测操作系统: /etc/os-release 不存在。"
-        exit 1
-    fi
-    
-    MEM_MB=$(($(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024))
-    fn_log "INFO" "检测到物理内存: ${MEM_MB}MB"
-
-    case "$OS_ID" in
-        debian)
-            case "$OS_VERSION_ID" in
-                10|11|12) fn_log "SUCCESS" "Debian $OS_VERSION_ID 受支持。" ;;
-                *) fn_log "ERROR" "Debian $OS_VERSION_ID 不受支持。"; exit 1 ;;
-            esac
-            ;;
-        ubuntu)
-            case "$OS_VERSION_ID" in
-                20.04|22.04|24.04) fn_log "SUCCESS" "Ubuntu $OS_VERSION_ID 受支持。" ;;
-                *) fn_log "ERROR" "Ubuntu $OS_VERSION_ID 不受支持。"; exit 1 ;;
-            esac
-            ;;
-        *)
-            fn_log "ERROR" "操作系统 '$OS_ID' 不受支持。"
-            exit 1
-            ;;
-    esac
+if [ -f /etc/os-release ]; then
+source /etc/os-release
+OS_PRETTY="$PRETTY_NAME"
+OS_ID="$ID"
+OS_VER="$VERSION_ID"
+fn_log "信息" "检测到操作系统: $OS_PRETTY"
+else
+fn_log "错误" "无法检测到操作系统 (/etc/os-release 不存在)。"
+exit 1
+fi
+MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}' || echo 0)
+MEM_MB=$(( MEM_KB / 1024 ))
+fn_log "信息" "物理内存: ${MEM_MB} MB"
+if ! command -v systemctl >/dev/null 2>&1; then
+fn_log "错误" "未找到 Systemd。本脚本需要 systemd。"
+exit 1
+fi
 }
-
-# --- [2. 核心功能 (备份, 优化, 恢复)] ---
-
-# 强制 APT 镜像源修复
-fn_fix_apt_sources() {
-    fn_log "INFO" "[*] 正在强制替换为官方 Debian/Ubuntu 镜像源..."
-    
-    # 备份旧源
-    if [ -f /etc/apt/sources.list ]; then
-        cp /etc/apt/sources.list "${BACKUP_DIR}/apt.sources.list.bak"
-    fi
-    # 清理旧的 .d 目录
-    rm -f /etc/apt/sources.list.d/*.list
-
-    if [ "$OS_ID" = "debian" ]; then
-        local codename
-        codename=$(lsb_release -cs)
-        cat > /etc/apt/sources.list <<EOF
-# Configured by VPS Optimizer v$SCRIPT_VERSION
-deb http://deb.debian.org/debian/ $codename main contrib non-free
-deb-src http://deb.debian.org/debian/ $codename main contrib non-free
-
-deb http://deb.debian.org/debian-security/ $codename-security main contrib non-free
-deb-src http://deb.debian.org/debian-security/ $codename-security main contrib non-free
-
-deb http://deb.debian.org/debian/ $codename-updates main contrib non-free
-deb-src http://deb.debian.org/debian/ $codename-updates main contrib non-free
-EOF
-    elif [ "$OS_ID" = "ubuntu" ]; then
-        local codename
-        codename=$(lsb_release -cs)
-        cat > /etc/apt/sources.list <<EOF
-# Configured by VPS Optimizer v$SCRIPT_VERSION
-deb http://archive.ubuntu.com/ubuntu/ $codename main restricted universe multiverse
-deb-src http://archive.ubuntu.com/ubuntu/ $codename main restricted universe multiverse
-
-deb http://archive.ubuntu.com/ubuntu/ $codename-updates main restricted universe multiverse
-deb-src http://archive.ubuntu.com/ubuntu/ $codename-updates main restricted universe multiverse
-
-deb http://archive.ubuntu.com/ubuntu/ $codename-security main restricted universe multiverse
-deb-src http://archive.ubuntu.com/ubuntu/ $codename-security main restricted universe multiverse
-EOF
-    fi
-
-    # (验证 - 保留输出用于调试)
-    fn_log "INFO" "  -> 正在刷新新的 APT 缓存..."
-    if apt-get update; then
-        fn_log "SUCCESS" "  -> APT 软件源已修复。"
-        return 0
-    else
-        fn_log "ERROR" "  -> APT 软件源修复后 'apt-get update' 失败。"
-        return 1
-    fi
-}
-
 
 fn_backup_state() {
-    fn_log "INFO" "创建原始状态备份: $BACKUP_DIR"
-    cp /etc/fstab "${BACKUP_DIR}/fstab.bak"
-    cp -r /etc/sysctl.d/ "${BACKUP_DIR}/sysctl.d.bak" 2>/dev/null || true
-    cp /etc/sysctl.conf "${BACKUP_DIR}/sysctl.conf.bak" 2>/dev/null || true
-    cp -r /etc/systemd/journald.conf.d/ "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/null || true
-    [ -f /etc/selinux/config ] && cp /etc/selinux/config "${BACKUP_DIR}/selinux.config.bak"
-    [ -f /etc/systemd/resolved.conf ] && cp /etc/systemd/resolved.conf "${BACKUP_DIR}/resolved.conf.bak"
-    
-    fn_log "INFO" "备份当前 sysctl 算法..."
-    sysctl -n net.ipv4.tcp_congestion_control > "${BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null
-    sysctl -n net.core.default_qdisc > "${BACKUP_DIR}/sysctl_q_algo.bak" 2>/dev/null
-
-    systemctl list-unit-files --type=service --state=enabled > "${BACKUP_DIR}/enabled_services.before.txt"
-    echo "# Services touched by optimizer" > "$TOUCHED_SERVICES_FILE"
+fn_log "信息" "正在创建备份于 $BACKUP_DIR ..."
+mkdir -p "$BACKUP_DIR"
+cp -an /etc/fstab "${BACKUP_DIR}/fstab.bak" 2>/dev/null || true
+cp -an /etc/systemd/resolved.conf "${BACKUP_DIR}/resolved.conf.bak" 2>/dev/null || true
+cp -an /etc/sysctl.conf "${BACKUP_DIR}/sysctl.conf.bak" 2>/dev/null || true
+cp -ran /etc/sysctl.d "${BACKUP_DIR}/sysctl.d.bak" 2>/dev/null || true
+cp -ran /etc/systemd/journald.conf.d "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/null || true
+[ -f /etc/selinux/config ] && cp -an /etc/selinux/config "${BACKUP_DIR}/selinux.config.bak" 2>/dev/null || true
+sysctl -n net.ipv4.tcp_congestion_control > "${BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || true
+sysctl -n net.core.default_qdisc > "${BACKUP_DIR}/sysctl_q_algo.bak" 2>/dev/null || true
+systemctl list-unit-files --type=service --state=enabled > "${BACKUP_DIR}/enabled_services.before.txt" 2>/dev/null || true
+echo "# 由 sysOpt 脚本接触过的服务" > "$TOUCHED_SERVICES_FILE"
+fn_log "信息" "备份完成。"
 }
 
-# 动态服务裁剪
-fn_trim_services() {
-    fn_log "INFO" "[6/10] 裁剪非必要服务 (动态检测)..."
-    for service in "${FN_TRIM_SERVICES_LIST[@]}"; do
-        if systemctl is-enabled "$service" >/dev/null 2>&1; then
-            fn_log "INFO" "  -> 检测到: $service (已启用). 正在禁用..."
-            systemctl disable --now "$service" >/dev/null 2>&1
-            echo "$service" >> "$TOUCHED_SERVICES_FILE"
-        elif systemctl is-active "$service" >/dev/null 2>&1; then
-            fn_log "INFO" "  -> 检测到: $service (正在运行但未启用). 仅停止..."
-            systemctl stop "$service" >/dev/null 2>&1
-        fi
-    done
-    fn_log "SUCCESS" "服务裁剪完成。"
-}
-
-# 智能 ZRAM 安装 (自定义 systemd 服务)
-fn_setup_zram() {
-    local ZRAM_SIZE_MB=$MEM_MB
-    fn_log "INFO" "  -> 物理内存: ${MEM_MB}MB, ZRAM 将设置为: ${ZRAM_SIZE_MB}MB"
-    
-    # 策略: zram-tools 的 zramswap.service 在 Debian 11 上不可靠, 启动时会忽略配置。
-    # 1. 我们安装 zram-tools 只是为了 'zramctl' 依赖 (util-linux)。
-    # 2. 我们永久禁用有 bug 的 'zramswap.service'。
-    # 3. 我们创建自己的 'vps-optimizer-zram.service' 来直接运行 'zramctl'。
-
-    fn_log "INFO" "  -> 正在彻底清除旧的 ZRAM 服务 (以防万一)..."
-    systemctl disable --now zramswap.service >/dev/null 2>&1
-    apt purge -y zram-tools >/dev/null 2>&1
-    
-    # 清理编译版的残留 (以防万一)
-    systemctl disable --now systemd-zram-setup@zram0.service >/dev/null 2>&1
-    rm -f /etc/systemd/zram-generator.conf
-    rm -f /usr/local/lib/systemd/system-generators/zram-generator
-    
-    # 备份并移除旧配置
-    [ -f /etc/default/zramswap ] && cp /etc/default/zramswap "${BACKUP_DIR}/zramswap.bak"
-    rm -f /etc/default/zramswap
-
-    fn_log "INFO" "  -> 正在安装 zram-tools (仅为 'zramctl' 依赖)..."
-    if ! apt install -y zram-tools; then 
-        fn_log "ERROR" "ZRAM 软件包 'zram-tools' 安装失败。"; 
-        return 1; 
-    fi
-    
-    fn_log "INFO" "  -> 禁用 zram-tools 自带服务 (zramswap.service)..."
-    systemctl disable --now zramswap.service >/dev/null 2>&1
-    
-    # 创建我们自己的 systemd 服务
-    fn_log "INFO" "  -> 正在创建自定义 ZRAM systemd 服务 (vps-optimizer-zram.service)..."
-    cat > /etc/systemd/system/vps-optimizer-zram.service <<EOF
-# Configured by VPS Optimizer v$SCRIPT_VERSION
-# This service manually configures ZRAM, bypassing the faulty zram-tools scripts.
-[Unit]
-Description=VPS Optimizer Custom ZRAM Setup
-After=multi-user.target
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStartPre=/sbin/modprobe zram
-# 显式重置并创建 /dev/zram0
-ExecStart=/bin/sh -c "zramctl --reset /dev/zram0 2>/dev/null || true; zramctl /dev/zram0 --size ${ZRAM_SIZE_MB}M --algorithm zstd; mkswap /dev/zram0; swapon /dev/zram0"
-ExecStop=/bin/sh -c "swapoff /dev/zram0 2>/dev/null || true; zramctl --reset /dev/zram0 2>/dev/null || true"
-[Install]
-WantedBy=multi-user.target
+fn_fix_apt_sources_if_needed() {
+fn_log "信息" "检查 APT 源健康状况..."
+if fn_check_apt_lock; then
+if apt-get update -qq >/dev/null 2>&1; then
+fn_log "成功" "APT 源正常。"
+return 0
+else
+fn_log "警告" "apt-get update 失败。将尝试保守替换 /etc/apt/sources.list"
+if command -v lsb_release >/dev/null 2>&1; then
+codename=$(lsb_release -cs)
+else
+codename=$(grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2 || true)
+fi
+if [ -z "${codename:-}" ]; then
+fn_log "错误" "无法确定发行版代号，跳过自动替换源。"
+return 1
+fi
+cp -an /etc/apt/sources.list "${BACKUP_DIR}/apt.sources.list.bak" 2>/dev/null || true
+if [ "$OS_ID" = "debian" ]; then
+cat > /etc/apt/sources.list <<EOF
+deb http://deb.debian.org/debian/ $codename main contrib non-free
+deb http://deb.debian.org/debian/ $codename-updates main contrib non-free
+deb http://deb.debian.org/debian/ $codename-security main contrib non-free
 EOF
-
-    fn_log "INFO" "  -> 正在重载并启动 vps-optimizer-zram.service..."
-    systemctl daemon-reload
-    systemctl enable --now vps-optimizer-zram.service >/dev/null 2>&1
-    
-    # 验证
-    sleep 1
-    if swapon -s | grep -q 'zram0'; then
-        fn_log "SUCCESS" "  -> ZRAM 已通过自定义服务启动并配置。"
-    else
-        fn_log "ERROR" "  -> ZRAM 自定义服务启动失败。请检查 'systemctl status vps-optimizer-zram.service'。"
-        return 1
-    fi
-    
-    return 0
+elif [ "$OS_ID" = "ubuntu" ]; then
+cat > /etc/apt/sources.list <<EOF
+deb http://archive.ubuntu.com/ubuntu/ $codename main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu/ $codename-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu/ $codename-security main restricted universe multiverse
+EOF
+else
+fn_log "错误" "此操作系统不支持自动替换源。"
+return 1
+fi
+if apt-get update -qq >/dev/null 2>&1; then
+fn_log "成功" "APT 源替换并刷新成功。"
+return 0
+else
+fn_log "错误" "替换源后 APT update 仍然失败。"
+return 1
+fi
+fi
+else
+fn_log "警告" "APT 似乎已锁定，跳过源健康检查。"
+return 1
+fi
 }
 
-# ZRAM 恢复 (卸载)
-fn_restore_zram() {
-    fn_log "INFO" "  -> 正在卸载自定义 'vps-optimizer-zram.service'..."
-    systemctl disable --now vps-optimizer-zram.service > /dev/null 2>&1
-    rm -f /etc/systemd/system/vps-optimizer-zram.service
-    
-    fn_log "INFO" "  -> 正在卸载 'zram-tools'..."
-    apt purge -y zram-tools >/dev/null 2>&1
-    
-    # 卸载编译版的残留 (以防万一)
-    fn_log "INFO" "  -> 正在清理编译版 (zram-generator) 的残留..."
-    systemctl disable --now systemd-zram-setup@zram0.service > /dev/null 2>&1
-    rm -f /etc/systemd/zram-generator.conf
-    rm -f /usr/local/lib/systemd/system-generators/zram-generator
-    rm -f /usr/local/lib/systemd/system/systemd-zram-setup@.service
-    rm -f /usr/local/share/man/man8/zram-generator.8.gz
-    rm -f /usr/local/share/man/man5/zram-generator.conf.5.gz
-    
-    systemctl daemon-reload
-    
-    # 恢复旧的 zram-tools 配置 (如果存在)
-    if [ -f "${BACKUP_DIR}/zramswap.bak" ]; then
-        cp "${BACKUP_DIR}/zramswap.bak" /etc/default/zramswap
-    fi
-}
-
-# 动态检测 SELinux
-fn_detect_selinux() {
-    if command -v getenforce >/dev/null 2>&1; then
-        local selinux_status
-        selinux_status=$(getenforce)
-
-        if [ "$selinux_status" != "Disabled" ]; then
-            fn_log "WARN" "检测到 SELinux 状态为: $selinux_status"
-            fn_log "WARN" "SELinux 会导致性能问题并可能与优化冲突。"
-            echo "-----------------------------------------------------"
-            echo "是否要将其永久禁用 (推荐)? (y/n)"
-            read -r selinux_choice
-            
-            if [ "$selinux_choice" = "y" ] || [ "$selinux_choice" = "Y" ]; then
-                fn_log "INFO" "正在禁用 SELinux..."
-                setenforce 0 2>/dev/null
-                if [ -f /etc/selinux/config ]; then
-                    sed -i.bak 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
-                    fn_log "SUCCESS" "SELinux 已永久禁用。需要重启生效。"
-                else
-                    fn_log "ERROR" "未找到 /etc/selinux/config，无法永久禁用。"
-                fi
-                echo "selinux" >> "$TOUCHED_SERVICES_FILE"
-            else
-                fn_log "WARN" "跳过禁用 SELinux。这可能导致后续步骤失败。"
-            fi
-        else
-             fn_log "INFO" "SELinux 状态: Disabled (良好)。"
-        fi
-    else
-        fn_log "INFO" "未检测到 SELinux (正常)。"
-    fi
-}
-
-# 状态报告
-fn_show_status_report() {
-    echo "--- [系统状态] ---"
-    
-    # --- System ---
-    if [ -z "$PRETTY_NAME" ] && [ -f /etc/os-release ]; then
-        # 重新 source 以防万一 (尽管 fn_detect_os 已经做了)
-        source /etc/os-release
-    fi
-    
-    local os_info="$PRETTY_NAME"
-    local virt_info=$(systemd-detect-virt 2>/dev/null || echo "KVM")
-    local arch_info=$(uname -m)
-    local kernel_info=$(uname -r)
-    local uptime_info=$(uptime -p | sed 's/up //')
-    local load_info=$(uptime | awk -F'load average: ' '{print $2}')
-    
-    echo "  系统: $os_info $virt_info $arch_info $kernel_info"
-    echo "  负载: $load_info | 运行时间: $uptime_info"
-    echo ""
-
-    # --- Resources ---
-    echo "[ 资源 ]"
-    
-    # RAM
-    local mem_total=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-    local mem_avail=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
-    local mem_used=$(( (mem_total - mem_avail) / 1024 ))
-    local mem_total_mb=$(( mem_total / 1024 ))
-    local mem_percent=$(( mem_used * 100 / mem_total_mb ))
-    echo "  内存 (RAM): ${mem_used}M / ${mem_total_mb}M (已用 ${mem_percent}%)"
-
-    # Disk
-    local disk_info=$(df -h /)
-    local disk_used=$(echo "$disk_info" | awk 'NR==2 {print $3}')
-    local disk_total=$(echo "$disk_info" | awk 'NR==2 {print $2}')
-    local disk_percent=$(echo "$disk_info" | awk 'NR==2 {print $5}')
-    echo "  磁盘 (/) : ${disk_used} / ${disk_total} (已用 ${disk_percent})"
-
-    # Swap
-    local swap_info=$(swapon -s)
-    if [ -z "$swap_info" ]; then
-        echo "  Swap 状态: 已禁用 (无 Swap)"
-    elif echo "$swap_info" | grep -q "zram"; then
-        local zram_size=$(free -m | grep Swap | awk '{print $2}')
-        echo "  Swap 状态: 已启用ZRAM (${zram_size}M)"
-    else
-        local swap_size=$(free -m | grep Swap | awk '{print $2}')
-        echo "  Swap 状态: 已启用文件Swap (${swap_size}M)"
-    fi
-
-    # CPU Gov
-    local cpu_gov
-    if [ -f "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor" ]; then
-        cpu_gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)
-        if [ -f "/etc/systemd/system/cpugov-performance.service" ]; then
-             echo "  CPU 调速器: $cpu_gov (已应用)"
-        else
-             echo "  CPU 调速器: $cpu_gov"
-        fi
-    else
-        echo "  CPU 调速器: (宿主机管理)"
-    fi
-    echo ""
-
-    # --- Network & Security ---
-    echo "[ 网络与安全 ]"
-    
-    # BBR
-    local con_algo=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    if [[ "$con_algo" == "bbr" ]]; then
-        echo "  BBR 状态: 已启用 BBR 加速 (BBR + FQ)"
-    else
-        if grep -q "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
-            echo "  BBR 状态: BBR 可用, 但未启用"
-        else
-            echo "  BBR 状态: 内核不支持 BBR"
-        fi
-    fi
-
-    # IPv6
-    local ipv6_status=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)
-    if [ "$ipv6_status" = "1" ]; then
-        echo "  IPv6 状态: 已禁用"
-    else
-        echo "  IPv6 状态: 已启用"
-    fi
-
-    # DNS
-    local dns_info
-    if systemctl is-active --quiet systemd-resolved; then
-        dns_info=$(grep -E "^DNS=" /etc/systemd/resolved.conf | sed 's/DNS=//' | awk '{print $1, $2}')
-        if [[ "$dns_info" == "8.8.8.8 1.1.1.1" ]]; then
-            echo "  DNS 状态: 8.8.8.8, 1.1.1.1 (已应用, systemd-resolved)"
-        else
-            dns_info=$(systemd-resolve --status | grep "Current DNS Server:" | awk '{print $4}' | head -n 1)
-            [ -z "$dns_info" ] && dns_info=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n 1)
-            echo "  DNS 状态: $dns_info (系统默认)"
-        fi
-    else
-        # 优化非 resolved 系统的 DNS 状态检测
-        dns_info=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n 1)
-        if [[ "$dns_info" == "8.8.8.8" ]] || [[ "$dns_info" == "1.1.1.1" ]]; then
-             echo "  DNS 状态: $dns_info (已应用, /etc/resolv.conf)"
-        else
-             echo "  DNS 状态: $dns_info (系统默认)"
-        fi
-    fi
-
-    # Fail2ban
-    if systemctl is-active --quiet fail2ban.service; then
-        echo "  Fail2ban: 已启用 (active)"
-    elif [ -f "/usr/bin/fail2ban-client" ]; then
-         echo "  Fail2ban: 未运行 (inactive)"
-    else
-        echo "  Fail2ban: 未运行 (未安装)"
-    fi
-    echo ""
-
-    # --- Optimization ---
-    echo "[ 优化 ]"
-    
-    # 检查状态文件是否存在
-    if [ -f "$TOUCHED_SERVICES_FILE" ]; then
-        echo "  服务状态: 已优化"
-    else
-        local optimizable_count=0
-        for service in "${FN_TRIM_SERVICES_LIST[@]}"; do
-            if systemctl is-enabled "$service" >/dev/null 2>&1; then
-                optimizable_count=$((optimizable_count + 1))
-            fi
-        done
-        if [ "$optimizable_count" -gt 0 ]; then
-            echo "  服务状态: 检测到 ${optimizable_count}+ 个可优化服务"
-        else
-            echo "  服务状态: (无需优化)"
-        fi
-    fi
-    echo "-----------------------------------------------------"
-}
-
-
-# 菜单 1: 自动优化
-fn_optimize_auto() {
-    mkdir -p "$BACKUP_DIR"
-    
-    fn_log "INFO" "将使用固定备份目录: $BACKUP_DIR"
-    
-    if ! fn_check_apt_lock; then
-        return 1
-    fi
-    
-    # 检查是否已优化, 保护原始备份
-    if [ -f "${BACKUP_DIR}/touched_services.txt" ] || [ -f "${BACKUP_DIR}/fstab.bak" ]; then
-        fn_log "ERROR" "检测到系统已经优化过 (备份目录 $BACKUP_DIR 已存在)。"
-        fn_log "ERROR" "请先运行 '2) 撤销优化' 来恢复原始状态。"
-        fn_log "ERROR" "正在中止优化。"
-        return 1
-    fi
-
-    fn_log "SUCCESS" "开始自动优化... 日志将保存到: $LOG_FILE"
-    
-    # 步骤 0: 备份 (仅在未优化时执行)
-    fn_backup_state
-
-    # 步骤 1: 修复 APT
-    fn_log "INFO" "[1/10] 检查并修复 APT 软件源..."
-    if ! fn_fix_apt_sources; then
-        fn_log "ERROR" "APT 修复失败。正在中止优化。"
-        return 1
-    fi
-
-    # 步骤 2: SELinux
-    fn_log "INFO" "[2/10] 动态检测 SELinux..."
-    fn_detect_selinux
-
-    # 步骤 3: 禁用 Swap
-    fn_log "INFO" "[3/10] 禁用现有文件 Swap..."
-    if swapon -s | grep -q 'partition\|file'; then
-        fn_log "INFO" "  -> 检测到活动 Swap... 正在禁用。"
-        swapoff -a > /dev/null 2>&1
-    else
-        fn_log "INFO" "  -> 未检测到活动 Swap。跳过 swapoff。"
-    fi
-    sed -i.bak '/swap/s/^/#/' /etc/fstab
-
-    # 步骤 4: ZRAM
-    fn_log "INFO" "[4/10] 安装与配置 ZRAM (自定义服务)..."
-    if ! fn_setup_zram; then
-        fn_log "ERROR" "ZRAM 安装失败。正在中止优化。"
-        return 1
-    fi
-
-    # 步骤 5: Fail2ban
-    fn_log "INFO" "[5/10] 安装并启用 Fail2ban..."
-    if ! apt install -y fail2ban; then 
-        fn_log "ERROR" "Fail2ban 安装失败。请检查 apt。"
-        return 1
-    fi
-    systemctl enable --now fail2ban.service > /dev/null 2>&1
-    echo "fail2ban.service" >> "$TOUCHED_SERVICES_FILE"
-    fn_log "SUCCESS" "  -> Fail2ban 已安装并启动。"
-
-    # 步骤 6: 裁剪服务
-    fn_trim_services
-
-    # 步骤 7: Journald
-    fn_log "INFO" "[7/10] 配置 journald (动态 RAM 限制)..."
-    local journald_ram_limit="32M" # 默认 (RAM < 1.5G)
-    if [ "$MEM_MB" -gt 4096 ]; then
-        journald_ram_limit="128M"
-    elif [ "$MEM_MB" -gt 1536 ]; then
-        journald_ram_limit="64M"
-    fi
-    fn_log "INFO" "  -> RAM: ${MEM_MB}MB, Journald 限制: $journald_ram_limit"
-    
-    mkdir -p /etc/systemd/journald.conf.d/
-    cat <<EOF > /etc/systemd/journald.conf.d/10-ram-only.conf
+fn_setup_journald_volatile() {
+fn_log "信息" "配置 journald 为 volatile (内存) 模式 (RuntimeMaxUse=16M)..."
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/10-volatile.conf <<'EOF'
 [Journal]
 Storage=volatile
-RuntimeMaxUse=$journald_ram_limit
+RuntimeMaxUse=16M
+MaxRetentionSec=1month
 EOF
-    systemctl restart systemd-journald > /dev/null 2>&1
+systemctl restart systemd-journald >/dev/null 2>&1 || true
+fn_log "成功" "journald 已配置为 volatile 模式。"
+}
 
-    # 步骤 8: CPU
-    fn_log "INFO" "[8/10] CPU 调速器持久化 (动态检测)..."
-    
-    local gov_file="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
-    
-    if [ -f "$gov_file" ] && [ -w "$gov_file" ]; then
-        fn_log "INFO" "  -> CPU governor 写入权限已确认。"
-        echo performance > "$gov_file" 2>/dev/null
-        
-        cat > /etc/systemd/system/cpugov-performance.service <<'EOF'
-[Unit]
-Description=Set CPU governor to performance
-After=network.target
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c "for CPU in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > $CPU 2>/dev/null; done"
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload > /dev/null 2>&1
-        systemctl enable --now cpugov-performance.service > /dev/null 2>&1
-        fn_log "SUCCESS" "  -> CPU Performance 模式已持久化。"
-    else
-        fn_log "WARN" "  -> 无法写入 CPU governor (文件不存在或 KVM/LXC 限制)。"
-        fn_log "WARN" "  -> 跳过 CPU Performance 服务创建。这是正常现象。"
-        echo "#skipped-cpugov" >> "$TOUCHED_SERVICES_FILE"
-    fi
-
-    # 步骤 9: Sysctl
-    fn_log "INFO" "[9/10] 融合 Sysctl (TCP/UDP/Mem/IPv6/BBR)..."
-    cat > /etc/sysctl.d/99-prime-fused.conf <<EOF
-# === VPS Optimizer v$SCRIPT_VERSION Fused Tuning ===
-
-# 1. Disable IPv6
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-
-# 2. Enable BBR + FQ
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-
-# 3. Memory & ZRAM
-vm.vfs_cache_pressure = 50
+fn_setup_sysctl_lowmem() {
+fn_log "信息" "应用 sysctl 低内存网络调优 (包含 BBR+FQ)..."
+cat > /etc/sysctl.d/99-vps-lowmem.conf <<'EOF'
 vm.swappiness = 10
-
-# 4. TCP/UDP Tuning
-net.core.rmem_max = 26214400
-net.core.wmem_max = 26214400
-net.core.netdev_max_backlog = 4096
-net.core.somaxconn = 32768
+vm.vfs_cache_pressure = 100
+net.core.rmem_max = 4194304
+net.core.wmem_max = 4194304
+net.core.netdev_max_backlog = 2500
+net.core.somaxconn = 1024
 net.ipv4.tcp_rmem = 4096 87380 16777216
 net.ipv4.tcp_wmem = 4096 65536 16777216
-net.ipv4.tcp_max_syn_backlog = 8192
-net.ipv4.tcp_max_tw_buckets = 10000
-net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_max_syn_backlog = 1024
 net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_fastopen = 3
-net.ipv4.udp_mem = 65536 131072 262144
-net.ipv4.udp_rmem_min = 16384
-net.ipv4.udp_wmem_min = 16384
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
 EOF
-    sysctl -p /etc/sysctl.d/99-prime-fused.conf > /dev/null 2>&1
-
-    # 步骤 10: DNS
-    fn_log "INFO" "[10/10] 配置 DNS (systemd-resolved 动态检测)..."
-    if systemctl is-active --quiet systemd-resolved.service && [ -f /etc/systemd/resolved.conf ]; then
-        fn_log "INFO" "  -> 检测到 systemd-resolved。正在配置 8.8.8.8 & 1.1.1.1..."
-        # 备份已在 fn_backup_state 中完成
-        sed -i 's/#DNS=.*/DNS=8.8.8.8 1.1.1.1/g' /etc/systemd/resolved.conf
-        sed -i 's/#FallbackDNS=.*/FallbackDNS=/g' /etc/systemd/resolved.conf
-        
-        if ! grep -q "^DNS=" /etc/systemd/resolved.conf; then
-            sed -i '/\[Resolve\]/a DNS=8.8.8.8 1.1.1.1' /etc/systemd/resolved.conf
-        fi
-        
-        systemctl restart systemd-resolved.service > /dev/null 2>&1
-        fn_log "SUCCESS" "  -> systemd-resolved DNS 已更新。"
-    else
-        fn_log "WARN" "  -> 未检测到 systemd-resolved.service 或 resolved.conf。"
-        fn_log "WARN" "  -> 跳过 DNS 自动配置以确保稳定。"
-    fi
-
-    fn_log "SUCCESS" "自动优化完成！"
-    fn_log "IMPORTANT" "备份数据保存在: $BACKUP_DIR"
-    fn_log "IMPORTANT" "建议立即重启 (reboot) 以应用所有更改。"
-    
-    echo ""
-    fn_show_status_report
+sysctl --system >/dev/null 2>&1 || fn_log "警告" "sysctl 应用时出现警告。"
+fn_log "成功" "sysctl 自适应调优 (含 BBR) 已应用。"
 }
 
-# 菜单 2: 撤销优化
-fn_restore_state() {
-    fn_log "WARN" "开始撤销优化..."
-    
-    local USER_BACKUP_DIR="$BACKUP_DIR"
-
-    if [ ! -d "$USER_BACKUP_DIR" ] || [ ! -f "${USER_BACKUP_DIR}/fstab.bak" ]; then
-        fn_log "ERROR" "未找到备份目录: $USER_BACKUP_DIR"
-        fn_log "ERROR" "无法撤销。请先运行 [1] 自动优化。"
-        return 1
-    fi
-        
-    fn_log "INFO" "检测到唯一的备份: $USER_BACKUP_DIR"
-    echo "-----------------------------------------------------"
-    echo "是否确认使用此备份进行恢复? (y/n)"
-    read -r confirm
-    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-        fn_log "INFO" "操作已取消。"
-        return 0
-    fi
-
-    # --- 开始恢复流程 ---
-    
-    LOG_FILE="${USER_BACKUP_DIR}/restore.log"
-    fn_log "INFO" "正在从 $USER_BACKUP_DIR 恢复... 日志: $LOG_FILE"
-
-    if ! fn_check_apt_lock; then
-        return 1
-    fi
-
-    # 步骤 1: 恢复 APT 源 (必须在卸载前)
-    fn_log "INFO" "[1/11] 恢复 APT 软件源..."
-    if [ -f "${USER_BACKUP_DIR}/apt.sources.list.bak" ]; then
-        cp "${USER_BACKUP_DIR}/apt.sources.list.bak" /etc/apt/sources.list
-    fi
-
-    # 步骤 2: 卸载 ZRAM
-    fn_log "INFO" "[2/11] 卸载 ZRAM..."
-    fn_restore_zram
-
-    # 步骤 3: 恢复 fstab
-    fn_log "INFO" "[3/11] 恢复 /etc/fstab..."
-    cp "${USER_BACKUP_DIR}/fstab.bak" /etc/fstab
-    fn_log "INFO" "尝试重新激活旧的 Swap..."
-    swapon -a > /dev/null 2>&1
-
-    # 步骤 4: 恢复 journald
-    fn_log "INFO" "[4/11] 恢复 journald 配置..."
-    rm -rf /etc/systemd/journald.conf.d/
-    [ -d "${USER_BACKUP_DIR}/journald.conf.d.bak" ] && cp -r "${USER_BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/
-    systemctl restart systemd-journald > /dev/null 2>&1
-
-    # 步骤 5: BBR 恢复提示
-    fn_log "INFO" "[5/11] 恢复 Sysctl 配置 (含IPv6/BBR)..."
-    local algo_bak=$(cat "${USER_BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || echo "cubic")
-    local algo_now=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local restore_sysctl=true
-
-    if [ "$algo_now" = "bbr" ] && [ "$algo_bak" != "bbr" ]; then
-        fn_log "WARN" "检测到 BBR 已启用 (原始算法: $algo_bak)。"
-        echo "-----------------------------------------------------"
-        echo "是否要禁用 BBR 并恢复为 $algo_bak? (y/n)"
-        read -r restore_choice
-        if [ "$restore_choice" != "y" ] && [ "$restore_choice" != "Y" ]; then
-            restore_sysctl=false
-            fn_log "INFO" "跳过 Sysctl 恢复，BBR 将保持启用。"
-        fi
-    fi
-
-    if [ "$restore_sysctl" = true ]; then
-        fn_log "INFO" "  -> 正在恢复原始 Sysctl (BBR 将被禁用)..."
-        rm /etc/sysctl.d/99-prime-fused.conf 2>/dev/null
-        rm -rf /etc/sysctl.d/
-        [ -d "${USER_BACKUP_DIR}/sysctl.d.bak" ] && cp -r "${USER_BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/
-        [ -f "${USER_BACKUP_DIR}/sysctl.conf.bak" ] && cp "${USER_BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf
-        sysctl --system > /dev/null 2>&1
-    fi
-
-    # 步骤 6: 恢复 DNS
-    fn_log "INFO" "[6/11] 恢复 DNS (systemd-resolved)..."
-    if [ -f "${USER_BACKUP_DIR}/resolved.conf.bak" ]; then
-        fn_log "INFO" "  -> 正在恢复 systemd-resolved 原始配置..."
-        cp "${USER_BACKUP_DIR}/resolved.conf.bak" /etc/systemd/resolved.conf
-        systemctl restart systemd-resolved.service > /dev/null 2>&1
-    else
-        # 即使备份丢失也尝试恢复
-        fn_log "WARN" "  -> 未找到 'resolved.conf.bak'。尝试强制恢复默认值..."
-        if [ -f /etc/systemd/resolved.conf ]; then
-            sed -i 's/^DNS=8.8.8.8 1.1.1.1/#DNS=/g' /etc/systemd/resolved.conf
-            systemctl restart systemd-resolved.service > /dev/null 2>&1
-        fi
-    fi
-
-    # 步骤 7: 恢复 CPU
-    fn_log "INFO" "[7/11] 恢复 CPU 默认模式..."
-    systemctl disable --now cpugov-performance.service > /dev/null 2>&1
-    rm /etc/systemd/system/cpugov-performance.service 2>/dev/null
-    fn_log "INFO" "  -> CPU governor 将在重启后恢复为系统默认值。"
-    
-    # 步骤 8: 恢复 SELinux
-    fn_log "INFO" "[8/11] 恢复 SELinux..."
-    if [ -f "${USER_BACKUP_DIR}/selinux.config.bak" ]; then
-        fn_log "INFO" "  -> 正在恢复 SELinux 原始配置..."
-        cp "${USER_BACKUP_DIR}/selinux.config.bak" /etc/selinux/config
-    fi
-
-    # 步骤 9: 卸载 Fail2ban
-    fn_log "INFO" "[9/11] 卸载 Fail2ban..."
-    apt purge -y fail2ban
-    fn_log "INFO" "  -> Fail2ban 已卸载 (purged)。"
-
-    # 步骤 10: 恢复服务
-    fn_log "INFO" "[10/11] 恢复被禁用的服务 (根据备份日志)..."
-    local touched_services_file="${USER_BACKUP_DIR}/touched_services.txt"
-    
-    if [ -f "$touched_services_file" ]; then
-        grep -vE '^(#|$|selinux|skipped-cpugov|fail2ban.service)' "$touched_services_file" | while read -r service; do
-            if [ -n "$service" ]; then
-                fn_log "INFO" "  -> 正在重新启用: $service"
-                systemctl enable "$service" >/dev/null 2>&1
-            fi
-        done
-    else
-        fn_log "WARN" "未找到 'touched_services.txt'. 跳过服务恢复。"
-    fi
-    
-    systemctl daemon-reload > /dev/null 2>&1
-    
-    # 步骤 11: 刷新 APT
-    fn_log "INFO" "[11/11] 刷新 APT 软件源..."
-    apt update -y
-
-    # 移除状态文件以在报告中反映“未优化”
-    rm -f "$TOUCHED_SERVICES_FILE"
-
-    fn_log "SUCCESS" "撤销优化完成！"
-    fn_log "IMPORTANT" "建议立即重启 (reboot) 以使所有原始服务生效。"
+fn_trim_services_auto() {
+fn_log "信息" "服务精简: 自动屏蔽 (mask) 非必要服务。"
+for svc in "${FN_TRIM_SERVICES_LIST[@]}"; do
+if systemctl list-unit-files --quiet "$svc"; then
+fn_log "信息" "正在屏蔽 (mask) $svc"
+systemctl mask --now "$svc" | tee -a "$LOG_FILE" || true
+echo "$svc" >> "$TOUCHED_SERVICES_FILE"
+else
+fn_log "信息" "服务 $svc 不存在，跳过。"
+fi
+done
+if systemctl list-unit-files --quiet "rsyslog.service"; then
+fn_log "信息" "正在屏蔽 (mask) rsyslog.service (日志将由 journald 处理)"
+systemctl mask --now rsyslog.service | tee -a "$LOG_FILE" || true
+echo "rsyslog.service" >> "$TOUCHED_SERVICES_FILE"
+else
+fn_log "信息" "rsyslog.service 未安装，跳过。"
+fi
 }
 
-# --- [3. 主菜单] ---
-
-fn_show_menu() {
-    clear
-    mkdir -p "$BACKUP_DIR"
-    
-    echo "============================================================"
-    echo " VPS Optimizer v$SCRIPT_VERSION"
-    echo "============================================================"
-    echo "  1) 自动优化"
-    echo "  2) 撤销优化"
-    echo "  0) 退出"
-    echo "============================================================"
-    
-    echo ""
-    fn_show_status_report
-    echo ""
-    
-    echo "请选择:"
-    read -r choice
-
-    case $choice in
-        1)
-            fn_optimize_auto
-            ;;
-        2)
-            fn_restore_state
-            ;;
-        [0])
-            fn_log "INFO" "退出。"
-            exit 0
-            ;;
-        *)
-            fn_log "ERROR" "无效选择，请重试。"
-            sleep 2
-            fn_show_menu
-            ;;
-    esac
+fn_setup_zram_simple() {
+MEM_MB=$(awk "/MemTotal/ {print int(\$2/1024)}" /proc/meminfo)
+mem_mb="$MEM_MB"
+[ -z "${mem_mb:-}" ] && mem_mb=512
+zram_mb=$((mem_mb))
+[ "$zram_mb" -lt 512 ] && zram_mb=512
+[ "$zram_mb" -gt "$mem_mb" ] && zram_mb="$mem_mb"
+fn_log "信息" "物理内存: ${MEM_MB} MB"
+fn_log "信息" "设置 ZRAM 大小: ${zram_mb} MB"
+swapoff -a || true
+[ -e /sys/block/zram0 ] && echo 1 > /sys/block/zram0/reset
+modprobe zram
+echo $((zram_mb*1024*1024)) > /sys/block/zram0/disksize
+mkswap /dev/zram0
+swapon /dev/zram0 -p 100
+swapon -s | tee -a "$LOG_FILE"
+lsblk | grep zram | tee -a "$LOG_FILE"
 }
 
-# --- 脚本入口 ---
+fn_prioritize_network_services_auto() {
+fn_log "信息" "为网络核心服务设置持久化高优先级。"
+local changes_made=0
+for svc in xray hysteria2 hysteria udp2raw kcptun; do
+if systemctl list-unit-files --quiet "${svc}.service"; then
+fn_log "信息" "为 $svc 设置 Nice=-5, CPUQuota=70%。"
+local svc_conf_dir="/etc/systemd/system/${svc}.service.d"
+mkdir -p "$svc_conf_dir"
+cat > "${svc_conf_dir}/90-sysopt-lowmem.conf" <<EOF
+[Service]
+Nice=-5
+CPUQuota=70%
+EOF
+echo "${svc}.service" >> "$TOUCHED_SERVICES_FILE"
+changes_made=1
+fi
+done
+[ "$changes_made" -eq 1 ] && systemctl daemon-reload
+}
+
+fn_restore_all() {
+fn_log "警告" "开始执行撤销优化... 将从 $BACKUP_DIR 恢复备份。"
+rm -f /etc/sysctl.d/99-vps-lowmem.conf
+[ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
+[ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
+cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+sysctl --system >/dev/null 2>&1 || true
+[ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
+systemctl restart systemd-journald >/dev/null 2>&1 || true
+[ -f "${BACKUP_DIR}/apt.sources.list.bak" ] && cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt/sources.list 2>/dev/null || true
+if [ -f "$TOUCHED_SERVICES_FILE" ]; then
+while read -r svc; do
+[ -z "$svc" ] && continue
+[[ "$svc" == *.service ]] || [[ "$svc" == *.timer ]] || [[ "$svc" == *.socket ]] && systemctl unmask "$svc" >/dev/null 2>&1 || true
+done < <(grep -v '^#' "$TOUCHED_SERVICES_FILE")
+fi
+[ -f "${BACKUP_DIR}/enabled_services.before.txt" ] && while read -r s; do [ -z "$s" ] && continue; systemctl enable "$s" >/dev/null 2>&1 || true; done < "${BACKUP_DIR}/enabled_services.before.txt"
+[ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
+swapoff -a >/dev/null 2>&1 || true
+modprobe -r zram >/dev/null 2>&1 || true
+fn_log "成功" "撤销优化完成。"
+}
+
+fn_show_status_report() {
+clear
+[ -f /etc/os-release ] && source /etc/os-release
+printf "系统: %s\n" "${PRETTY_NAME:-unknown}"
+printf "内存: %s MB\n" "$MEM_MB"
+printf "内核: %s\n" "$(uname -r)"
+swapon -s
+lsblk | grep zram
+systemctl list-unit-files | grep -E 'masked|enabled'
+}
+
+fn_optimize_auto() {
+fn_backup_state
+fn_wait_for_apt_lock
+fn_fix_apt_sources_if_needed
+fn_setup_journald_volatile
+fn_setup_sysctl_lowmem
+fn_trim_services_auto
+fn_setup_zram_simple
+fn_prioritize_network_services_auto
+fn_log "成功" "系统优化完成。请重启系统以完全生效。"
+fn_show_status_report
+}
+
 fn_check_root
 fn_detect_os
-fn_show_menu
+
+while true; do
+echo "================== 系统优化工具 =================="
+echo " 1) 执行系统优化 (全自动)"
+echo " 2) 撤销优化 (保留BBR)"
+echo " 3) 显示系统优化状态"
+echo " 0) 退出"
+echo "=================================================="
+read -rp "请输入选项 [0-3]: " choice
+case "$choice" in
+1)
+fn_optimize_auto
+;;
+2)
+fn_restore_all
+;;
+3)
+fn_show_status_report
+read -rp "按回车返回菜单..." dummy
+;;
+0)
+echo "退出脚本。"
+exit 0
+;;
+*)
+echo "无效选项，请输入 0-3。"
+;;
+esac
+done
