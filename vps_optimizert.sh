@@ -285,40 +285,46 @@ modprobe -r zram >/dev/null 2>&1 || true
 fn_log "成功" "撤销优化完成。"
 }
 
-fn_show_status_report() {
-    clear
-    echo "==================== 系统优化状态 ===================="
-    [ -f /etc/os-release ] && source /etc/os-release
-    printf "系统: %s\n" "${PRETTY_NAME:-unknown}"
-    printf "内存: %s MB\n" "$MEM_MB"
-    printf "内核: %s\n" "$(uname -r)"
-    echo "------------------------------------------------------"
-
-    fn_print_check() {
+fn_print_check() {
         local name="$1"
         local expected="$2"
         local actual="$3"
         local status_msg="[ 未优化 ]"
         local details=""
 
-        if [ "$actual" == "$expected" ] || \
-           { [ "$expected" == "disabled" ] && { [ "$actual" == "masked" ] || [ "$actual" == "static" ]; }; }; then
+        if [ "$actual" == "$expected" ]; then
+            # 1. 处理精确匹配 (例如 BBR="bbr", Swappiness="10")
             status_msg="[ 已优化 ]"
-        elif [ "$expected" == "disabled" ] && { [ "$actual" == "not-found" ] || [ -z "$actual" ]; }; then
-            status_msg="[ 已优化 ]"
-            details="(进程不存在)"
-        else
-            status_msg="[ 未优化 ]"
-            if [ "$actual" == "not-found" ] || [ -z "$actual" ]; then
-                details="(进程不存在)"
+        elif [ "$expected" == "disabled" ]; then
+            # 2. 处理服务检查 (expected="disabled")
+            # 使用子字符串匹配 (== *) 来处理 "masked", "not-found", "static",
+            # 以及异常的 "masked\nnot-found"
+            if [[ "$actual" == *"disabled"* || \
+                  "$actual" == *"masked"* || \
+                  "$actual" == *"static"* || \
+                  "$actual" == *"not-found"* || \
+                  -z "$actual" ]]; then
+                
+                status_msg="[ 已优化 ]"
+                
+                # 如果状态包含 "not-found" 或为空，显示 "(进程不存在)"
+                if [[ "$actual" == *"not-found"* || -z "$actual" ]]; then
+                    details="(进程不存在)"
+                fi
             else
-                details="(状态: $actual)"
+                # 否则，它未被优化 (例如状态是 "enabled")
+                status_msg="[ 未优化 ]"
+                # 清理换行符以便打印
+                details="(状态: $(echo "$actual" | tr '\n' ' '))"
             fi
+        else
+            # 3. 默认的未优化情况
+            status_msg="[ 未优化 ]"
+            details="(状态: $actual)"
         fi
         
         printf "  %-35s %s %s\n" "$name" "$status_msg" "$details"
     }
-
     echo "1. 网络优化 (Sysctl):"
     fn_print_check "TCP 拥塞控制 (BBR)" "bbr" "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 'n/a')"
     fn_print_check "网络队列算法 (FQ)" "fq" "$(sysctl -n net.core.default_qdisc 2>/dev/null || echo 'n/a')"
@@ -386,29 +392,44 @@ fn_show_menu() {
     clear
     echo "==============================================="
     echo " VPS 低内存自动优化脚本 (sysOpt_lowmem)"
-    echo " 脚本版本: $SCRIPT_VERSION"
+    echo " 脚本版本: $SCRIPT_VERSION (已修改)"
     echo " 备份目录: $BACKUP_DIR"
     echo " 日志文件: $LOG_FILE"
     echo "==============================================="
     echo " 1) 执行系统优化 (全自动)"
     echo " 2) 撤销优化 (保留BBR)"
     echo " 3) 显示系统优化状态"
+    echo " 4) 刷新网络服务提权 (安装新服务后运行)"
     echo " 0) 退出"
     echo "===============================================
 "
     read -rp "请选择: " CH
     case "$CH" in
-        1) fn_optimize_auto ;;
-        2) fn_restore_all ;;
-        3) fn_show_status_report; read -rp "按回车返回菜单..." dummy ;;
-        0) fn_log "信息" "退出。"; exit 0 ;;
-        *) fn_log "错误" "无效选项。"; sleep 1; fn_show_menu ;;
+        1) 
+            fn_optimize_auto 
+            ;;
+        2) 
+            fn_restore_all 
+            ;;
+        3) 
+            fn_show_status_report
+            read -rp "按回车返回菜单..." dummy 
+            ;;
+        4) 
+            # --- 新增功能 ---
+            fn_log "信息" "开始刷新网络服务提权..."
+            fn_prioritize_network_services_auto
+            fn_log "成功" "网络服务提权刷新完成。"
+            systemctl daemon-reload
+            fn_log "信息" "已重载 systemd daemon。"
+            read -rp "按回车返回菜单..." dummy
+            ;;
+        0) 
+            fn_log "信息" "退出。"; exit 0 
+            ;;
+        *) 
+            fn_log "错误" "无效选项。"; sleep 1;
+            ;;
     esac
-    read -rp "按回车返回主菜单..." dummy
     fn_show_menu
 }
-
-fn_check_root
-fn_detect_os
-
-fn_show_menu
