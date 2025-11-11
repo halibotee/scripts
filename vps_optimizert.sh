@@ -1,27 +1,35 @@
 #!/bin/bash
+# sysOpt_lowmem_auto_CN.sh (v2.1-final)
+# VPS 自动优化脚本 (低内存)
+#
+# 功能特性:
+# - 全中文菜单 (自动优化 / 撤销优化 / 显示状态)
+# - 动态检测系统 + 自动优化
+# - ZRAM 自动计算: 大小 = max(512MB, 物理内存 * 100%)
+# - ZRAM 优先 (lz4), 尝试顺序: zram-generator -> swapfile 回退
+# - 自动禁用非必要服务 (包括 rsyslog, atop, qemu-ga)
+# - journald 日志: Storage=volatile (内存存储), RuntimeMaxUse=16M
+# - 自动启用 BBR+FQ
+# - "撤销优化" (选项2) 会恢复系统状态, 但会【保留 BBR+FQ】
+#
+# 用法: sudo bash ./sysOpt_lowmem_auto_CN.sh
 
 set -euo pipefail
 IFS=$'\n\t'
 
 # --- 全局变量 ---
-SCRIPT_VERSION="2.0-auto-CN"
+SCRIPT_VERSION="2.1-final"
 BACKUP_DIR="/etc/sysopt_lowmem_backup"
 LOG_FILE="/var/log/sysopt_lowmem.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
 export DEBIAN_FRONTEND=noninteractive
 
-# 颜色定义
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
-
-# 优化的服务列表 
+# 优化的服务列表 (已根据 ps -ef 分析更新)
 FN_TRIM_SERVICES_LIST=(
     "apt-daily.timer"
     "apt-daily-upgrade.timer"
-    "apt-daily.service"
-    "apt-daily-upgrade.service"
+    # "apt-daily.service" # 移除, static
+    # "apt-daily-upgrade.service" # 移除, static
     "unattended-upgrades.service"
     "motd-news.service"
     "man-db.timer"
@@ -36,13 +44,18 @@ FN_TRIM_SERVICES_LIST=(
     "cups-browsed.service"
     "ModemManager.service"
     "ssh-askpass.service"
-    "e2scrub_reap.service"
+    # "e2scrub_reap.service" # 移除, static
+    "e2scrub_reap.timer" # 添加, 这是触发器
     "cloud-init.service"
     "cloud-init-local.service"
     "cloud-config.service"
     "cloud-final.service"
     "packagekit.service"
     "thermald.service"
+    # -- 新增 (基于 ps -ef 分析) --
+    "qemu-guest-agent.service" # QEMU 客户机代理
+    "atop.service"             # atop 性能监控
+    "atopacctd.service"        # atop 进程记帐
 )
 
 # --- 基础函数 ---
@@ -75,6 +88,24 @@ fn_check_apt_lock() {
         fn_log "警告" "检测到 APT 锁 (可能已有其他 apt/dpkg 进程在运行)。"
         return 1
     fi
+    return 0
+}
+
+# [新增] 等待 APT 锁释放
+fn_wait_for_apt_lock() {
+    local max_wait=120 # 最多等待 120 秒
+    local count=0
+    fn_log "信息" "检查 APT 锁..."
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
+        if [ "$count" -ge "$max_wait" ]; then
+            fn_log "错误" "等待 APT 锁超时 (120 秒)。ZRAM 安装可能失败。"
+            return 1
+        fi
+        fn_log "警告" "检测到 APT 锁，等待 5 秒... ($count/$max_wait)"
+        sleep 5
+        count=$((count + 5))
+    done
+    fn_log "信息" "APT 锁已释放。"
     return 0
 }
 
@@ -123,7 +154,7 @@ fn_backup_state() {
 # 2. 修复 APT 源 (仅在需要时)
 fn_fix_apt_sources_if_needed() {
     fn_log "信息" "检查 APT 源健康状况..."
-    if fn_check_apt_lock; then
+    if fn_check_apt_lock; then # 检查锁，如果锁了就跳过（因为这是非关键步骤）
         if apt-get update -qq >/dev/null 2>&1; then
             fn_log "成功" "apt-get update 成功，APT 源正常。"
             return 0
@@ -257,8 +288,8 @@ fn_setup_zram_adaptive() {
     fi
     fn_log "信息" "计算 ZRAM 大小: ${zram_mb}MB (物理内存: ${mem_mb}MB)"
 
-    # 尝试路径 1: zram-generator (首选)
-    if fn_check_apt_lock; then
+    # 尝试路径 1: zram-generator (首选, 等待 APT 锁)
+    if fn_wait_for_apt_lock; then
         fn_log "信息" "尝试路径 1: 安装 zram-generator..."
         apt-get update -qq >/dev/null 2>&1 || true
         if apt-get install -y zram-generator-defaults zram-generator >/dev/null 2>&1 || apt-get install -y zram-generator >/dev/null 2>&1; then
@@ -282,37 +313,10 @@ EOF
             fn_log "警告" "zram-generator 安装失败或不可用。"
         fi
     else
-        fn_log "警告" "APT 已锁定，跳过 zram-generator 尝试。"
+        fn_log "警告" "APT 锁等待超时，跳过 zram-generator 尝试。"
     fi
 
-    # 尝试路径 2: install zram-tools (备选方案)
-    if fn_check_apt_lock; then
-        fn_log "信息" "尝试路径 2: 安装 zram-tools 作为备选。"
-        apt-get update -qq >/dev/null 2>&1 || true
-        if apt-get install -y zram-tools >/dev/null 2>&1; then
-            fn_log "信息" "zram-tools 已安装，尝试启用 zramswap.service"
-            # zram-tools 默认可能使用 50% 比例，我们覆盖它
-            cat > /etc/default/zramswap <<EOF
-# 由 sysOpt_lowmem 配置
-ALGO=lz4
-SIZE=${zram_mb}M
-PRIORITY=100
-EOF
-            systemctl enable --now zramswap.service >/dev/null 2>&1 || true
-            sleep 1
-            if swapon -s | grep -q 'zram'; then
-                fn_log "成功" "ZRAM 已通过 zram-tools (zramswap.service) 启用。"
-                echo "zramswap.service" >> "$TOUCHED_SERVICES_FILE"
-                return 0
-            else
-                fn_log "警告" "zramswap.service 未能成功激活 zram。"
-            fi
-        else
-            fn_log "警告" "zram-tools 安装失败或不可用。"
-        fi
-    else
-        fn_log "警告" "APT 已锁定，跳过 zram-tools 尝试。"
-    fi
+    # [已移除] 尝试路径 2: zram-tools
 
     # 最终回退方案: 创建磁盘 swapfile (限制大小)
     fn_log "警告" "所有 ZRAM 方法均失败。将创建小型 swapfile 作为最终回退方案。"
@@ -371,12 +375,12 @@ EOF
 fn_restore_zram_and_swap() {
     fn_log "信息" "恢复 ZRAM / swap 状态: 禁用服务并移除创建的文件。"
     systemctl disable --now vps-zram.service >/dev/null 2>&1 || true # 对应旧版本(如果存在)
-    systemctl disable --now zramswap.service >/dev/null 2>&1 || true
+    systemctl disable --now zramswap.service >/dev/null 2>&1 || true # 兼容旧版 zram-tools
     systemctl disable --now systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
     # 移除创建的服务和配置
     rm -f /etc/systemd/system/vps-zram.service
     rm -f /etc/systemd/zram-generator.conf
-    rm -f /etc/default/zramswap # zram-tools 的配置
+    rm -f /etc/default/zramswap # zram-tools 的配置 (兼容)
     systemctl daemon-reload >/dev/null 2>&1 || true
     # 移除创建的 swapfile
     if [ -f "${BACKUP_DIR}/created_swapfiles.txt" ]; then
@@ -489,7 +493,7 @@ EOF
     fn_log "成功" "撤销优化 (除 BBR 外) 已完成。请查看 $LOG_FILE 日志。"
 }
 
-# 显示系统状态 (详细)
+# 显示系统状态 (详细, 纯文本)
 fn_show_status_report() {
     clear
     echo "==================== 系统优化状态 ===================="
@@ -504,18 +508,21 @@ fn_show_status_report() {
         local name="$1"
         local expected="$2"
         local actual="$3"
-        local status_msg="${RED}[ 未优化 ]${NC}"
-        local details="(预期: ${YELLOW}$expected${NC}, 实际: ${YELLOW}$actual${NC})"
+        local status_msg="[ 未优化 ]"
+        local details="(预期: $expected, 实际: $actual)"
 
         if [ "$actual" == "$expected" ]; then
-            status_msg="${GREEN}[ 已优化 ]${NC}"
-            details="(值: ${GREEN}$actual${NC})"
+            status_msg="[ 已优化 ]"
+            details="(值: $actual)"
+        elif [ "$expected" == "disabled" ] && [ "$actual" == "static" ]; then
+            status_msg="[ 已优化 ]"
+            details="(状态: static)"
         elif [ -z "$actual" ] || [ "$actual" == "not-found" ]; then
              actual="未设置"
-             details="(预期: ${YELLOW}$expected${NC}, 实际: ${RED}未设置${NC})"
+             details="(预期: $expected, 实际: 未设置)"
              # 如果预期是 "disabled" 且实际是 "未设置" (not-found), 也算优化
              if [ "$expected" == "disabled" ]; then
-                status_msg="${GREEN}[ 已优化 ]${NC}"
+                status_msg="[ 已优化 ]"
                 details="(未安装)"
              fi
         fi
@@ -541,11 +548,11 @@ fn_show_status_report() {
     # 4. 检查 ZRAM / Swap
     echo "3. 交换空间 (Swap/ZRAM):"
     if swapon -s | grep -q 'zram'; then
-        echo -e "  ZRAM 状态: ${GREEN}[ 已激活 ]${NC}"
+        echo "  ZRAM 状态: [ 已激活 ]"
     elif swapon -s | grep -q 'swapfile'; then
-        echo -e "  Swapfile 状态: ${YELLOW}[ 已激活 (回退方案) ]${NC}"
+        echo "  Swapfile 状态: [ 已激活 (回退方案) ]"
     else
-        echo -e "  Swap 状态: ${RED}[ 未激活 ]${NC}"
+        echo "  Swap 状态: [ 未激活 ]"
     fi
     echo "--- 当前内存与 Swap ---"
     free -h
@@ -570,7 +577,7 @@ fn_show_status_report() {
     local drop_in_found="no"
     for svc in xray hysteria2 hysteria udp2raw kcptun; do
         if [ -f "/etc/systemd/system/${svc}.service.d/90-sysopt-lowmem.conf" ]; then
-            echo -e "  提权配置: ${svc} ${GREEN}[ 已配置 ]${NC}"
+            echo "  提权配置: ${svc} [ 已配置 ]"
             drop_in_found="yes"
         fi
     done
@@ -596,10 +603,10 @@ fn_optimize_auto() {
     fn_log "信息" "步骤 3/6: 应用 sysctl 调优 (BBR+FQ)..."
     fn_setup_sysctl_lowmem
 
-    fn_log "信息" "步骤 4/6: 精简非必要服务..."
+    fn_log "信息" "步骤 4/6: 精简非必要服务 (包括 ps 分析结果)..."
     fn_trim_services_auto
 
-    fn_log "信息" "步骤 5/6: 启用 ZRAM (100% 比例)..."
+    fn_log "信息" "步骤 5/6: 启用 ZRAM (100% 比例, Generator 优先)..."
     if fn_setup_zram_adaptive; then
         fn_log "成功" "ZRAM / Swap 设置成功。"
     else
@@ -623,16 +630,16 @@ fn_show_menu() {
     echo " 备份目录: $BACKUP_DIR"
     echo " 日志文件: $LOG_FILE"
     echo "==============================================="
-    echo " 1) 一键系统优化 "
-    echo " 2) 撤销系统优化"
-    echo " 3) 显示系统状态"
+    echo " 1) 执行系统优化 (全自动)"
+    echo " 2) 撤销优化 (保留BBR)"
+    echo " 3) 显示系统优化状态"
     echo " 0) 退出"
     echo "==============================================="
     read -rp "请选择: " CH
     case "$CH" in
         1) fn_optimize_auto ;;
         2) fn_restore_all ;;
-        3.0) fn_show_status_report; read -rp "按回车返回菜单..." dummy ;;
+        3) fn_show_status_report; read -rp "按回车返回菜单..." dummy ;; # [已修复] 3.0 -> 3
         0) fn_log "信息" "退出。"; exit 0 ;;
         *) fn_log "错误" "无效选项。"; sleep 1; fn_show_menu ;;
     esac
