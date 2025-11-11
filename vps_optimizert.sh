@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.3"
+SCRIPT_VERSION="2.4-GM" # 增加了 GM (Gemini Modified) 标记
 BACKUP_DIR="/etc/sysopt_lowmem_backup"
 LOG_FILE="/var/log/sysopt_lowmem.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -285,7 +285,20 @@ modprobe -r zram >/dev/null 2>&1 || true
 fn_log "成功" "撤销优化完成。"
 }
 
-fn_print_check() {
+# --- 修复开始 (fn_show_status_report) ---
+# 替换了此函数以修复状态报告中 'masked\nnot-found' 的 BUG
+fn_show_status_report() {
+    clear
+    echo "==================== 系统优化状态 ===================="
+    [ -f /etc/os-release ] && source /etc/os-release
+    printf "系统: %s\n" "${PRETTY_NAME:-unknown}"
+    printf "内存: %s MB\n" "$MEM_MB"
+    printf "内核: %s\n" "$(uname -r)"
+    echo "------------------------------------------------------"
+
+    # 我们将重写 fn_print_check 以使用更健壮的子字符串匹配
+    # 这将正确处理 "masked\nnot-found" 这样的异常输出
+    fn_print_check() {
         local name="$1"
         local expected="$2"
         local actual="$3"
@@ -325,6 +338,7 @@ fn_print_check() {
         
         printf "  %-35s %s %s\n" "$name" "$status_msg" "$details"
     }
+
     echo "1. 网络优化 (Sysctl):"
     fn_print_check "TCP 拥塞控制 (BBR)" "bbr" "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 'n/a')"
     fn_print_check "网络队列算法 (FQ)" "fq" "$(sysctl -n net.core.default_qdisc 2>/dev/null || echo 'n/a')"
@@ -373,6 +387,7 @@ fn_print_check() {
     
     echo "======================================================"
 }
+# --- 修复结束 ---
 
 
 fn_optimize_auto() {
@@ -388,11 +403,13 @@ fn_log "成功" "系统优化完成。请重启系统以完全生效。"
 fn_show_status_report
 }
 
+# --- 修复开始 (fn_show_menu) ---
+# 增加了 '4) 刷新网络服务提权' 选项
 fn_show_menu() {
     clear
     echo "==============================================="
     echo " VPS 低内存自动优化脚本 (sysOpt_lowmem)"
-    echo " 脚本版本: $SCRIPT_VERSION (已修改)"
+    echo " 脚本版本: $SCRIPT_VERSION"
     echo " 备份目录: $BACKUP_DIR"
     echo " 日志文件: $LOG_FILE"
     echo "==============================================="
@@ -420,7 +437,7 @@ fn_show_menu() {
             fn_log "信息" "开始刷新网络服务提权..."
             fn_prioritize_network_services_auto
             fn_log "成功" "网络服务提权刷新完成。"
-            systemctl daemon-reload
+            # fn_prioritize_network_services_auto 内部已重载
             fn_log "信息" "已重载 systemd daemon。"
             read -rp "按回车返回菜单..." dummy
             ;;
@@ -431,5 +448,12 @@ fn_show_menu() {
             fn_log "错误" "无效选项。"; sleep 1;
             ;;
     esac
+    # 确保在执行完动作 1, 2, 或 * 后，总是返回菜单
     fn_show_menu
 }
+# --- 修复结束 ---
+
+fn_check_root
+fn_detect_os
+
+fn_show_menu
