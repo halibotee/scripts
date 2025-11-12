@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.3" # 版本号更新
+SCRIPT_VERSION="1.3.4" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
