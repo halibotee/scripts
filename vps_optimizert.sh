@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.0"
+SCRIPT_VERSION="1.1.1"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -115,9 +115,8 @@ fi
 }
 
 fn_backup_state() {
-echo "正在创建备份于 $BACKUP_DIR ..."
 fn_log "信息" "正在创建备份于 $BACKUP_DIR ..."
-mkdir -p "$BACKUP_DIR"
+mkdir -p "$BACKUP_DIR" || { fn_log "错误" "无法创建 $BACKUP_DIR"; return 1; }
 cp -an /etc/fstab "${BACKUP_DIR}/fstab.bak" 2>/dev/null || true
 cp -an /etc/systemd/resolved.conf "${BACKUP_DIR}/resolved.conf.bak" 2>/dev/null || true
 cp -an /etc/sysctl.conf "${BACKUP_DIR}/sysctl.conf.bak" 2>/dev/null || true
@@ -128,21 +127,18 @@ sysctl -n net.ipv4.tcp_congestion_control > "${BACKUP_DIR}/sysctl_con_algo.bak" 
 sysctl -n net.core.default_qdisc > "${BACKUP_DIR}/sysctl_q_algo.bak" 2>/dev/null || true
 systemctl list-unit-files --type=service --state=enabled > "${BACKUP_DIR}/enabled_services.before.txt" 2>/dev/null || true
 echo "# 由 vps_optimizert 脚本接触过的服务" > "$TOUCHED_SERVICES_FILE"
-echo "备份完成。"
 fn_log "信息" "备份完成。"
+return 0
 }
 
 fn_fix_apt_sources_if_needed() {
-fn_wait_for_apt_lock || { echo "错误: APT 锁等待失败。"; fn_log "错误" "APT 锁等待失败"; return 1; }
-echo "检查 APT 源健康状况..."
+fn_wait_for_apt_lock || { fn_log "错误" "APT 锁等待失败"; return 1; }
 fn_log "信息" "检查 APT 源健康状况..."
 
 if apt-get update -qq >/dev/null 2>&1; then
-echo "APT 源正常。"
 fn_log "成功" "APT 源正常。"
 return 0
 else
-echo "警告: apt-get update 失败。将尝试替换 /etc/apt/sources.list"
 fn_log "警告" "apt-get update 失败。将尝试保守替换 /etc/apt/sources.list"
 if command -v lsb_release >/dev/null 2>&1; then
 codename=$(lsb_release -cs)
@@ -171,11 +167,9 @@ fn_log "错误" "此操作系统不支持自动替换源。"
 return 1
 fi
 if apt-get update -qq >/dev/null 2>&1; then
-echo "APT 源替换并刷新成功。"
 fn_log "成功" "APT 源替换并刷新成功。"
 return 0
 else
-echo "错误: 替换源后 APT update 仍然失败。"
 fn_log "错误" "替换源后 APT update 仍然失败。"
 return 1
 fi
@@ -183,7 +177,6 @@ fi
 }
 
 fn_handle_selinux() {
-    echo "检查 SELinux 状态..."
     fn_log "信息" "检查 SELinux 状态..."
     
     if command -v getenforce >/dev/null 2>&1; then
@@ -215,53 +208,57 @@ fn_handle_selinux() {
                 fn_log "警告" "跳过禁用 SELinux。这可能导致后续步骤失败。"
             fi
         else
-             echo "SELinux 状态: Disabled (良好)。"
              fn_log "信息" "SELinux 状态: Disabled (良好)。"
         fi
     else
-        echo "未检测到 SELinux (正常)。"
         fn_log "信息" "未检测到 SELinux (正常)。"
     fi
+    return 0
 }
 
 fn_setup_fail2ban() {
-    echo "配置 Fail2ban..."
     fn_log "信息" "配置 Fail2ban..."
     
     if dpkg -s fail2ban >/dev/null 2>&1; then
-        echo "Fail2ban 已安装。"
         fn_log "信息" "Fail2ban 已安装。"
     else
-        echo "正在安装 Fail2ban..."
         fn_log "信息" "正在安装 Fail2ban..."
-        fn_wait_for_apt_lock || { echo "错误: APT 锁等待失败。"; fn_log "错误" "APT 锁等待失败"; return 1; }
+        fn_wait_for_apt_lock || { fn_log "错误" "APT 锁等待失败"; return 1; }
         apt-get install -y fail2ban >>"$LOG_FILE" 2>&1 || { 
-            echo "警告: Fail2ban 安装失败。"
             fn_log "警告" "Fail2ban 安装失败。"; 
             return 1; 
         }
-        echo "Fail2ban 安装完成。"
         fn_log "信息" "Fail2ban 安装完成。"
     fi
+    
+    fn_log "信息" "配置 Fail2ban backend 为 systemd (以修复 sshd jail 冲突)..."
+    
+    mkdir -p /etc/fail2ban/jail.d
+    cat > /etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf <<'EOF'
+[DEFAULT]
+backend = systemd
+
+[sshd]
+backend = systemd
+EOF
+    fn_log "调试" "已创建 /etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf"
     
     (systemctl enable --now fail2ban) >> "$LOG_FILE" 2>&1
     
     if systemctl is-active fail2ban >/dev/null 2>&1; then
-        echo "成功: Fail2ban 已激活。"
         fn_log "成功" "Fail2ban 已激活。"
         echo "fail2ban.service" >> "$TOUCHED_SERVICES_FILE"
+        return 0
     else
-        echo "错误: Fail2ban 启动失败。"
-        fn_log "错误" "Fail2ban 启动失败。"
+        fn_log "错误" "Fail2ban 启动失败 (即使在应用 systemd backend 修复后)。"
+        return 1
     fi
 }
 
 fn_setup_journald_volatile() {
-echo "配置 journald 为 volatile (内存) 模式..."
 local journal_storage
 journal_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
 if [ "$journal_storage" == "volatile" ]; then
-    echo "journald 已是 volatile 模式，跳过。"
     fn_log "信息" "journald 已是 volatile 模式，跳过。"
     return 0
 fi
@@ -275,14 +272,12 @@ RuntimeMaxUse=16M
 MaxRetentionSec=1month
 EOF
 systemctl restart systemd-journald >/dev/null 2>&1 || true
-echo "journald 已配置为 volatile 模式。"
 fn_log "成功" "journald 已配置为 volatile 模式。"
+return 0
 }
 
 fn_setup_sysctl_lowmem() {
-echo "应用 sysctl 低内存网络调优 (BBR+FQ)..."
 if [ -f /etc/sysctl.d/99-vps_optimizert.conf ]; then
-    echo "sysctl 配置文件已存在，跳过写入。"
     fn_log "信息" "sysctl 配置文件 99-vps_optimizert.conf 已存在，跳过写入。"
 else
     fn_log "信息" "应用 sysctl 低内存网络调优 (包含 BBR+FQ)..."
@@ -302,17 +297,15 @@ net.ipv6.conf.default.disable_ipv6 = 1
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
-    echo "sysctl 配置文件已创建。"
     fn_log "成功" "sysctl 配置文件 99-vps_optimizert.conf 已创建。"
 fi
 
 sysctl --system >/dev/null 2>/dev/null || fn_log "警告" "sysctl 应用时出现警告。"
-echo "sysctl 设置已应用。"
 fn_log "信息" "sysctl --system 已执行。"
+return 0
 }
 
 fn_trim_services_auto() {
-echo "系统服务精简: 自动屏蔽非必要服务..."
 fn_log "信息" "系统服务精简: 自动屏蔽非必要服务..."
 local masked_count=0
 local services_to_trim=("${FN_TRIM_SERVICES_LIST[@]}")
@@ -327,12 +320,10 @@ if systemctl list-unit-files --quiet "$svc"; then
     svc_status=$(systemctl is-enabled "$svc" 2>/dev/null || echo "not-found")
     
     if [[ "$svc_status" == *"masked"* ]]; then
-        echo "  $svc 已屏蔽。"
         fn_log "调试" "服务 $svc 已被屏蔽，跳过。"
     elif [[ "$svc_status" == "not-found" ]]; then
         fn_log "调试" "服务 $svc 不存在，跳过。"
     else
-        echo "  正在屏蔽 $svc"
         fn_log "信息" "  正在屏蔽 (mask) $svc"
         (systemctl mask --now "$svc") >> "$LOG_FILE" 2>&1 || true
         echo "$svc" >> "$TOUCHED_SERVICES_FILE"
@@ -344,32 +335,26 @@ fi
 done
 
 if [ "$masked_count" -eq 0 ]; then
-echo "未检测到需要新屏蔽的系统服务。"
 fn_log "信息" "未检测到需要新屏蔽的系统服务。"
 else
-echo "系统服务精简完成 (共屏蔽 ${masked_count} 个新服务)。"
 fn_log "成功" "系统服务精简完成 (共屏蔽 ${masked_count} 个新服务)。"
 fi
+return 0
 }
 
 fn_setup_zram_adaptive() {
-    echo "配置 ZRAM..."
     fn_log "信息" "启用 ZRAM (systemd-zram-generator 方案)..."
     
     if dpkg -s systemd-zram-generator >/dev/null 2>&1; then
-        echo "ZRAM (systemd-zram-generator) 已安装。"
         fn_log "信息" "ZRAM (systemd-zram-generator) 已安装。"
     else
-        echo "正在安装 ZRAM (systemd-zram-generator)..."
         fn_log "信息" "正在安装 ZRAM (systemd-zram-generator)..."
-        fn_wait_for_apt_lock || { echo "错误: APT 锁等待失败。"; fn_log "错误" "APT 锁等待失败"; return 1; }
+        fn_wait_for_apt_lock || { fn_log "错误" "APT 锁等待失败"; return 1; }
         apt-get install -y systemd-zram-generator >>"$LOG_FILE" 2>&1 || { 
-            echo "警告: systemd-zram-generator 安装失败。"
             fn_log "警告" "安装失败"; 
             fn_setup_zram_fallback "安装失败"; 
             return 1; 
         }
-        echo "ZRAM (systemd-zram-generator) 安装完成。"
         fn_log "信息" "ZRAM (systemd-zram-generator) 安装完成。"
     fi
 
@@ -378,7 +363,6 @@ fn_setup_zram_adaptive() {
     [ "$zram_mb" -lt 512 ] && zram_mb=512
     [ "$zram_mb" -gt "$mem_mb" ] && zram_mb="$mem_mb"
     
-    echo "ZRAM 大小: ${zram_mb} MB"
     fn_log "信息" "ZRAM 大小: ${zram_mb} MB"
 
     rm -f /etc/systemd/zram-generator.conf
@@ -401,22 +385,20 @@ EOF
     sleep 1
 
     if [ -b /dev/zram0 ] && swapon -s | grep -q 'zram'; then
-        echo "成功: ZRAM 已激活。"
         fn_log "成功" "ZRAM 已激活"
         (swapon -s) >> "$LOG_FILE" 2>&1
         systemctl enable systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
         echo "systemd-zram-setup@zram0.service" >> "$TOUCHED_SERVICES_FILE"
         return 0
     else
-        echo "警告: ZRAM 激活失败，使用 swapfile 回退。"
         fn_log "警告" "ZRAM 激活失败，使用 swapfile 回退"
         fn_setup_zram_fallback "ZRAM 激活失败"
+        return 1
     fi
 }
 
 fn_setup_zram_fallback() {
     local reason="$1"
-    echo "启用 swapfile 回退..."
     fn_log "警告" "$reason, 使用 swapfile 回退"
 
     local swapfile="/swapfile_zram"
@@ -434,11 +416,9 @@ fn_setup_zram_fallback() {
     echo "$swapfile" >> "${BACKUP_DIR}/created_swapfiles.txt"
     
     if swapon -s | grep -q "$(basename "$swapfile")"; then
-        echo "成功: Swapfile 回退已启用 (${swapsize_mb} MB)。"
         fn_log "成功" "Swapfile 回退启用 (${swapsize_mb} MB)"
         (swapon -s) >> "$LOG_FILE" 2>&1
     else
-        echo "错误: Swapfile 回退启用失败。"
         fn_log "错误" "Swapfile 回退启用失败。"
     fi
 }
@@ -450,7 +430,6 @@ local changes_made=0
 local services_list_str
 local IFS=','
 services_list_str="${FN_NETWORK_SERVICES_LIST[*]}"
-echo "正在检测网络代理服务 (${services_list_str})..."
 fn_log "信息" "正在检测网络代理服务 (${services_list_str})..."
 
 for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
@@ -460,7 +439,6 @@ fi
 done
 
 if [ ${#detected_svcs[@]} -eq 0 ]; then
-echo "未检测到网络代理服务，无需优化。"
 fn_log "信息" "未检测到网络代理服务，无需优化。"
 return 0
 fi
@@ -468,7 +446,6 @@ fi
 local detected_svcs_str
 IFS=','
 detected_svcs_str="${detected_svcs[*]}"
-echo "检测到: ${detected_svcs_str}。开始应用服务优化..."
 fn_log "信息" "检测到: ${detected_svcs_str}。开始应用服务优化..."
 
 for svc in "${detected_svcs[@]}"; do
@@ -492,7 +469,6 @@ EOF
 done
 
 if [ "$changes_made" -eq 0 ]; then
-     echo "网络代理服务均已配置，无需刷新。"
      fn_log "信息" "网络代理服务均已配置，无需刷新。"
      return 0
 fi
@@ -501,15 +477,15 @@ if [ "$changes_made" -eq 1 ]; then
     fn_log "调试" "重载 systemd daemon..."
     (systemctl daemon-reload) >> "$LOG_FILE" 2>&1
 fi
-echo "网络代理服务优化成功 (${detected_svcs_str})。"
 fn_log "成功" "网络服务优化成功 (${detected_svcs_str})。"
+return 0
 }
 
 fn_restore_all() {
-    echo "开始执行撤销优化... 将从 $BACKUP_DIR 恢复备份。"
+    echo "[任务] 开始执行撤销优化..."
     fn_log "警告" "开始执行撤销优化... 将从 $BACKUP_DIR 恢复备份。"
     
-    echo "  正在恢复 sysctl..."
+    echo "[任务]   正在恢复 sysctl..."
     rm -f /etc/sysctl.d/99-vps_optimizert.conf 
     [ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
     [ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
@@ -519,19 +495,19 @@ net.ipv4.tcp_congestion_control = bbr
 EOF
     sysctl --system >/dev/null 2>/dev/null || true
     
-    echo "  正在恢复 SELinux..."
+    echo "[任务]   正在恢复 SELinux..."
     if [ -f /etc/selinux/config.bak ]; then
         fn_log "信息" "正在恢复 SELinux 配置..."
         mv /etc/selinux/config.bak /etc/selinux/config >> "$LOG_FILE" 2>&1
     fi
     
-    echo "  正在恢复 journald..."
+    echo "[任务]   正在恢复 journald..."
     [ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
     systemctl restart systemd-journald >/dev/null 2>/dev/null || true
     
     [ -f "${BACKUP_DIR}/apt.sources.list.bak" ] && cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt.sources.list 2>/dev/null || true
     
-    echo "  正在 unmask 系统服务..."
+    echo "[任务]   正在 unmask 系统服务..."
     fn_log "信息" "正在 unmask 系统服务..."
     if [ -f "$TOUCHED_SERVICES_FILE" ]; then
         while read -r svc; do
@@ -540,7 +516,7 @@ EOF
         done < <(grep -v '^#' "$TOUCHED_SERVICES_FILE")
     fi
 
-    echo "  正在移除网络服务优化配置..."
+    echo "[任务]   正在移除网络服务优化配置..."
     fn_log "信息" "正在移除网络服务优化配置..."
     local changes_made=0
     for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
@@ -556,7 +532,7 @@ EOF
     [ -f "${BACKUP_DIR}/enabled_services.before.txt" ] && while read -r s; do [ -z "$s" ] && continue; (systemctl enable "$s") >> "$LOG_FILE" 2>&1 || true; done < "${BACKUP_DIR}/enabled_services.before.txt"
     [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
     
-    echo "  正在停用 ZRAM 及 swapfile..."
+    echo "[任务]   正在停用 ZRAM 及 swapfile..."
     fn_log "信息" "正在停用 ZRAM..."
     (systemctl disable --now systemd-zram-setup@zram0.service) >> "$LOG_FILE" 2>&1 || true
     rm -f /etc/systemd/zram-generator.conf
@@ -571,14 +547,17 @@ EOF
     fi
     modprobe -r zram >/dev/null 2>&1 || true
     
-    echo "  正在移除 Fail2ban..."
+    echo "[任务]   正在移除 Fail2ban..."
+    rm -f /etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf
+    fn_log "调试" "已移除 99-vps_optimizert-systemd.conf"
+    
     if dpkg -s fail2ban >/dev/null 2>&1; then
         fn_log "信息" "正在卸载 Fail2ban..."
         fn_wait_for_apt_lock || fn_log "警告" "APT 锁等待失败，跳过卸载 Fail2ban。"
         (apt-get remove -y fail2ban --purge) >> "$LOG_FILE" 2>&1
     fi
     
-    echo "撤销优化完成。"
+    echo "[完成] 撤销优化完成。"
     fn_log "成功" "撤销优化完成。"
 }
 
@@ -624,7 +603,7 @@ fn_show_status_report() {
 
     local ipv6_status="false"
     [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" == "1" ] && ipv6_status="true"
-    fn_print_line "禁用IPv6" "$ipv6_status" "[ 已禁用 ]" "[ 未禁用 ]"
+    fn_print_line "禁用IPv6" "$ipv6_status" "[ 已优化 ]" "[ 未优化 ]"
 
     local selinux_line="SELinux"
     local selinux_status="false"
@@ -645,14 +624,18 @@ fn_show_status_report() {
 
     local f2b_line="Fail2ban"
     local f2b_status="false"
+    local f2b_success_msg="[ 已激活 ]"
+    local f2b_fail_msg="[ 未激活 ]"
     local f2b_details="(未安装)"
     if systemctl is-active fail2ban >/dev/null 2>&1; then
         f2b_status="true"
         f2b_details="(已激活)"
     elif dpkg -s fail2ban >/dev/null 2>&1; then
+        f2b_status="false"
+        f2b_fail_msg="[ 失败 ]"
         f2b_details="(已安装/未运行)"
     fi
-    fn_print_line "$f2b_line" "$f2b_status" "[ 已激活 ]" "[ 未激活 ]" "$f2b_details"
+    fn_print_line "$f2b_line" "$f2b_status" "$f2b_success_msg" "$f2b_fail_msg" "$f2b_details"
 
     local journal_storage
     journal_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
@@ -725,18 +708,75 @@ fn_show_status_report() {
 }
 
 fn_optimize_auto() {
-fn_backup_state
-fn_fix_apt_sources_if_needed
-fn_handle_selinux
-fn_setup_journald_volatile
-fn_setup_sysctl_lowmem
-fn_setup_zram_adaptive
-fn_setup_fail2ban
-fn_prioritize_network_services_auto
-fn_trim_services_auto
-echo "系统优化完成。请重启系统以完全生效。"
-fn_log "成功" "系统优化完成。请重启系统以完全生效。"
-fn_show_status_report "noclear"
+    echo "[任务 1 ] ：创建备份文件..."
+    if fn_backup_state; then
+        echo "[完成] 备份文件创建成功: $BACKUP_DIR"
+    else
+        echo "[失败] 备份文件创建失败，退出优化。"
+        fn_log "错误" "fn_backup_state 失败，退出。"
+        return 1
+    fi
+    echo "--------------"
+    
+    echo "[任务 2 ] ：检查 APT 源健康状况..."
+    if fn_fix_apt_sources_if_needed; then
+        echo "[完成] APT 源检查通过。"
+    else
+        echo "[失败] APT 源检查失败。请检查日志: $LOG_FILE"
+        fn_log "错误" "fn_fix_apt_sources_if_needed 失败。"
+    fi
+    echo "--------------"
+
+    echo "[任务 3 ] ：检查 SELinux 状态..."
+    if fn_handle_selinux; then
+        echo "[完成] SELinux 检查完成。"
+    fi
+    echo "--------------"
+    
+    echo "[任务 4 ] ：配置 Journald (日志)..."
+    if fn_setup_journald_volatile; then
+        echo "[完成] Journald 已配置为内存模式。"
+    fi
+    echo "--------------"
+
+    echo "[任务 5 ] ：应用 sysctl 网络调优..."
+    if fn_setup_sysctl_lowmem; then
+        echo "[完成] sysctl (BBR+FQ) 已应用。"
+    fi
+    echo "--------------"
+
+    echo "[任务 6 ] ：配置 ZRAM..."
+    if fn_setup_zram_adaptive; then
+        echo "[完成] ZRAM 配置成功。"
+    else
+        echo "[警告] ZRAM 配置失败，已启用 swapfile 回退。"
+    fi
+    echo "--------------"
+
+    echo "[任务 7 ] ：配置 Fail2ban..."
+    if fn_setup_fail2ban; then
+        echo "[完成] Fail2ban 配置成功。"
+    else
+        echo "[警告] Fail2ban 配置失败。请检查日志。"
+    fi
+    echo "--------------"
+
+    echo "[任务 8 ] ：优化网络代理服务..."
+    if fn_prioritize_network_services_auto; then
+        echo "[完成] 网络代理服务优化完成。"
+    fi
+    echo "--------------"
+    
+    echo "[任务 9 ] ：精简系统服务..."
+    if fn_trim_services_auto; then
+        echo "[完成] 系统服务精简完成。"
+    fi
+    echo "--------------"
+    
+    echo ""
+    echo "系统优化完成。请重启系统以完全生效。"
+    fn_log "成功" "系统优化完成。请重启系统以完全生效。"
+    fn_show_status_report "noclear"
 }
 
 fn_get_detected_services_string() {
@@ -788,8 +828,10 @@ fn_show_menu() {
             read -rp "按回车返回菜单..." dummy 
             ;;
         4) 
+            echo "[任务] 正在刷新网络代理服务优化..."
             fn_prioritize_network_services_auto
-            read -rp "优化完成。按回车返回菜单..." dummy
+            echo "[完成] 刷新完成。"
+            read -rp "按回车返回菜单..." dummy
             ;;
         0) 
             echo "退出。"
