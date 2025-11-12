@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.7-GM"
+SCRIPT_VERSION="2.8-GM"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -76,20 +76,16 @@ return 0
 fn_wait_for_apt_lock() {
 local max_wait=120
 local count=0
-echo "检查 APT 锁..."
 fn_log "信息" "检查 APT 锁..."
 while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
 if [ "$count" -ge "$max_wait" ]; then
-echo "错误: 等待 APT 锁超时 (120 秒)。APT 操作可能失败。"
 fn_log "错误" "等待 APT 锁超时 (120 秒)。APT 操作可能失败。"
 return 1
 fi
-echo "警告: 检测到 APT 锁，等待 5 秒... ($count/$max_wait)"
 fn_log "警告" "检测到 APT 锁，等待 5 秒... ($count/$max_wait)"
 sleep 5
 count=$((count + 5))
 done
-echo "APT 锁已释放。"
 fn_log "信息" "APT 锁已释放。"
 return 0
 }
@@ -137,9 +133,10 @@ fn_log "信息" "备份完成。"
 }
 
 fn_fix_apt_sources_if_needed() {
+fn_wait_for_apt_lock || { echo "错误: APT 锁等待失败。"; fn_log "错误" "APT 锁等待失败"; return 1; }
 echo "检查 APT 源健康状况..."
 fn_log "信息" "检查 APT 源健康状况..."
-if fn_check_apt_lock; then
+
 if apt-get update -qq >/dev/null 2>&1; then
 echo "APT 源正常。"
 fn_log "成功" "APT 源正常。"
@@ -183,15 +180,18 @@ fn_log "错误" "替换源后 APT update 仍然失败。"
 return 1
 fi
 fi
-else
-echo "警告: APT 似乎已锁定，跳过源健康检查。"
-fn_log "警告" "APT 似乎已锁定，跳过源健康检查。"
-return 1
-fi
 }
 
 fn_setup_journald_volatile() {
 echo "配置 journald 为 volatile (内存) 模式..."
+local journal_storage
+journal_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
+if [ "$journal_storage" == "volatile" ]; then
+    echo "journald 已是 volatile 模式，跳过。"
+    fn_log "信息" "journald 已是 volatile 模式，跳过。"
+    return 0
+fi
+
 fn_log "信息" "配置 journald 为 volatile (内存) 模式 (RuntimeMaxUse=16M)..."
 mkdir -p /etc/systemd/journald.conf.d
 cat > /etc/systemd/journald.conf.d/10-volatile.conf <<'EOF'
@@ -207,8 +207,12 @@ fn_log "成功" "journald 已配置为 volatile 模式。"
 
 fn_setup_sysctl_lowmem() {
 echo "应用 sysctl 低内存网络调优 (BBR+FQ)..."
-fn_log "信息" "应用 sysctl 低内存网络调优 (包含 BBR+FQ)..."
-cat > /etc/sysctl.d/99-vps_optimizert.conf <<'EOF'
+if [ -f /etc/sysctl.d/99-vps_optimizert.conf ]; then
+    echo "sysctl 配置文件已存在，跳过写入。"
+    fn_log "信息" "sysctl 配置文件 99-vps_optimizert.conf 已存在，跳过写入。"
+else
+    fn_log "信息" "应用 sysctl 低内存网络调优 (包含 BBR+FQ)..."
+    cat > /etc/sysctl.d/99-vps_optimizert.conf <<'EOF'
 vm.swappiness = 10
 vm.vfs_cache_pressure = 100
 net.core.rmem_max = 4194304
@@ -224,9 +228,13 @@ net.ipv6.conf.default.disable_ipv6 = 1
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
+    echo "sysctl 配置文件已创建。"
+    fn_log "成功" "sysctl 配置文件 99-vps_optimizert.conf 已创建。"
+fi
+
 sysctl --system >/dev/null 2>/dev/null || fn_log "警告" "sysctl 应用时出现警告。"
-echo "sysctl 自适应调优 (含 BBR) 已应用。"
-fn_log "成功" "sysctl 自适应调优 (含 BBR) 已应用。"
+echo "sysctl 设置已应用。"
+fn_log "信息" "sysctl --system 已执行。"
 }
 
 fn_trim_services_auto() {
@@ -241,22 +249,28 @@ fi
 
 for svc in "${services_to_trim[@]}"; do
 if systemctl list-unit-files --quiet "$svc"; then
-    echo "  正在屏蔽 (mask) $svc"
-    fn_log "信息" "  正在屏蔽 (mask) $svc"
-    (systemctl mask --now "$svc") >> "$LOG_FILE" 2>&1 || true
-    echo "$svc" >> "$TOUCHED_SERVICES_FILE"
-    masked_count=$((masked_count + 1))
+    local svc_status
+    svc_status=$(systemctl is-enabled "$svc" 2>/dev/null || echo "not-found")
+    if [[ "$svc_status" != *"masked"* ]]; then
+        echo "  正在屏蔽 (mask) $svc"
+        fn_log "信息" "  正在屏蔽 (mask) $svc"
+        (systemctl mask --now "$svc") >> "$LOG_FILE" 2>&1 || true
+        echo "$svc" >> "$TOUCHED_SERVICES_FILE"
+        masked_count=$((masked_count + 1))
+    else
+        fn_log "调试" "服务 $svc 已被屏蔽，跳过。"
+    fi
 else
     fn_log "调试" "服务 $svc 不存在，跳过。"
 fi
 done
 
 if [ "$masked_count" -eq 0 ]; then
-echo "未检测到需要屏蔽的系统服务。"
-fn_log "信息" "未检测到需要屏蔽的系统服务。"
+echo "未检测到需要新屏蔽的系统服务。"
+fn_log "信息" "未检测到需要新屏蔽的系统服务。"
 else
-echo "系统服务精简完成 (共屏蔽 ${masked_count} 个服务)。"
-fn_log "成功" "系统服务精简完成 (共屏蔽 ${masked_count} 个服务)。"
+echo "系统服务精简完成 (共屏蔽 ${masked_count} 个新服务)。"
+fn_log "成功" "系统服务精简完成 (共屏蔽 ${masked_count} 个新服务)。"
 fi
 }
 
@@ -264,15 +278,21 @@ fn_setup_zram_adaptive() {
     echo "配置 ZRAM..."
     fn_log "信息" "启用 ZRAM (systemd-zram-generator 方案)..."
     
-    dpkg -s systemd-zram-generator >/dev/null 2>&1 || {
-        echo "安装 systemd-zram-generator..."
-        fn_log "信息" "安装 systemd-zram-generator..."
+    if dpkg -s systemd-zram-generator >/dev/null 2>&1; then
+        echo "ZRAM (systemd-zram-generator) 已安装。"
+        fn_log "信息" "ZRAM (systemd-zram-generator) 已安装。"
+    else
+        echo "正在安装 ZRAM (systemd-zram-generator)..."
+        fn_log "信息" "正在安装 ZRAM (systemd-zram-generator)..."
+        fn_wait_for_apt_lock || { echo "错误: APT 锁等待失败。"; fn_log "错误" "APT 锁等待失败"; return 1; }
         apt-get install -y systemd-zram-generator >>"$LOG_FILE" 2>&1 || { 
             echo "警告: systemd-zram-generator 安装失败。"
             fn_log "警告" "安装失败"; 
             fn_setup_zram_fallback "安装失败"; 
             return 1; 
         }
+        echo "ZRAM (systemd-zram-generator) 安装完成。"
+        fn_log "信息" "ZRAM (systemd-zram-generator) 安装完成。"
     }
 
     mem_mb="$MEM_MB"
@@ -282,6 +302,9 @@ fn_setup_zram_adaptive() {
     
     echo "ZRAM 大小: ${zram_mb} MB"
     fn_log "信息" "ZRAM 大小: ${zram_mb} MB"
+
+    rm -f /etc/systemd/zram-generator.conf
+    fn_log "调试" "已移除旧 ZRAM 配置 (如果存在)。"
 
     cat > /etc/systemd/zram-generator.conf <<EOF
 [zram0]
@@ -367,15 +390,19 @@ fi
 local detected_svcs_str
 IFS=','
 detected_svcs_str="${detected_svcs[*]}"
-echo "检测到: ${detected_svcs_str}。开始应用提权..."
-fn_log "信息" "检测到: ${detected_svcs_str}。开始应用提权..."
+echo "检测到: ${detected_svcs_str}。开始应用服务优化..."
+fn_log "信息" "检测到: ${detected_svcs_str}。开始应用服务优化..."
 
 for svc in "${detected_svcs[@]}"; do
+    local conf_file="/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf"
+    if [ -f "$conf_file" ]; then
+        fn_log "调试" "配置文件 $conf_file 已存在，跳过 $svc。"
+        continue
+    fi
+    
     fn_log "调试" "为 $svc 设置 Nice=-5, CPUQuota=70%。"
     
     local svc_conf_dir="/etc/systemd/system/${svc}.service.d"
-    local conf_file="${svc_conf_dir}/90-vps_optimizert.conf" 
-    
     mkdir -p "$svc_conf_dir"
     cat > "$conf_file" <<EOF
 [Service]
@@ -386,18 +413,26 @@ EOF
     changes_made=1
 done
 
+if [ "$changes_made" -eq 0 ]; then
+     echo "网络代理服务均已配置，无需刷新。"
+     fn_log "信息" "网络代理服务均已配置，无需刷新。"
+     return 0
+fi
+
 if [ "$changes_made" -eq 1 ]; then
     fn_log "调试" "重载 systemd daemon..."
     (systemctl daemon-reload) >> "$LOG_FILE" 2>&1
 fi
-fn_log "成功" "网络服务提权刷新成功 (${detected_svcs_str})。"
+echo "网络代理服务优化成功 (${detected_svcs_str})。"
+fn_log "成功" "网络服务优化成功 (${detected_svcs_str})。"
 }
 
 fn_restore_all() {
     echo "开始执行撤销优化... 将从 $BACKUP_DIR 恢复备份。"
     fn_log "警告" "开始执行撤销优化... 将从 $BACKUP_DIR 恢复备份。"
-    rm -f /etc/sysctl.d/99-vps_optimizert.conf 
     
+    echo "  正在恢复 sysctl..."
+    rm -f /etc/sysctl.d/99-vps_optimizert.conf 
     [ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
     [ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
     cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
@@ -405,10 +440,14 @@ net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
     sysctl --system >/dev/null 2>/dev/null || true
+    
+    echo "  正在恢复 journald..."
     [ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
     systemctl restart systemd-journald >/dev/null 2>/dev/null || true
+    
     [ -f "${BACKUP_DIR}/apt.sources.list.bak" ] && cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt.sources.list 2>/dev/null || true
     
+    echo "  正在 unmask 系统服务..."
     fn_log "信息" "正在 unmask 系统服务..."
     if [ -f "$TOUCHED_SERVICES_FILE" ]; then
         while read -r svc; do
@@ -417,7 +456,8 @@ EOF
         done < <(grep -v '^#' "$TOUCHED_SERVICES_FILE")
     fi
 
-    fn_log "信息" "正在移除网络服务提权配置..."
+    echo "  正在移除网络服务优化配置..."
+    fn_log "信息" "正在移除网络服务优化配置..."
     local changes_made=0
     for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
         local conf_file="/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf"
@@ -432,6 +472,7 @@ EOF
     [ -f "${BACKUP_DIR}/enabled_services.before.txt" ] && while read -r s; do [ -z "$s" ] && continue; (systemctl enable "$s") >> "$LOG_FILE" 2>&1 || true; done < "${BACKUP_DIR}/enabled_services.before.txt"
     [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
     
+    echo "  正在停用 ZRAM 及 swapfile..."
     fn_log "信息" "正在停用 ZRAM..."
     (systemctl disable --now systemd-zram-setup@zram0.service) >> "$LOG_FILE" 2>&1 || true
     rm -f /etc/systemd/zram-generator.conf
@@ -446,6 +487,7 @@ EOF
     fi
     modprobe -r zram >/dev/null 2>&1 || true
     
+    echo "撤销优化完成。"
     fn_log "成功" "撤销优化完成。"
 }
 
@@ -519,7 +561,7 @@ fn_show_status_report() {
     done
     local trim_status="false"
     [ "$trimmed_count" -gt 0 ] && trim_status="true"
-    fn_print_line "系统服务精简" "$trim_status" "[ 已优化 ]" "[ 未优化 ]" "(共精简 ${trimmed_count} 个系统服务)"
+    fn_print_line "系统服务精简" "$trim_status" "[ 已优化 ]" "[ 未优化 ]"
 
     local zram_status="false"
     local zram_details="(未激活)"
@@ -531,7 +573,7 @@ fn_show_status_report() {
         swap_total=$(echo "$free_swap_line" | awk '{print $2}')
         local swap_used
         swap_used=$(echo "$free_swap_line" | awk '{print $3}')
-        zram_details="(总大小: $swap_total, 已用: $swap_used)"
+        zram_details="(ZRAM: $swap_total, 已用: $swap_used)"
     elif swapon -s | grep -q 'swapfile_zram'; then
         zram_status="true"
         local free_swap_line
@@ -542,7 +584,7 @@ fn_show_status_report() {
         swap_used=$(echo "$free_swap_line" | awk '{print $3}')
         zram_details="(Swapfile 回退: $swap_total, 已用: $swap_used)"
     fi
-    fn_print_line "ZRAM内存优化" "$zram_status" "[ 已激活 ]" "[ 未激活 ]" "$zram_details"
+    fn_print_line "ZRAM/Swap" "$zram_status" "[ 已激活 ]" "[ 未激活 ]" "$zram_details"
 
     local drop_in_found=()
     for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
@@ -558,20 +600,20 @@ fn_show_status_report() {
         local IFS=','
         net_prio_details="(已配置: ${drop_in_found[*]})"
     fi
-    fn_print_line "网络服务提权" "$net_prio_status" "[ 已配置 ]" "[ 未优化 ]" "$net_prio_details"
+    fn_print_line "网络服务优化" "$net_prio_status" "[ 已配置 ]" "[ 未优化 ]" "$net_prio_details"
 
     echo "======================================================"
 }
 
 fn_optimize_auto() {
 fn_backup_state
-fn_wait_for_apt_lock
 fn_fix_apt_sources_if_needed
 fn_setup_journald_volatile
 fn_setup_sysctl_lowmem
 fn_setup_zram_adaptive
 fn_prioritize_network_services_auto
 fn_trim_services_auto
+echo "系统优化完成。请重启系统以完全生效。"
 fn_log "成功" "系统优化完成。请重启系统以完全生效。"
 fn_show_status_report "noclear"
 }
@@ -606,7 +648,7 @@ fn_show_menu() {
     echo " 1) 执行系统优化 (全自动)"
     echo " 2) 撤销优化 (保留BBR)"
     echo " 3) 显示系统优化状态"
-    echo " 4) 刷新网络服务提权${detected_svcs_str}"
+    echo " 4) 优化网络代理服务${detected_svcs_str}"
     echo " 0) 退出"
     echo "===============================================
 "
@@ -626,7 +668,7 @@ fn_show_menu() {
             ;;
         4) 
             fn_prioritize_network_services_auto
-            read -rp "刷新完成。按回车返回菜单..." dummy
+            read -rp "优化完成。按回车返回菜单..." dummy
             ;;
         0) 
             echo "退出。"
