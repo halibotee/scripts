@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.2.2"
+SCRIPT_VERSION="1.2.3"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -219,12 +219,21 @@ return 0
 }
 
 fn_fix_apt_sources_if_needed() {
-# [修改] 使用新的锁函数
 fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
 fn_log "信息" "检查包管理器源健康状况..."
 
-# [修改] 使用 $PKG_UPDATE
-if $PKG_UPDATE >/dev/null 2>&1; then
+# [新增] 立即强制 APT 使用 IPv4，以防止 broken-IPv6 导致的 update 失败
+mkdir -p /etc/apt/apt.conf.d
+cat > /etc/apt/apt.conf.d/99-force-ipv4 <<'EOF'
+Acquire::ForceIPv4 "true";
+EOF
+fn_log "调试" "已创建 /etc/apt/apt.conf.d/99-force-ipv4 (强制 APT 使用 IPv4)"
+# 记录这个文件，以便 "撤销" 时可以删除
+fn_log_action "CREATE_FILE" "/etc/apt/apt.conf.d/99-force-ipv4"
+
+
+# [修改] 移除 >/dev/null 2>&1，以便在 update 失败时显示错误
+if $PKG_UPDATE; then
 fn_log "成功" "包管理器源正常。"
 return 0
 else
@@ -262,12 +271,16 @@ else
     return 1
 fi
 
-# [修改] 使用 $PKG_UPDATE
-if $PKG_UPDATE >/dev/null 2>&1; then
+# [修改] 移除 >/dev/null 2>&1，以便在 update 失败时显示错误
+if $PKG_UPDATE; then
     fn_log "成功" "APT 源替换并刷新成功。"
     return 0
 else
     fn_log "错误" "替换源后 $PKG_UPDATE 仍然失败。"
+    echo "-----------------------------------------------------"
+    echo "[错误] 致命错误: 'apt update' 彻底失败。"
+    echo "       请检查 DNS (例如 /etc/resolv.conf) 和网络连接。"
+    echo "-----------------------------------------------------"
     return 1
 fi
 fi
