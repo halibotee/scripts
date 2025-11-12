@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.12" # 版本号更新
+SCRIPT_VERSION="1.3.13" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -722,24 +722,30 @@ fn_log "成功" "网络服务优化成功 (${detected_svcs_str})。"
 return 0
 }
 
-
 fn_restore_all() {
     echo "[任务] 开始执行撤销优化..."
     fn_log "警告" "开始执行撤销优化... 将从 $ACTION_LOG 恢复。"
 
-    # [修复] 立即停用所有 swap 和 ZRAM
-    echo "[任务]   正在停用 ZRAM 和 Swap..."
-    (systemctl disable --now zramswap.service) >> "$LOG_FILE" 2>&1 || true # <-- 使用 zram-tools 的服务
-    swapoff -a >/dev/null 2>&1 || true
-    modprobe -r zram >/dev/null 2>&1 || true
-
-    if [ ! -f "$ACTION_LOG" ] || [ $(grep -vc '^#' "$ACTION_LOG") -eq 0 ]; then
-        echo "[失败] 未找到操作日志或日志为空: $ACTION_LOG。无法自动撤销所有操作。"
-        fn_log "错误" "未找到 $ACTION_LOG 或其为空。"
+    # --- 1. 主要恢复路径 (ACTION LOG) 状态检查 ---
+    local log_restored=false
+    if [ -f "$ACTION_LOG" ] && [ $(grep -vc '^#' "$ACTION_LOG") -gt 0 ]; then
+        echo "[成功] 检测到操作日志: $ACTION_LOG (共 $(grep -vc '^#' "$ACTION_LOG") 条操作)。将执行日志反向撤销..."
+        fn_log "信息" "检测到有效操作日志，将执行反向撤销。"
+        log_restored=true
+    else
+        echo "[失败] 未找到操作日志或日志为空: $ACTION_LOG。将仅使用备份文件和强制清理。"
+        fn_log "错误" "未找到 $ACTION_LOG 或其为空，无法执行日志反向撤销。"
     fi
 
-    # [核心] 使用 tac 命令倒序读取日志文件，确保按相反顺序撤销
-    if [ -f "$ACTION_LOG" ]; then
+    # --- 2. 物理状态变更 (Start) ---
+    echo "[任务]   正在停用 ZRAM 和 Swap..."
+    (systemctl disable --now zramswap.service) >> "$LOG_FILE" 2>&1 || true
+    swapoff -a >/dev/null 2>&1 || true
+    modprobe -r zram >/dev/null 2>&1 || true
+    
+    # --- 3. 执行日志反向撤销 (如果已检测到) ---
+    if [ "$log_restored" = "true" ]; then
+        # [核心] 使用 tac 命令倒序读取日志文件，执行反向操作
         tac "$ACTION_LOG" | while read -r line; do
             [ -z "$line" ] && continue
             [[ "$line" == \#* ]] && continue # 跳过注释
@@ -748,46 +754,44 @@ fn_restore_all() {
             local action=$(echo "$line" | cut -d: -f1)
             local value=$(echo "$line" | cut -d: -f2-)
 
+            # ... (Case 语句保持不变) ...
             case "$action" in
                 MASK_SERVICE)
-                    echo "[撤销]   Unmasking $value"
-                    fn_log "信息" "[撤销] Unmasking $value"
+                    echo "[日志撤销] Unmasking $value"
+                    fn_log "信息" "[日志撤销] Unmasking $value"
                     (systemctl unmask "$value") >> "$LOG_FILE" 2>&1 || true
                     ;;
                 CREATE_FILE)
-                    echo "[撤销]   Removing file/dir $value"
-                    fn_log "信息" "[撤销] Removing file/dir $value"
-                    rm -rf "$value" # 使用 rm -rf 来处理 .service.d 目录
-                    
-                    # [改进] 顺便清理 .service.d 的空父目录
+                    echo "[日志撤销] Removing file/dir $value"
+                    fn_log "信息" "[日志撤销] Removing file/dir $value"
+                    rm -rf "$value"
                     if [[ "$value" == *.service.d/*.conf ]]; then
                         rmdir "$(dirname "$value")" 2>/dev/null || true
                     fi
                     ;;
                 INSTALL_PKG)
-                    echo "[撤销]   Purging package $value"
-                    fn_log "信息" "[撤销] Purging package $value"
+                    echo "[日志撤销] Purging package $value"
+                    fn_log "信息" "[日志撤销] Purging package $value"
                     if [ ${#PKG_CMD_REMOVE[@]} -gt 0 ]; then
                         fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过卸载 $value"
                         ("${PKG_CMD_REMOVE[@]}" "$value") >> "$LOG_FILE" 2>&1
                     fi
                     ;;
-                UNINSTALL_PKG) # 撤销卸载 = 重新安装
-                    echo "[撤销]   Re-installing package $value"
-                    fn_log "信息" "[撤销] Re-installing package $value"
+                UNINSTALL_PKG) 
+                    echo "[日志撤销] Re-installing package $value"
+                    fn_log "信息" "[日志撤销] Re-installing package $value"
                     if [ ${#PKG_CMD_INSTALL[@]} -gt 0 ]; then
                         fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过安装 $value"
                         ("${PKG_CMD_INSTALL[@]}" "$value") >> "$LOG_FILE" 2>&1
                     fi
                     ;;
                 MODIFY_FILE)
-                    # 对于文件修改，我们仍然依赖 .bak 备份
                     if [ -f "${value}.bak" ]; then
-                        echo "[撤销]   Restoring $value from ${value}.bak"
-                        fn_log "信息" "[撤销] Restoring $value from ${value}.bak"
+                        echo "[日志撤销] Restoring $value from ${value}.bak"
+                        fn_log "信息" "[日志撤销] Restoring $value from ${value}.bak"
                         mv "${value}.bak" "$value" >> "$LOG_FILE" 2>&1
                     else
-                        echo "[跳过]   未找到 ${value}.bak，无法恢复 $value"
+                        echo "[日志跳过] 未找到 ${value}.bak，无法恢复 $value"
                         fn_log "警告" "未找到 ${value}.bak，无法恢复 $value"
                     fi
                     ;;
@@ -796,93 +800,73 @@ fn_restore_all() {
                     ;;
             esac
         done
+        
     fi # 结束对 ACTION_LOG 的读取
 
-    # [修复] 恢复 enabled_services.before.txt
-    if [ -f "${BACKUP_DIR}/enabled_services.before.txt" ]; then
-        echo "[任务]   正在恢复之前启用的服务..."
-        while read -r s; do 
-            [ -z "$s" ] && continue
-            (systemctl enable "$s") >> "$LOG_FILE" 2>&1 || true; 
-        done < "${BACKUP_DIR}/enabled_services.before.txt"
-    fi
-
-    # [兜底] 恢复核心备份文件
-    echo "[任务]   正在恢复 sysctl..."
-    [ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
-    [ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
+    # --- 4. 备份文件恢复 (Fallback) ---
+    echo "[任务]   正在恢复核心备份文件..."
     
-    # 保留 BBR (不使用 action log 记录，总是保留)
+    echo "[任务]     恢复 sysctl..."
+    [ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null && fn_log "信息" "恢复 /etc/sysctl.conf" || true
+    [ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null && fn_log "信息" "恢复 /etc/sysctl.d/" || true
+    
+    # 保留 BBR
     cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
     sysctl --system >/dev/null 2>/dev/null || true
 
-    echo "[任务]   正在恢复 journald..."
-    [ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
+    echo "[任务]     恢复 journald..."
+    [ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null && fn_log "信息" "恢复 journald.conf.d" || true
     systemctl restart systemd-journald >/dev/null 2>/dev/null || true
     
-    [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
+    echo "[任务]     恢复 fstab..."
+    [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null && fn_log "信息" "恢复 /etc/fstab" || true
     
-    # [新增] FORCE_CLEANUP: 清理所有由本脚本创建的特定文件
-    echo "[任务]   正在执行强制配置清理..."
+    # --- 5. 强制清理 (Cleanup) ---
+    echo "[任务]   正在执行强制配置清理 (确保无残留 vps_optimizert 配置)..."
     
-    # 清理 sysctl 配置文件
-    local sysctl_conf_file="/etc/sysctl.d/99-vps_optimizert.conf"
-    if [ -f "$sysctl_conf_file" ]; then
-        rm -f "$sysctl_conf_file"
-        fn_log "信息" "[清理] 移除 $sysctl_conf_file"
-    fi
+    local files_to_clean=(
+        "/etc/sysctl.d/99-vps_optimizert.conf"
+        "/etc/apt/apt.conf.d/99-force-ipv4"
+        "/etc/systemd/journald.conf.d/10-volatile.conf"
+        "/etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf"
+        "/etc/default/zramswap"
+        "/swapfile_zram"
+    )
     
-    # 清理强制 IPv4 配置
-    local ipv4_conf_file="/etc/apt/apt.conf.d/99-force-ipv4"
-    if [ -f "$ipv4_conf_file" ]; then
-        rm -f "$ipv4_conf_file"
-        fn_log "信息" "[清理] 移除 $ipv4_conf_file"
-    fi
+    for f in "${files_to_clean[@]}"; do
+        if [ -f "$f" ]; then
+            echo "[清理] 移除文件 $f"
+            rm -f "$f"
+            fn_log "信息" "[清理] 移除 $f"
+        fi
+    done
 
-    # 清理 journald 内存模式配置
-    local journald_conf_file="/etc/systemd/journald.conf.d/10-volatile.conf"
-    if [ -f "$journald_conf_file" ]; then
-        rm -f "$journald_conf_file"
-        fn_log "信息" "[清理] 移除 $journald_conf_file"
-    fi
-
-    # 清理 Fail2ban 后端配置
-    local f2b_conf_file="/etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf"
-    if [ -f "$f2b_conf_file" ]; then
-        rm -f "$f2b_conf_file"
-        fn_log "信息" "[清理] 移除 $f2b_conf_file"
-    fi
-    
-    # 清理 ZRAM 配置文件
-    local zram_conf_file="/etc/default/zramswap"
-    if [ -f "$zram_conf_file" ]; then
-        rm -f "$zram_conf_file"
-        fn_log "信息" "[清理] 移除 $zram_conf_file"
-    fi
-
-    # 清理 Fallback Swapfile
-    local swapfile="/swapfile_zram"
-    if [ -f "$swapfile" ]; then
-        rm -f "$swapfile"
-        fn_log "信息" "[清理] 移除 $swapfile"
-    fi
-
-    # 清理所有网络代理服务的 drop-in 配置目录
     echo "[任务]   正在清理网络服务 drop-in 配置..."
     find /etc/systemd/system/ -type d -name "*.service.d" 2>/dev/null | while read -r dropin_dir; do
         if [ -f "${dropin_dir}/90-vps_optimizert.conf" ]; then
+            echo "[清理] 移除配置目录 $dropin_dir"
             rm -rf "$dropin_dir"
             fn_log "信息" "[清理] 移除网络服务配置目录 $dropin_dir"
         fi
     done
     
-    # [修复] 将 daemon-reload 移到所有 systemd 更改之后
+    # --- 6. 服务状态恢复 (End) ---
+    echo "[任务]   正在恢复之前启用的服务 (来自 enabled_services.before.txt)..."
+    if [ -f "${BACKUP_DIR}/enabled_services.before.txt" ]; then
+        while read -r s; do 
+            [ -z "$s" ] && continue
+            (systemctl enable "$s") >> "$LOG_FILE" 2>&1 || true; 
+        done < "${BACKUP_DIR}/enabled_services.before.txt"
+    else
+        echo "[跳过] 未找到 enabled_services.before.txt，跳过服务启用恢复。"
+        fn_log "警告" "未找到 enabled_services.before.txt，跳过服务启用恢复。"
+    fi
+
+    # --- 7. 最终收尾 ---
     (systemctl daemon-reload) >> "$LOG_FILE" 2>&1
-    
-    # [新增] 完成后清空日志，以便下次运行
     rm -f "$ACTION_LOG"
     
     echo "[完成] 撤销优化完成。"
