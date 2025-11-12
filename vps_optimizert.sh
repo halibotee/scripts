@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.3"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -188,7 +188,7 @@ fn_handle_selinux() {
             echo "-----------------------------------------------------"
             echo "警告: 检测到 SELinux 状态为: $selinux_status"
             echo "SELinux 会导致性能问题并可能与优化冲突。"
-            read -rp "是否要将其永久禁用 (推荐)? (y/n): " selinux_choice
+            read -rp "是否要将其永久禁用 (推荐)? (y/n): " selinux_choice || true
             
             if [ "$selinux_choice" = "y" ] || [ "$selinux_choice" = "Y" ]; then
                 echo "正在禁用 SELinux..."
@@ -876,7 +876,7 @@ fn_show_menu() {
     echo "==============================================="
     echo " VPS 自动优化脚本 (vps_optimizert)"
     echo " 版本: $SCRIPT_VERSION"
-    echo " 备份目录: $BACKUP_DIR"
+    echo " B_DIR"
     echo " 日志文件: $LOG_FILE"
     echo "==============================================="
     echo " 1) 执行系统优化 (全自动)"
@@ -886,19 +886,20 @@ fn_show_menu() {
     echo " 0) 退出"
     echo "===============================================
 "
-    read -rp "请选择: " CH
+    read -rp "请选择: " CH || true
     case "$CH" in
         1) 
             fn_optimize_auto 
-            read -rp "优化完成 (请重启)。按回车返回主菜单..." dummy
+            read -rp "优化完成 (请重启)。按回车返回主菜单..." dummy || true
             ;;
         2) 
             fn_restore_all 
-            read -rp "撤销完成。按回车返回主菜单..." dummy
+            read -rp "撤销完成。按回车返回主菜单..." dummy || true
             ;;
         3) 
             fn_show_status_report
-            read -rp "按回车返回菜单..." dummy 
+            read -rp "按回车返回菜单..." dummy || true
+Area"
             ;;
         4) 
             echo "[任务] 正在优化网络代理服务..."
@@ -909,7 +910,7 @@ fn_show_menu() {
             elif [ $result -eq 2 ]; then
                 echo "[跳过] 未检测到服务或服务均已配置。"
             fi
-            read -rp "按回车返回菜单..." dummy
+            read -rp "按回车返回菜单..." dummy || true
             ;;
         0) 
             echo "退出。"
