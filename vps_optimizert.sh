@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.6" # 版本号更新
+SCRIPT_VERSION="1.3.7" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -844,6 +844,7 @@ fn_show_status_report() {
         [ "$status" == "true" ] && status_msg="$success_msg"
         local details_str=""
         [ -n "$details" ] && details_str="$details"
+        # [修改] 保持 printf 格式，它会在终端中正确对齐
         printf "  %-30s %-15s %s\n" "$name" "$status_msg" "$details_str"
     }
 
@@ -895,7 +896,7 @@ fn_show_status_report() {
 
     local f2b_line="Fail2ban"
     local f2b_status="false"
-    local f2b_success_msg="[ 已激活 ]"
+    local f2b_success_msg="[ 已优化 ]" # <-- [修改] 更改措辞
     local f2b_fail_msg="[ 未激活 ]"
     local f2b_details="(未安装)"
     # [修复] 使用数组调用 (修复 Bug 1)
@@ -951,7 +952,7 @@ fn_show_status_report() {
         swap_total=$(echo "$free_swap_line" | awk '{print $2}')
         local swap_used
         swap_used=$(echo "$free_swap_line" | awk '{print $3}')
-        zram_details="(ZRAM: $swap_total, 已用: $swap_used)"
+        zram_details="(已激活 ZRAM: $swap_total, 已用: $swap_used)" # <-- [修改] 更改措辞
     elif swapon -s | grep -q 'swapfile_zram'; then
         zram_status="true"
         local free_swap_line
@@ -960,9 +961,9 @@ fn_show_status_report() {
         swap_total=$(echo "$free_swap_line" | awk '{print $2}')
         local swap_used
         swap_used=$(echo "$free_swap_line" | awk '{print $3}')
-        zram_details="(Swapfile 回退: $swap_total, 已用: $swap_used)"
+        zram_details="(已激活 Swapfile: $swap_total, 已用: $swap_used)" # <-- [修改] 更改措辞
     fi
-    fn_print_line "ZRAM/Swap" "$zram_status" "[ 已激活 ]" "[ 未激活 ]" "$zram_details"
+    fn_print_line "ZRAM/Swap" "$zram_status" "[ 已优化 ]" "[ 未激活 ]" "$zram_details" # <-- [修改] 更改措辞
 
     local drop_in_found=()
     for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
