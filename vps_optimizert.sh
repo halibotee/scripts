@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.8" # 版本号更新
+SCRIPT_VERSION="1.3.9" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -954,23 +954,23 @@ fn_show_status_report() {
     if systemctl is-active zramswap.service >/dev/null 2>&1 && swapon -s | grep -q 'zram'; then
         zram_status="true"
         local free_swap_line
-        free_swap_line=$(free -h | grep '^Swap:')
+        free_swap_line=$(free -h --si | grep '^Swap:') # <-- [修改] 添加 --si
         local swap_total
         swap_total=$(echo "$free_swap_line" | awk '{print $2}')
         local swap_used
         swap_used=$(echo "$free_swap_line" | awk '{print $3}')
-        zram_details="(已激活 ZRAM: $swap_total, 已用: $swap_used)" # <-- [修改] 更改措辞
+        zram_details="(已激活 ZRAM: $swap_total, 已用: $swap_used)"
     elif swapon -s | grep -q 'swapfile_zram'; then
         zram_status="true"
         local free_swap_line
-        free_swap_line=$(free -h | grep '^Swap:')
+        free_swap_line=$(free -h --si | grep '^Swap:') # <-- [修改] 添加 --si
         local swap_total
         swap_total=$(echo "$free_swap_line" | awk '{print $2}')
         local swap_used
         swap_used=$(echo "$free_swap_line" | awk '{print $3}')
-        zram_details="(已激活 Swapfile: $swap_total, 已用: $swap_used)" # <-- [修改] 更改措辞
+        zram_details="(已激活 Swapfile: $swap_total, 已用: $swap_used)"
     fi
-    fn_print_line "ZRAM/Swap" "$zram_status" "[ 已优化 ]" "[ 未激活 ]" "$zram_details" # <-- [修改] 更改措辞
+    fn_print_line "ZRAM/Swap" "$zram_status" "[ 已优化 ]" "[ 未激活 ]" "$zram_details"
 
     local drop_in_found=()
     for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
