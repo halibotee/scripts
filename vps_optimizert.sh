@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.1" # 版本号更新
+SCRIPT_VERSION="1.3.2" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -544,13 +544,14 @@ fn_setup_zram_adaptive() {
 
     mem_mb="$MEM_MB"
     
-    # [修改] 设置为 100% 物理内存
-    zram_mb="$mem_mb"
+    # [修复] 100% (954MB) 在此 VPS 上过高，无法分配。
+    # [修复] 恢复为 50% 的物理内存，这是一个更安全、更可靠的设置。
+    zram_mb=$(( mem_mb / 2 ))
     
-    # [修改] 增加一个上限 (例如 4GB)，以防在大内存机器上失控
-    [ "$zram_mb" -gt 4096 ] && zram_mb=4096
+    # 保留一个上限，以防用于大内存机器
+    [ "$zram_mb" -gt 4096 ] && zram_mb=4096 
     
-    fn_log "信息" "ZRAM 目标大小: ${zram_mb} MB (100% 物理内存)"
+    fn_log "信息" "ZRAM 目标大小: ${zram_mb} MB (50% 物理内存)"
 
     local conf_file="/etc/systemd/zram-generator.conf" # [新增]
     rm -f "$conf_file"
@@ -603,7 +604,7 @@ EOF
         return 0 # 返回 "成功"
     else
         fn_log "错误" "ZRAM 激活失败 (尝试 2 仍失败)，使用 swapfile 回退"
-        fn_log "信息" "这在100%内存设置下是正常行为，ZRAM 应在重启后生效。"
+        # [修复] 移除 "正常行为" 的日志，因为它在 50% 时不再是正常行为
         fn_setup_zram_fallback "ZRAM 激活失败"
         return 1
     fi
