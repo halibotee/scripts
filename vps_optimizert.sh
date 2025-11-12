@@ -539,27 +539,43 @@ EOF
 
     [ -f "${BACKUP_DIR}/apt.sources.list.bak" ] && cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt.sources.list 2>/dev/null || true
     
-    echo "[任务]   正在 unmask 系统服务..."
-    fn_log "信息" "正在 unmask 系统服务..."
+    # [修复 1] 仅在文件存在时才执行 Unmask
     if [ -f "$TOUCHED_SERVICES_FILE" ]; then
+        echo "[任务]   正在 unmask 系统服务..."
+        fn_log "信息" "正在 unmask 系统服务..."
         while read -r svc; do
             [ -z "$svc" ] && continue
             [[ "$svc" == *.service ]] || [[ "$svc" == *.timer ]] || [[ "$svc" == *.socket ]] && (systemctl unmask "$svc") >> "$LOG_FILE" 2>&1 || true
         done < <(grep -v '^#' "$TOUCHED_SERVICES_FILE")
+    else
+        echo "[跳过]   未找到服务记录文件 ($TOUCHED_SERVICES_FILE)，跳过 unmask。"
     fi
 
-    echo "[任务]   正在移除网络服务优化配置..."
-    fn_log "信息" "正在移除网络服务优化配置..."
-    local changes_made=0
+    # [修复 2] 仅在检测到配置文件时才执行网络服务移除
+    local network_files_found=0
     for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
-        local conf_file="/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf"
-        if [ -f "$conf_file" ]; then
-            rm -rf "/etc/systemd/system/${svc}.service.d"
-            fn_log "信息" "已移除 ${svc}.service.d 目录"
-            changes_made=1
+        if [ -f "/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf" ]; then
+            network_files_found=1
+            break
         fi
     done
-    [ "$changes_made" -eq 1 ] && (systemctl daemon-reload) >> "$LOG_FILE" 2>&1
+    
+    if [ "$network_files_found" -eq 1 ]; then
+        echo "[任务]   正在移除网络服务优化配置..."
+        fn_log "信息" "正在移除网络服务优化配置..."
+        local changes_made=0
+        for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
+            local conf_file="/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf"
+            if [ -f "$conf_file" ]; then
+                rm -rf "/etc/systemd/system/${svc}.service.d"
+                fn_log "信息" "已移除 ${svc}.service.d 目录"
+                changes_made=1
+            fi
+        done
+        [ "$changes_made" -eq 1 ] && (systemctl daemon-reload) >> "$LOG_FILE" 2>&1
+    else
+        echo "[跳过]   未检测到网络服务优化配置，跳过移除。"
+    fi
 
     [ -f "${BACKUP_DIR}/enabled_services.before.txt" ] && while read -r s; do [ -z "$s" ] && continue; (systemctl enable "$s") >> "$LOG_FILE" 2>&1 || true; done < "${BACKUP_DIR}/enabled_services.before.txt"
     [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
@@ -599,7 +615,6 @@ EOF
     echo "[完成] 撤销优化完成。"
     fn_log "成功" "撤销优化完成。"
 }
-
 fn_show_status_report() {
     if [ "${1:-}" != "noclear" ]; then
         clear
