@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.10" # 版本号更新
+SCRIPT_VERSION="1.3.11" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -991,20 +991,45 @@ fn_show_status_report() {
     fi
     fn_print_line "ZRAM/Swap" "$zram_status" "[ 已优化 ]" "[ 未激活 ]" "$zram_details"
 
+    # [修复] 复制 fn_prioritize_network_services_auto 中的通配符搜索逻辑
+    
+    # 1. 搜索匹配的服务
+    local found_names=()
+    for pattern in "${FN_NETWORK_SERVICES_LIST[@]}"; do
+        while read -r service_file; do
+            [ -z "$service_file" ] && continue
+            local base_name="${service_file%.service}" 
+            found_names+=("$base_name")
+        done < <(systemctl list-unit-files --type=service --no-legend "${pattern}.service" 2>/dev/null | awk '{print $1}')
+    done
+    local detected_svcs=()
+    mapfile -t detected_svcs < <(printf "%s\n" "${found_names[@]}" | sort -u)
+
+    # 2. 检查这些找到的服务是否 *已配置*
     local drop_in_found=()
-    for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
+    for svc in "${detected_svcs[@]}"; do 
         if [ -f "/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf" ]; then
             drop_in_found+=("$svc")
         fi
     done
     
+    # 3. 设置状态
     local net_prio_status="false"
-    local net_prio_details="(未检测到网络代理服务)"
-    if [ ${#drop_in_found[@]} -gt 0 ]; then
-        net_prio_status="true"
-        local IFS=','
-        net_prio_details="(已配置: ${drop_in_found[*]})"
+    local net_prio_details="(未检测到网络代理服务)" # 默认
+    
+    if [ ${#detected_svcs[@]} -gt 0 ]; then # 如果我们检测到了服务
+        if [ ${#drop_in_found[@]} -gt 0 ]; then # 并且它们之中有被配置的
+            net_prio_status="true"
+            local IFS=','
+            net_prio_details="(已配置: ${drop_in_found[*]})"
+        else # 检测到了服务，但它们未被配置
+            net_prio_status="false"
+            local IFS=','
+            net_prio_details="(检测到: ${detected_svcs[*]}; 未配置)"
+        fi
     fi
+    # [修复] 结束
+    
     fn_print_line "网络服务优化" "$net_prio_status" "[ 已配置 ]" "[ 未优化 ]" "$net_prio_details"
 
     echo "======================================================"
