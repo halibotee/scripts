@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.1.4"
+SCRIPT_VERSION="1.1.5"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -323,12 +323,14 @@ fn_log "信息" "系统服务精简: 自动屏蔽非必要服务..."
 local masked_count=0
 local services_to_trim=("${FN_TRIM_SERVICES_LIST[@]}")
 
-if systemctl list-unit-files --quiet "rsyslog.service"; then
+# [修复] 将 --quiet 替换为 >/dev/null 2>&1 来彻底隐藏输出
+if systemctl list-unit-files "rsyslog.service" >/dev/null 2>&1; then
 services_to_trim+=("rsyslog.service")
 fi
 
 for svc in "${services_to_trim[@]}"; do
-if systemctl list-unit-files --quiet "$svc"; then
+# [修复] 将 --quiet 替换为 >/dev/null 2>&1 来彻底隐藏输出
+if systemctl list-unit-files "$svc" >/dev/null 2>&1; then
     local svc_status
     svc_status=$(systemctl is-enabled "$svc" 2>/dev/null || echo "not-found")
     
