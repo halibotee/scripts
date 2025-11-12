@@ -517,94 +517,101 @@ _fn_cleanup_fallback_swap() {
 }
 
 fn_setup_zram_adaptive() {
-    fn_log "信息" "启用 ZRAM (systemd-zram-generator 方案)..."
+    fn_log "信息" "启用 ZRAM (切换到 zram-tools 方案)..."
 
-    # [修改] 检查 ZRAM 是否已激活
-    if [ -b /dev/zram0 ] && swapon -s | grep -q 'zram'; then
-        fn_log "信息" "ZRAM 已激活，跳过。"
+    # [修改] 检查 zramswap 服务是否已激活
+    if systemctl is-active zramswap.service >/dev/null 2>&1; then
+        fn_log "信息" "ZRAM (zram-tools) 已激活，跳过。"
         _fn_cleanup_fallback_swap # <-- [新增] 调用清理
         return 2 # 返回 "跳过"
     fi
     
-    # [修复] 使用数组调用 (修复 Bug 1)
+    # [修改] 卸载冲突的 systemd-zram-generator (如果存在)
     if "${PKG_CMD_CHECK[@]}" systemd-zram-generator >/dev/null 2>&1; then
-        fn_log "信息" "ZRAM (systemd-zram-generator) 已安装。"
-    else
-        fn_log "信息" "正在安装 ZRAM (systemd-zram-generator)..."
+        fn_log "信息" "检测到冲突的 systemd-zram-generator，正在卸载..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
-        # [修复] 使用数组调用 (修复 Bug 1)
-        "${PKG_CMD_INSTALL[@]}" systemd-zram-generator >>"$LOG_FILE" 2>&1 || { 
-            fn_log "警告" "安装失败"; 
-            fn_setup_zram_fallback "安装失败"; 
+        "${PKG_CMD_REMOVE[@]}" systemd-zram-generator >>"$LOG_FILE" 2>&1 || true
+        fn_log_action "INSTALL_PKG" "systemd-zram-generator" # 记录它，以便恢复时知道它被删了
+    fi
+    
+    # [修改] 确保 zram-tools 已安装
+    if "${PKG_CMD_CHECK[@]}" zram-tools >/dev/null 2>&1; then
+        fn_log "信息" "ZRAM (zram-tools) 已安装。"
+    else
+        fn_log "信息" "正在安装 ZRAM (zram-tools)..."
+        fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
+        "${PKG_CMD_INSTALL[@]}" zram-tools >>"$LOG_FILE" 2>&1 || { 
+            fn_log "警告" "zram-tools 安装失败"; 
+            fn_setup_zram_fallback "zram-tools 安装失败"; 
             return 1; 
         }
-        fn_log_action "INSTALL_PKG" "systemd-zram-generator" # [新增] 记录操作
-        fn_log "信息" "ZRAM (systemd-zram-generator) 安装完成。"
+        fn_log_action "INSTALL_PKG" "zram-tools" # [新增] 记录操作
+        fn_log "信息" "ZRAM (zram-tools) 安装完成。"
     fi
 
     mem_mb="$MEM_MB"
-    
-    # [修复] 100% (954MB) 在此 VPS 上过高，无法分配。
-    # [修复] 恢复为 50% 的物理内存，这是一个更安全、更可靠的设置。
-    zram_mb=$(( mem_mb / 2 ))
-    
-    # 保留一个上限，以防用于大内存机器
-    [ "$zram_mb" -gt 4096 ] && zram_mb=4096 
-    
-    fn_log "信息" "ZRAM 目标大小: ${zram_mb} MB (50% 物理内存)"
+    # [修改] 设置为 100% 物理内存 (高风险)
+    local zram_percent=100
+    fn_log "信息" "ZRAM 目标大小: ${zram_percent}% 物理内存 (高风险设置)"
 
-    local conf_file="/etc/systemd/zram-generator.conf" # [新增]
-    rm -f "$conf_file"
-    fn_log "调试" "已移除旧 ZRAM 配置 (如果存在)。"
+    # [修改] 移除旧的 zram-generator 配置文件 (如果存在)
+    local old_conf_file="/etc/systemd/zram-generator.conf"
+    if [ -f "$old_conf_file" ]; then
+        rm -f "$old_conf_file"
+        fn_log "调试" "已移除旧的 zram-generator.conf"
+    fi
 
+    # [修改] 创建新的 zram-tools 配置文件
+    local conf_file="/etc/default/zramswap"
     cat > "$conf_file" <<EOF
-[zram0]
-zram-size = ${zram_mb}M
-compression-algorithm = lz4
-swap-priority = 100
+# Configuration for zram-tools
+# ALGO uses lz4 for best performance
+ALGO=lz4
+# PERCENT sets percentage of RAM to use for zram
+PERCENT=${zram_percent}
+PRIORITY=100
 EOF
     fn_log_action "CREATE_FILE" "$conf_file" # [新增] 记录操作
     fn_log "调试" "已写入 $conf_file"
 
     modprobe zram || true
     fn_log "调试" "已执行 modprobe zram"
-    systemctl daemon-reexec || true
-    fn_log "调试" "已执行 systemctl daemon-reexec"
     
     # --- 尝试 1 ---
-    (systemctl restart systemd-zram-setup@zram0.service) >> "$LOG_FILE" 2>&1 || true
-    fn_log "调试" "已重启 systemd-zram-setup@zram0.service (尝试 1)，等待 3 秒..."
+    # [修改] 重启 zramswap.service
+    (systemctl restart zramswap.service) >> "$LOG_FILE" 2>&1 || true
+    fn_log "调试" "已重启 zramswap.service (尝试 1)，等待 3 秒..."
     sleep 3
 
-    # [修改] 检查 1
+    # 检查 1
     if [ -b /dev/zram0 ] && swapon -s | grep -q 'zram'; then
-        fn_log "成功" "ZRAM 已激活 (尝试 1 成功)"
+        fn_log "成功" "ZRAM (zram-tools) 已激活 (尝试 1 成功)"
         (swapon -s) >> "$LOG_FILE" 2>&1
-        systemctl enable systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+        systemctl enable zramswap.service >/dev/null 2>&1 || true
         _fn_cleanup_fallback_swap # <-- [新增] 调用清理
         return 0 # 返回 "成功"
     fi
 
-    # --- [新增] 尝试 2：清理内核缓存后重试 ---
+    # --- 尝试 2：清理内核缓存后重试 ---
     fn_log "警告" "ZRAM 激活失败 (尝试 1)，将尝试清理内核缓存后重试..."
     (sync && echo 3 > /proc/sys/vm/drop_caches) 2>/dev/null || true
     fn_log "调试" "已清理内核缓存，等待 2 秒..."
     sleep 2
 
-    (systemctl restart systemd-zram-setup@zram0.service) >> "$LOG_FILE" 2>&1 || true
-    fn_log "调试" "已重启 systemd-zram-setup@zram0.service (尝试 2)，等待 3 秒..."
+    (systemctl restart zramswap.service) >> "$LOG_FILE" 2>&1 || true
+    fn_log "调试" "已重启 zramswap.service (尝试 2)，等待 3 秒..."
     sleep 3
 
-    # [修改] 检查 2
+    # 检查 2
     if [ -b /dev/zram0 ] && swapon -s | grep -q 'zram'; then
-        fn_log "成功" "ZRAM 已激活 (尝试 2 成功)"
+        fn_log "成功" "ZRAM (zram-tools) 已激活 (尝试 2 成功)"
         (swapon -s) >> "$LOG_FILE" 2>&1
-        systemctl enable systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+        systemctl enable zramswap.service >/dev/null 2>&1 || true
         _fn_cleanup_fallback_swap # <-- [新增] 调用清理
         return 0 # 返回 "成功"
     else
-        fn_log "错误" "ZRAM 激活失败 (尝试 2 仍失败)，使用 swapfile 回退"
-        # [修复] 移除 "正常行为" 的日志，因为它在 50% 时不再是正常行为
+        fn_log "错误" "ZRAM (zram-tools) 激活失败 (尝试 2 仍失败)，使用 swapfile 回退"
+        fn_log "警告" "100% 内存分配失败。这在低内存 VPS 上是常见情况 (os error 12)。"
         fn_setup_zram_fallback "ZRAM 激活失败"
         return 1
     fi
