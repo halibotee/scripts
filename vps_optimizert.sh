@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.7" # 版本号更新
+SCRIPT_VERSION="1.3.8" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -871,7 +871,14 @@ fn_show_status_report() {
     fn_print_line "VFS 缓存压力 (100)" "$sysctl_status" "[ 已优化 ]" "[ 未优化 ]" "$vfs_details"
 
     local ipv6_details=""
-    [ "$sysctl_status" == "true" ] && ipv6_details="(当前: $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null))"
+    # [修改] 根据用户要求，将 (当前: 1) 替换为 (已禁用)
+    if [ "$sysctl_status" == "true" ]; then
+        if [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" == "1" ]; then
+            ipv6_details="(已禁用)"
+        else
+            ipv6_details="(当前: $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null))" # 保留回退
+        fi
+    fi
     fn_print_line "禁用IPv6" "$sysctl_status" "[ 已优化 ]" "[ 未优化 ]" "$ipv6_details"
 
 
