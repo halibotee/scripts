@@ -48,6 +48,7 @@ FN_TRIM_SERVICES_LIST=(
 "qemu-guest-agent.service"
 "atop.service"
 "atopacctd.service"
+"rc-local.service"
 )
 
 FN_NETWORK_SERVICES_LIST=(
