@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.9-GM"
+SCRIPT_VERSION="3.0-GM"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -251,14 +251,18 @@ for svc in "${services_to_trim[@]}"; do
 if systemctl list-unit-files --quiet "$svc"; then
     local svc_status
     svc_status=$(systemctl is-enabled "$svc" 2>/dev/null || echo "not-found")
-    if [[ "$svc_status" != *"masked"* ]]; then
+    
+    if [[ "$svc_status" == *"masked"* ]]; then
+        echo "  $svc 已屏蔽。"
+        fn_log "调试" "服务 $svc 已被屏蔽，跳过。"
+    elif [[ "$svc_status" == "not-found" ]]; then
+        fn_log "调试" "服务 $svc 不存在，跳过。"
+    else
         echo "  正在屏蔽 $svc"
         fn_log "信息" "  正在屏蔽 (mask) $svc"
         (systemctl mask --now "$svc") >> "$LOG_FILE" 2>&1 || true
         echo "$svc" >> "$TOUCHED_SERVICES_FILE"
         masked_count=$((masked_count + 1))
-    else
-        fn_log "调试" "服务 $svc 已被屏蔽，跳过。"
     fi
 else
     fn_log "调试" "服务 $svc 不存在，跳过。"
