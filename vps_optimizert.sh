@@ -802,7 +802,8 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 3 ] ：检查 SELinux 状态..."
-    fn_handle_selinux; result=$? # [修复] set -e 退出
+    result=0 # <-- 修复
+    fn_handle_selinux || result=$? # <-- 修复
     if [ $result -eq 0 ]; then
         echo "[完成] SELinux 检查完成 (已操作)。"
     elif [ $result -eq 2 ]; then
@@ -811,7 +812,8 @@ fn_optimize_auto() {
     echo "--------------"
     
     echo "[任务 4 ] ：配置 Journald (日志)..."
-    fn_setup_journald_volatile; result=$? # [修复] set -e 退出
+    result=0 # <-- 修复
+    fn_setup_journald_volatile || result=$? # <-- 修复
     if [ $result -eq 0 ]; then
         echo "[完成] Journald 已配置为内存模式。"
     elif [ $result -eq 2 ]; then
@@ -820,7 +822,8 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 5 ] ：应用 sysctl 网络调优..."
-    fn_setup_sysctl_lowmem; result=$? # [修复] set -e 退出
+    result=0 # <-- 修复
+    fn_setup_sysctl_lowmem || result=$? # <-- 修复
     if [ $result -eq 0 ]; then
         echo "[完成] sysctl (BBR+FQ) 配置文件已创建并应用。"
     elif [ $result -eq 2 ]; then
@@ -829,7 +832,8 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 6 ] ：配置 ZRAM..."
-    fn_setup_zram_adaptive; result=$? # [修复] set -e 退出
+    result=0 # <-- 修复
+    fn_setup_zram_adaptive || result=$? # <-- 修复
     if [ $result -eq 0 ]; then
         echo "[完成] ZRAM 配置成功。"
     elif [ $result -eq 2 ]; then
@@ -840,7 +844,8 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 7 ] ：配置 Fail2ban..."
-    fn_setup_fail2ban; result=$? # [修复] set -e 退出
+    result=0 # <-- 修复
+    fn_setup_fail2ban || result=$? # <-- 修复
     if [ $result -eq 0 ]; then
         echo "[完成] Fail2ban 配置成功。"
     elif [ $result -eq 2 ]; then
@@ -851,7 +856,8 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 8 ] ：优化网络代理服务..."
-    fn_prioritize_network_services_auto; result=$? # [修复] set -e 退出
+    result=0 # <-- 修复
+    fn_prioritize_network_services_auto || result=$? # <-- 修复
     if [ $result -eq 0 ]; then
         echo "[完成] 网络代理服务优化完成。"
     elif [ $result -eq 2 ]; then
@@ -860,7 +866,8 @@ fn_optimize_auto() {
     echo "--------------"
     
     echo "[任务 9 ] ：精简系统服务..."
-    fn_trim_services_auto; result=$? # [修复] set -e 退出
+    result=0 # <-- 修复
+    fn_trim_services_auto || result=$? # <-- 修复
     if [ $result -eq 0 ]; then
         echo "[完成] 系统服务精简完成。"
     elif [ $result -eq 2 ]; then
@@ -925,7 +932,8 @@ fn_show_menu() {
             ;;
         4) 
             echo "[任务] 正在优化网络代理服务..."
-            fn_prioritize_network_services_auto; result=$? # [修复] set -e 退出
+            result=0 # <-- 修复
+            fn_prioritize_network_services_auto || result=$? # <-- 修复
             if [ $result -eq 0 ]; then
                 echo "[完成] 优化完成。"
             elif [ $result -eq 2 ]; then
