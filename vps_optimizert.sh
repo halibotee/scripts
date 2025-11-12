@@ -9,11 +9,17 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.0" # 版本号更新
+SCRIPT_VERSION="1.3.1" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
 export DEBIAN_FRONTEND=noninteractive
+
+# [修复] 声明为索引数组 (indexed arrays)
+declare -ga PKG_CMD_INSTALL
+declare -ga PKG_CMD_REMOVE
+declare -ga PKG_CMD_CHECK
+declare -ga PKG_CMD_UPDATE
 
 FN_TRIM_SERVICES_LIST=(
 "apt-daily.timer"
@@ -149,8 +155,7 @@ fn_wait_for_pkg_lock() {
 
 # [修改] 替换为包含包管理器抽象化的版本
 fn_detect_os() {
-    # [修复] 使用数组来处理包管理器命令 (修复 Bug 1)
-    declare -gA PKG_CMD # 创建全局关联数组
+    # [修复] 不在此处声明，已移至脚本顶部
     
     if [ -f /etc/os-release ]; then
         source /etc/os-release
@@ -165,19 +170,19 @@ fn_detect_os() {
         exit 1
     fi
 
-    # [修复] 使用 Bash 数组定义命令，避免所有 word-splitting 问题
+    # [修复] 分配到独立的全局数组
     case "$OS_ID" in
         debian|ubuntu)
-            PKG_CMD[INSTALL]=("apt-get" "install" "-y")
-            PKG_CMD[REMOVE]=("apt-get" "remove" "-y" "--purge")
-            PKG_CMD[CHECK]=("dpkg" "-s")
-            PKG_CMD[UPDATE]=("apt-get" "update")
+            PKG_CMD_INSTALL=("apt-get" "install" "-y")
+            PKG_CMD_REMOVE=("apt-get" "remove" "-y" "--purge")
+            PKG_CMD_CHECK=("dpkg" "-s")
+            PKG_CMD_UPDATE=("apt-get" "update")
             ;;
         fedora|rhel|centos|almalinux|rocky)
-            PKG_CMD[INSTALL]=("dnf" "install" "-y")
-            PKG_CMD[REMOVE]=("dnf" "remove" "-y")
-            PKG_CMD[CHECK]=("rpm" "-q")
-            PKG_CMD[UPDATE]=("dnf" "check-update" "--quiet")
+            PKG_CMD_INSTALL=("dnf" "install" "-y")
+            PKG_CMD_REMOVE=("dnf" "remove" "-y")
+            PKG_CMD_CHECK=("rpm" "-q")
+            PKG_CMD_UPDATE=("dnf" "check-update" "--quiet")
             ;;
         *)
             echo "错误: 不支持的操作系统 $OS_ID。"
@@ -234,7 +239,7 @@ EOF
 fi
 
 # [修复] 使用数组调用，并移除 -qq 以显示错误
-if "${PKG_CMD[UPDATE][@]}"; then
+if "${PKG_CMD_UPDATE[@]}"; then
 fn_log "成功" "包管理器源正常。"
 return 0
 else
@@ -273,11 +278,11 @@ else
 fi
 
 # [修复] 使用数组调用，并移除 -qq
-if "${PKG_CMD[UPDATE][@]}"; then
+if "${PKG_CMD_UPDATE[@]}"; then
     fn_log "成功" "APT 源替换并刷新成功。"
     return 0
 else
-    local update_cmd_str="${PKG_CMD[UPDATE][@]}"
+    local update_cmd_str="${PKG_CMD_UPDATE[@]}"
     fn_log "错误" "替换源后 ${update_cmd_str} 仍然失败。"
     echo "-----------------------------------------------------"
     echo "[错误] 致命错误: 'apt update' 彻底失败。"
@@ -348,13 +353,13 @@ fn_setup_fail2ban() {
     fi
     
     # [修复] 使用数组调用 (修复 Bug 1)
-    if "${PKG_CMD[CHECK][@]}" fail2ban >/dev/null 2>&1; then
+    if "${PKG_CMD_CHECK[@]}" fail2ban >/dev/null 2>&1; then
         fn_log "信息" "Fail2ban 已安装 (但未运行)。"
     else
         fn_log "信息" "正在安装 Fail2ban..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
         # [修复] 使用数组调用 (修复 Bug 1)
-        "${PKG_CMD[INSTALL][@]}" fail2ban >>"$LOG_FILE" 2>&1 || { 
+        "${PKG_CMD_INSTALL[@]}" fail2ban >>"$LOG_FILE" 2>&1 || { 
             fn_log "警告" "Fail2ban 安装失败。"; 
             return 1; 
         }
@@ -522,13 +527,13 @@ fn_setup_zram_adaptive() {
     fi
     
     # [修复] 使用数组调用 (修复 Bug 1)
-    if "${PKG_CMD[CHECK][@]}" systemd-zram-generator >/dev/null 2>&1; then
+    if "${PKG_CMD_CHECK[@]}" systemd-zram-generator >/dev/null 2>&1; then
         fn_log "信息" "ZRAM (systemd-zram-generator) 已安装。"
     else
         fn_log "信息" "正在安装 ZRAM (systemd-zram-generator)..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
         # [修复] 使用数组调用 (修复 Bug 1)
-        "${PKG_CMD[INSTALL][@]}" systemd-zram-generator >>"$LOG_FILE" 2>&1 || { 
+        "${PKG_CMD_INSTALL[@]}" systemd-zram-generator >>"$LOG_FILE" 2>&1 || { 
             fn_log "警告" "安装失败"; 
             fn_setup_zram_fallback "安装失败"; 
             return 1; 
@@ -742,9 +747,9 @@ fn_restore_all() {
                     echo "[撤销]   Purging package $value"
                     fn_log "信息" "[撤销] Purging package $value"
                     # [修复] 使用数组调用 (修复 Bug 1)
-                    if [ ${#PKG_CMD[@]} -gt 0 ]; then
+                    if [ ${#PKG_CMD_REMOVE[@]} -gt 0 ]; then
                         fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过卸载 $value"
-                        ("${PKG_CMD[REMOVE][@]}" "$value") >> "$LOG_FILE" 2>&1
+                        ("${PKG_CMD_REMOVE[@]}" "$value") >> "$LOG_FILE" 2>&1
                     fi
                     ;;
                 MODIFY_FILE)
@@ -881,7 +886,7 @@ fn_show_status_report() {
     if systemctl is-active fail2ban >/dev/null 2>&1; then
         f2b_status="true"
         f2b_details="(已激活)"
-    elif "${PKG_CMD[CHECK][@]}" fail2ban >/dev/null 2>&1; then
+    elif "${PKG_CMD_CHECK[@]}" fail2ban >/dev/null 2>&1; then
         f2b_status="false"
         f2b_details="(已安装/未运行)"
     fi
