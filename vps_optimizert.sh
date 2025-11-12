@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.4" # 版本号更新
+SCRIPT_VERSION="1.3.6" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -531,7 +531,7 @@ fn_setup_zram_adaptive() {
         fn_log "信息" "检测到冲突的 systemd-zram-generator，正在卸载..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
         "${PKG_CMD_REMOVE[@]}" systemd-zram-generator >>"$LOG_FILE" 2>&1 || true
-        fn_log_action "INSTALL_PKG" "systemd-zram-generator" # 记录它，以便恢复时知道它被删了
+        fn_log_action "UNINSTALL_PKG" "systemd-zram-generator" # <-- [修复] 记录正确的动作
     fi
     
     # [修改] 确保 zram-tools 已安装
@@ -713,9 +713,9 @@ fn_restore_all() {
     echo "[任务] 开始执行撤销优化..."
     fn_log "警告" "开始执行撤销优化... 将从 $ACTION_LOG 恢复。"
 
-    # [修复] 立即停用所有 swap 和 ZRAM，防止 "cannot remove" 错误
+    # [修复] 立即停用所有 swap 和 ZRAM
     echo "[任务]   正在停用 ZRAM 和 Swap..."
-    (systemctl disable --now systemd-zram-setup@zram0.service) >> "$LOG_FILE" 2>&1 || true
+    (systemctl disable --now zramswap.service) >> "$LOG_FILE" 2>&1 || true # <-- [修复] 使用 zram-tools 的服务
     swapoff -a >/dev/null 2>&1 || true
     modprobe -r zram >/dev/null 2>&1 || true
 
@@ -758,6 +758,14 @@ fn_restore_all() {
                     if [ ${#PKG_CMD_REMOVE[@]} -gt 0 ]; then
                         fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过卸载 $value"
                         ("${PKG_CMD_REMOVE[@]}" "$value") >> "$LOG_FILE" 2>&1
+                    fi
+                    ;;
+                UNINSTALL_PKG) # <-- [新增] 撤销卸载 = 重新安装
+                    echo "[撤销]   Re-installing package $value"
+                    fn_log "信息" "[撤销] Re-installing package $value"
+                    if [ ${#PKG_CMD_INSTALL[@]} -gt 0 ]; then
+                        fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过安装 $value"
+                        ("${PKG_CMD_INSTALL[@]}" "$value") >> "$LOG_FILE" 2>&1
                     fi
                     ;;
                 MODIFY_FILE)
@@ -933,7 +941,9 @@ fn_show_status_report() {
 
     local zram_status="false"
     local zram_details="(未激活)"
-    if [ -f /etc/systemd/zram-generator.conf ] && swapon -s | grep -q 'zram'; then
+    
+    # [修复] 更改 ZRAM 检测逻辑，优先 zram-tools
+    if systemctl is-active zramswap.service >/dev/null 2>&1 && swapon -s | grep -q 'zram'; then
         zram_status="true"
         local free_swap_line
         free_swap_line=$(free -h | grep '^Swap:')
