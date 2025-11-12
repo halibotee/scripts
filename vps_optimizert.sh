@@ -377,6 +377,7 @@ return 0
 }
 
 fn_setup_sysctl_lowmem() {
+local skipped=false # <-- [修复] 修复 unbound variable 错误
 local conf_file="/etc/sysctl.d/99-vps_optimizert.conf" # [修改]
 if [ -f "$conf_file" ]; then
     fn_log "信息" "sysctl 配置文件 $conf_file 已存在，跳过写入。"
@@ -921,65 +922,103 @@ fn_optimize_auto() {
         fn_log "错误" "fn_backup_state 失败，退出。"
         return 1
     fi
-    # [修改] 隐藏输出
-    # echo "[完成] 备份文件创建成功: $BACKUP_DIR"
-    # echo "--------------"
+    # [修改] 恢复输出
+    echo "[完成] 备份文件创建成功: $BACKUP_DIR"
+    echo "--------------"
     
     echo "[任务 2 ] ：检查包管理器源..."
     result=0
     fn_fix_apt_sources_if_needed || result=$?
     if [ $result -ne 0 ]; then
+        echo "[失败] 包管理器源检查失败。请检查日志。"
         fn_log "错误" "fn_fix_apt_sources_if_needed 失败。"
+    else
+        # [修改] 恢复输出
+        echo "[完成] 包管理器源检查通过。"
     fi
-    # [修改] 隐藏输出
-    # echo "--------------"
+    # [修改] 恢复输出
+    echo "--------------"
 
     echo "[任务 3 ] ：检查 SELinux 状态..."
     result=0
     fn_handle_selinux || result=$?
-    # [修改] 隐藏输出
-    # if [ $result -eq 0 ]; then
-    #     echo "[完成] SELinux 检查完成 (已操作)。"
-    # elif [ $result -eq 2 ]; then
-    #     echo "[跳过] SELinux 状态良好或未检测到。"
-    # fi
-    # echo "--------------"
+    # [修改] 恢复输出
+    if [ $result -eq 0 ]; then
+        echo "[完成] SELinux 检查完成 (已操作)。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] SELinux 状态良好或未检测到。"
+    fi
+    echo "--------------"
     
     echo "[任务 4 ] ：配置 Journald (日志)..."
     result=0
     fn_setup_journald_volatile || result=$?
-    # [修改] 隐藏输出
-    # echo "--------------"
+    # [修改] 恢复输出
+    if [ $result -eq 0 ]; then
+        echo "[完成] Journald 已配置为内存模式。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
+    fi
+    echo "--------------"
 
     echo "[任务 5 ] ：应用 sysctl 网络调优..."
     result=0
     fn_setup_sysctl_lowmem || result=$?
-    # [修改] 隐藏输出
-    # echo "--------------"
+    # [修改] 恢复输出
+    if [ $result -eq 0 ]; then
+        echo "[完成] sysctl (BBR+FQ) 配置文件已创建并应用。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
+    fi
+    echo "--------------"
 
     echo "[任务 6 ] ：配置 ZRAM..."
     result=0
     fn_setup_zram_adaptive || result=$?
-    # [修改] 隐藏输出
-    # echo "--------------"
+    # [修改] 恢复输出
+    if [ $result -eq 0 ]; then
+        echo "[完成] ZRAM 配置成功。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
+    else
+        echo "[警告] ZRAM 配置失败，已启用 swapfile 回退。"
+    fi
+    echo "--------------"
 
     echo "[任务 7 ] ：配置 Fail2ban..."
     result=0
     fn_setup_fail2ban || result=$?
-    # [修改] 隐藏输出
-    # echo "--------------"
+    # [修改] 恢复输出
+    if [ $result -eq 0 ]; then
+        echo "[完成] Fail2ban 配置成功。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
+    else
+        echo "[警告] Fail2ban 配置失败。请检查日志。"
+    fi
+    echo "--------------"
 
     echo "[任务 8 ] ：优化网络代理服务..."
     result=0
     fn_prioritize_network_services_auto || result=$?
-    # [修改] 隐藏输出
-    # echo "--------------"
+    # [修改] 恢复输出
+    if [ $result -eq 0 ]; then
+        echo "[完成] 网络代理服务优化完成。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 未检测到服务或服务均已配置。"
+    fi
+    echo "--------------"
     
     echo "[任务 9 ] ：精简系统服务..."
     result=0
     fn_trim_services_auto || result=$?
-    # [修改] 隐藏输出
-    # echo "--------------"
+    # [修改] 恢复输出
+    if [ $result -eq 0 ]; then
+        echo "[完成] 系统服务精简完成。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 未检测到需要新屏蔽的服务。"
+    fi
+    echo "--------------"
     
     echo ""
     echo "系统优化完成。请重启系统以完全生效。"
@@ -1039,6 +1078,7 @@ fn_show_menu() {
             echo "[任务] 正在优化网络代理服务..."
             result=0
             fn_prioritize_network_services_auto || result=$?
+            # [修改] 恢复输出
             if [ $result -eq 0 ]; then
                 echo "[完成] 优化完成。"
             elif [ $result -eq 2 ]; then
