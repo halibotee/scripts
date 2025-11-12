@@ -1039,12 +1039,11 @@ fn_show_menu() {
             echo "[任务] 正在优化网络代理服务..."
             result=0
             fn_prioritize_network_services_auto || result=$?
-            # [修改] 隐藏输出
-            # if [ $result -eq 0 ]; then
-            #     echo "[完成] 优化完成。"
-            # elif [ $result -eq 2 ]; then
-            #     echo "[跳过] 未检测到服务或服务均已配置。"
-            # fi
+            if [ $result -eq 0 ]; then
+                echo "[完成] 优化完成。"
+            elif [ $result -eq 2 ]; then
+                echo "[跳过] 未检测到服务或服务均已配置。"
+            fi
             read -rp "按回车返回菜单..." dummy || true
             ;;
         0) 
