@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.9" # 版本号更新
+SCRIPT_VERSION="1.3.10" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -56,6 +56,9 @@ FN_NETWORK_SERVICES_LIST=(
 "hysteria"
 "udp2raw"
 "kcptun"
+"ax_xray@*"
+"hysteria2@*"
+"udp2raw@*"
 )
 
 mkdir -p "$BACKUP_DIR"
@@ -651,19 +654,34 @@ fn_setup_zram_fallback() {
 }
 
 fn_prioritize_network_services_auto() {
-local detected_svcs=()
 local changes_made=0
 
 local services_list_str
 local IFS=','
 services_list_str="${FN_NETWORK_SERVICES_LIST[*]}"
-fn_log "信息" "正在检测网络代理服务 (${services_list_str})..."
+fn_log "信息" "正在搜索匹配的网络代理服务 (${services_list_str})..."
 
-for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
-if systemctl list-unit-files --quiet "${svc}.service"; then
-    detected_svcs+=("$svc")
-fi
+# [修改] 重构逻辑以扩展通配符
+local found_names=()
+for pattern in "${FN_NETWORK_SERVICES_LIST[@]}"; do
+    # 使用 systemctl 搜索匹配的服务文件
+    # --no-legend 移除表头
+    # 2>/dev/null 隐藏 "0 loaded units listed" 错误
+    # awk '{print $1}' 只获取第一列 (服务名)
+    while read -r service_file; do
+        [ -z "$service_file" ] && continue
+        
+        # 将 "ax_xray@vc1.service" 转换为 "ax_xray@vc1"
+        local base_name="${service_file%.service}" 
+        found_names+=("$base_name")
+        
+    done < <(systemctl list-unit-files --type=service --no-legend "${pattern}.service" 2>/dev/null | awk '{print $1}')
 done
+
+# 获取唯一的服务名
+local detected_svcs=()
+mapfile -t detected_svcs < <(printf "%s\n" "${found_names[@]}" | sort -u)
+
 
 if [ ${#detected_svcs[@]} -eq 0 ]; then
 fn_log "信息" "未检测到网络代理服务，无需优化。"
@@ -676,6 +694,7 @@ detected_svcs_str="${detected_svcs[*]}"
 fn_log "信息" "检测到: ${detected_svcs_str}。开始应用服务优化..."
 
 for svc in "${detected_svcs[@]}"; do
+    # 现在 'svc' 是扩展后的完整名称，例如 "ax_xray@vc1"
     local conf_file="/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf"
     if [ -f "$conf_file" ]; then
         fn_log "调试" "配置文件 $conf_file 已存在，跳过 $svc。"
@@ -707,7 +726,6 @@ fi
 fn_log "成功" "网络服务优化成功 (${detected_svcs_str})。"
 return 0
 }
-
 # [修改] 完全重构为状态化恢复
 fn_restore_all() {
     echo "[任务] 开始执行撤销优化..."
