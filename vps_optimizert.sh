@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.9-GM"
+SCRIPT_VERSION="1.0"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
