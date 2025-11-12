@@ -891,7 +891,7 @@ fn_show_menu() {
     echo "==============================================="
     echo " VPS 自动优化脚本 (vps_optimizert)"
     echo " 版本: $SCRIPT_VERSION"
-    echo " B_DIR"
+    echo " 备份目录: $BACKUP_DIR"
     echo " 日志文件: $LOG_FILE"
     echo "==============================================="
     echo " 1) 执行系统优化 (全自动)"
@@ -913,8 +913,8 @@ fn_show_menu() {
             ;;
         3) 
             fn_show_status_report
-            read -rp "按回车返回菜单..." dummy || true
-Area"
+            read -rp "按回车返回菜单..." dummy || true 
+            # [修复] 移除了此处导致 EOF 错误的无效 "Area" 字符串
             ;;
         4) 
             echo "[任务] 正在优化网络代理服务..."
@@ -938,7 +938,6 @@ Area"
     esac
     fn_show_menu
 }
-
 fn_check_root
 fn_detect_os
 
