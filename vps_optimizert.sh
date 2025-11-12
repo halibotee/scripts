@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.2.3"
+SCRIPT_VERSION="1.2.1" # 版本号微调
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -54,6 +54,7 @@ FN_NETWORK_SERVICES_LIST=(
 
 mkdir -p "$BACKUP_DIR"
 touch "$LOG_FILE"
+> "$LOG_FILE" # <-- [修改] 每次运行时清空主日志文件
 touch "$ACTION_LOG"
 
 fn_log() {
@@ -102,6 +103,7 @@ fn_check_if_optimized() {
     fi
 }
 
+
 fn_check_root() {
 if [ "$EUID" -ne 0 ]; then
 echo "错误: 本脚本必须以 root 权限运行。"
@@ -147,11 +149,12 @@ fn_wait_for_pkg_lock() {
 
 # [修改] 替换为包含包管理器抽象化的版本
 fn_detect_os() {
-    # [新增] 定义全局包管理器变量
-    export PKG_INSTALL=""
-    export PKG_REMOVE=""
-    export PKG_CHECK=""
-    export PKG_UPDATE=""
+    # [修复] 拆分命令和参数以修复 "command not found" (Bug A)
+    export PKG_BIN=""
+    export PKG_OPTS_INSTALL=""
+    export PKG_OPTS_REMOVE=""
+    export PKG_OPTS_CHECK=""
+    export PKG_OPTS_UPDATE=""
 
     if [ -f /etc/os-release ]; then
         source /etc/os-release
@@ -166,19 +169,21 @@ fn_detect_os() {
         exit 1
     fi
 
-    # [新增] 根据 OS_ID 设置包管理器
+    # [修复] 拆分命令和参数 (Bug A)
     case "$OS_ID" in
         debian|ubuntu)
-            PKG_INSTALL="apt-get install -y"
-            PKG_REMOVE="apt-get remove -y --purge"
-            PKG_CHECK="dpkg -s"
-            PKG_UPDATE="apt-get update -qq"
+            PKG_BIN="apt-get"
+            PKG_OPTS_INSTALL="install -y"
+            PKG_OPTS_REMOVE="remove -y --purge"
+            PKG_OPTS_CHECK="dpkg -s"
+            PKG_OPTS_UPDATE="update"
             ;;
         fedora|rhel|centos|almalinux|rocky)
-            PKG_INSTALL="dnf install -y"
-            PKG_REMOVE="dnf remove -y"
-            PKG_CHECK="rpm -q"
-            PKG_UPDATE="dnf check-update -q --quiet"
+            PKG_BIN="dnf"
+            PKG_OPTS_INSTALL="install -y"
+            PKG_OPTS_REMOVE="remove -y"
+            PKG_OPTS_CHECK="rpm -q"
+            PKG_OPTS_UPDATE="check-update --quiet"
             ;;
         *)
             echo "错误: 不支持的操作系统 $OS_ID。"
@@ -209,7 +214,9 @@ cp -ran /etc/systemd/journald.conf.d "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/
 [ -f /etc/selinux/config ] && cp -an /etc/selinux/config "${BACKUP_DIR}/selinux.config.bak" 2>/dev/null || true
 sysctl -n net.ipv4.tcp_congestion_control > "${BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || true
 sysctl -n net.core.default_qdisc > "${BACKUP_DIR}/sysctl_q_algo.bak" 2>/dev/null || true
-systemctl list-unit-files --type=service --state=enabled > "${BACKUP_DIR}/enabled_services.before.txt" 2>/dev/null || true
+
+# [修复] 修正备份逻辑，只抓取服务名 (Bug B)
+systemctl list-unit-files --type=service --state=enabled | awk '/enabled/ {print $1}' > "${BACKUP_DIR}/enabled_services.before.txt" 2>/dev/null || true
 
 # [修改] 创建/清空操作日志
 echo "# vps_optimizert action log ($(date))" > "$ACTION_LOG"
@@ -222,18 +229,18 @@ fn_fix_apt_sources_if_needed() {
 fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
 fn_log "信息" "检查包管理器源健康状况..."
 
-# [新增] 立即强制 APT 使用 IPv4，以防止 broken-IPv6 导致的 update 失败
-mkdir -p /etc/apt/apt.conf.d
-cat > /etc/apt/apt.conf.d/99-force-ipv4 <<'EOF'
+# [修复] 立即强制 APT 使用 IPv4 (Bug C)
+if [ "$OS_ID" = "debian" ] || [ "$OS_ID" = "ubuntu" ]; then
+    mkdir -p /etc/apt/apt.conf.d
+    cat > /etc/apt/apt.conf.d/99-force-ipv4 <<'EOF'
 Acquire::ForceIPv4 "true";
 EOF
-fn_log "调试" "已创建 /etc/apt/apt.conf.d/99-force-ipv4 (强制 APT 使用 IPv4)"
-# 记录这个文件，以便 "撤销" 时可以删除
-fn_log_action "CREATE_FILE" "/etc/apt/apt.conf.d/99-force-ipv4"
+    fn_log "调试" "已创建 /etc/apt/apt.conf.d/99-force-ipv4 (强制 APT 使用 IPv4)"
+    fn_log_action "CREATE_FILE" "/etc/apt/apt.conf.d/99-force-ipv4"
+fi
 
-
-# [修改] 移除 >/dev/null 2>&1，以便在 update 失败时显示错误
-if $PKG_UPDATE; then
+# [修复] 使用新变量，并移除 -qq 以显示错误
+if $PKG_BIN $PKG_OPTS_UPDATE; then
 fn_log "成功" "包管理器源正常。"
 return 0
 else
@@ -271,12 +278,12 @@ else
     return 1
 fi
 
-# [修改] 移除 >/dev/null 2>&1，以便在 update 失败时显示错误
-if $PKG_UPDATE; then
+# [修复] 使用新变量，并移除 -qq
+if $PKG_BIN $PKG_OPTS_UPDATE; then
     fn_log "成功" "APT 源替换并刷新成功。"
     return 0
 else
-    fn_log "错误" "替换源后 $PKG_UPDATE 仍然失败。"
+    fn_log "错误" "替换源后 $PKG_BIN $PKG_OPTS_UPDATE 仍然失败。"
     echo "-----------------------------------------------------"
     echo "[错误] 致命错误: 'apt update' 彻底失败。"
     echo "       请检查 DNS (例如 /etc/resolv.conf) 和网络连接。"
@@ -345,14 +352,14 @@ fn_setup_fail2ban() {
         return 2
     fi
     
-    # [修改] 使用 $PKG_CHECK
-    if $PKG_CHECK fail2ban >/dev/null 2>&1; then
+    # [修复] 使用 $PKG_OPTS_CHECK (Bug A)
+    if $PKG_BIN $PKG_OPTS_CHECK fail2ban >/dev/null 2>&1; then
         fn_log "信息" "Fail2ban 已安装 (但未运行)。"
     else
         fn_log "信息" "正在安装 Fail2ban..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
-        # [修改] 使用 $PKG_INSTALL
-        $PKG_INSTALL fail2ban >>"$LOG_FILE" 2>&1 || { 
+        # [修复] 使用 $PKG_BIN $PKG_OPTS_INSTALL (Bug A)
+        $PKG_BIN $PKG_OPTS_INSTALL fail2ban >>"$LOG_FILE" 2>&1 || { 
             fn_log "警告" "Fail2ban 安装失败。"; 
             return 1; 
         }
@@ -519,14 +526,14 @@ fn_setup_zram_adaptive() {
         return 2 # 返回 "跳过"
     fi
     
-    # [修改] 使用 $PKG_CHECK
-    if $PKG_CHECK systemd-zram-generator >/dev/null 2>&1; then
+    # [修复] 使用 $PKG_OPTS_CHECK (Bug A)
+    if $PKG_BIN $PKG_OPTS_CHECK systemd-zram-generator >/dev/null 2>&1; then
         fn_log "信息" "ZRAM (systemd-zram-generator) 已安装。"
     else
         fn_log "信息" "正在安装 ZRAM (systemd-zram-generator)..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
-        # [修改] 使用 $PKG_INSTALL
-        $PKG_INSTALL systemd-zram-generator >>"$LOG_FILE" 2>&1 || { 
+        # [修复] 使用 $PKG_BIN $PKG_OPTS_INSTALL (Bug A)
+        $PKG_BIN $PKG_OPTS_INSTALL systemd-zram-generator >>"$LOG_FILE" 2>&1 || { 
             fn_log "警告" "安装失败"; 
             fn_setup_zram_fallback "安装失败"; 
             return 1; 
@@ -739,9 +746,10 @@ fn_restore_all() {
                 INSTALL_PKG)
                     echo "[撤销]   Purging package $value"
                     fn_log "信息" "[撤销] Purging package $value"
-                    if [ -n "$PKG_REMOVE" ]; then
+                    # [修复] 使用 $PKG_BIN $PKG_OPTS_REMOVE (Bug A)
+                    if [ -n "$PKG_BIN" ]; then
                         fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过卸载 $value"
-                        ($PKG_REMOVE "$value") >> "$LOG_FILE" 2>&1
+                        ($PKG_BIN $PKG_OPTS_REMOVE "$value") >> "$LOG_FILE" 2>&1
                     fi
                     ;;
                 MODIFY_FILE)
@@ -761,6 +769,16 @@ fn_restore_all() {
             esac
         done
     fi # 结束对 ACTION_LOG 的读取
+
+    # [修复] 恢复 enabled_services.before.txt (Bug B)
+    # 这个文件现在只包含干净的服务名
+    if [ -f "${BACKUP_DIR}/enabled_services.before.txt" ]; then
+        echo "[任务]   正在恢复之前启用的服务..."
+        while read -r s; do 
+            [ -z "$s" ] && continue
+            (systemctl enable "$s") >> "$LOG_FILE" 2>&1 || true; 
+        done < "${BACKUP_DIR}/enabled_services.before.txt"
+    fi
 
     # [修改] 保留 BBR 和恢复 journald/fstab 的备份文件
     echo "[任务]   正在恢复 sysctl..."
@@ -787,8 +805,6 @@ EOF
     echo "[完成] 撤销优化完成。"
     fn_log "成功" "撤销优化完成。"
 }
-
-
 
 fn_show_status_report() {
     if [ "${1:-}" != "noclear" ]; then
@@ -866,11 +882,11 @@ fn_show_status_report() {
     local f2b_success_msg="[ 已激活 ]"
     local f2b_fail_msg="[ 未激活 ]"
     local f2b_details="(未安装)"
-    # [修改] 使用 $PKG_CHECK
+    # [修复] 使用 $PKG_BIN $PKG_OPTS_CHECK (Bug A)
     if systemctl is-active fail2ban >/dev/null 2>&1; then
         f2b_status="true"
         f2b_details="(已激活)"
-    elif $PKG_CHECK fail2ban >/dev/null 2>&1; then
+    elif $PKG_BIN $PKG_OPTS_CHECK fail2ban >/dev/null 2>&1; then
         f2b_status="false"
         f2b_details="(已安装/未运行)"
     fi
@@ -1104,11 +1120,11 @@ fn_show_menu() {
     read -rp "请选择: " CH || true
     case "$CH" in
         1) 
-            fn_optimize_auto 
-            read -rp "优化完成 (请重启)。按回车返回主菜单..." dummy || true
+            fn_optimize_auto || true # <-- [修改] 添加 || true
+            read -rp "按回车返回主菜单..." dummy || true
             ;;
         2) 
-            fn_restore_all 
+            fn_restore_all || true # <-- [修改] 建议也添加 || true
             read -rp "撤销完成。按回车返回主菜单..." dummy || true
             ;;
         3) 
@@ -1119,7 +1135,6 @@ fn_show_menu() {
             echo "[任务] 正在优化网络代理服务..."
             result=0
             fn_prioritize_network_services_auto || result=$?
-            # [修改] 恢复输出
             if [ $result -eq 0 ]; then
                 echo "[完成] 优化完成。"
             elif [ $result -eq 2 ]; then
