@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -209,9 +209,11 @@ fn_handle_selinux() {
             fi
         else
              fn_log "信息" "SELinux 状态: Disabled (良好)。"
+             return 2
         fi
     else
         fn_log "信息" "未检测到 SELinux (正常)。"
+        return 2
     fi
     return 0
 }
@@ -219,8 +221,13 @@ fn_handle_selinux() {
 fn_setup_fail2ban() {
     fn_log "信息" "配置 Fail2ban..."
     
+    if systemctl is-active fail2ban >/dev/null 2>&1; then
+        fn_log "信息" "Fail2ban 已安装并激活，跳过。"
+        return 2
+    fi
+    
     if dpkg -s fail2ban >/dev/null 2>&1; then
-        fn_log "信息" "Fail2ban 已安装。"
+        fn_log "信息" "Fail2ban 已安装 (但未运行)。"
     else
         fn_log "信息" "正在安装 Fail2ban..."
         fn_wait_for_apt_lock || { fn_log "错误" "APT 锁等待失败"; return 1; }
@@ -260,7 +267,7 @@ local journal_storage
 journal_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
 if [ "$journal_storage" == "volatile" ]; then
     fn_log "信息" "journald 已是 volatile 模式，跳过。"
-    return 0
+    return 2
 fi
 
 fn_log "信息" "配置 journald 为 volatile (内存) 模式 (RuntimeMaxUse=16M)..."
@@ -277,8 +284,10 @@ return 0
 }
 
 fn_setup_sysctl_lowmem() {
+local skipped=false
 if [ -f /etc/sysctl.d/99-vps_optimizert.conf ]; then
     fn_log "信息" "sysctl 配置文件 99-vps_optimizert.conf 已存在，跳过写入。"
+    skipped=true
 else
     fn_log "信息" "应用 sysctl 低内存网络调优 (包含 BBR+FQ)..."
     cat > /etc/sysctl.d/99-vps_optimizert.conf <<'EOF'
@@ -302,6 +311,10 @@ fi
 
 sysctl --system >/dev/null 2>/dev/null || fn_log "警告" "sysctl 应用时出现警告。"
 fn_log "信息" "sysctl --system 已执行。"
+
+if [ "$skipped" == "true" ]; then
+    return 2
+fi
 return 0
 }
 
@@ -336,6 +349,7 @@ done
 
 if [ "$masked_count" -eq 0 ]; then
 fn_log "信息" "未检测到需要新屏蔽的系统服务。"
+return 2
 else
 fn_log "成功" "系统服务精简完成 (共屏蔽 ${masked_count} 个新服务)。"
 fi
@@ -344,6 +358,11 @@ return 0
 
 fn_setup_zram_adaptive() {
     fn_log "信息" "启用 ZRAM (systemd-zram-generator 方案)..."
+
+    if [ -b /dev/zram0 ] && swapon -s | grep -q 'zram'; then
+        fn_log "信息" "ZRAM 已激活，跳过。"
+        return 2
+    fi
     
     if dpkg -s systemd-zram-generator >/dev/null 2>&1; then
         fn_log "信息" "ZRAM (systemd-zram-generator) 已安装。"
@@ -440,7 +459,7 @@ done
 
 if [ ${#detected_svcs[@]} -eq 0 ]; then
 fn_log "信息" "未检测到网络代理服务，无需优化。"
-return 0
+return 2
 fi
 
 local detected_svcs_str
@@ -470,7 +489,7 @@ done
 
 if [ "$changes_made" -eq 0 ]; then
      fn_log "信息" "网络代理服务均已配置，无需刷新。"
-     return 0
+     return 2
 fi
 
 if [ "$changes_made" -eq 1 ]; then
@@ -485,26 +504,39 @@ fn_restore_all() {
     echo "[任务] 开始执行撤销优化..."
     fn_log "警告" "开始执行撤销优化... 将从 $BACKUP_DIR 恢复备份。"
     
+    local skipped=true
     echo "[任务]   正在恢复 sysctl..."
-    rm -f /etc/sysctl.d/99-vps_optimizert.conf 
-    [ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
-    [ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
-    cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
+    if [ -f /etc/sysctl.d/99-vps_optimizert.conf ]; then
+        skipped=false
+        rm -f /etc/sysctl.d/99-vps_optimizert.conf 
+        [ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
+        [ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
+        cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
-    sysctl --system >/dev/null 2>/dev/null || true
+        sysctl --system >/dev/null 2>/dev/null || true
+    fi
+    [ "$skipped" == "true" ] && echo "[跳过]   sysctl 优化文件不存在。"
     
+    skipped=true
     echo "[任务]   正在恢复 SELinux..."
     if [ -f /etc/selinux/config.bak ]; then
+        skipped=false
         fn_log "信息" "正在恢复 SELinux 配置..."
         mv /etc/selinux/config.bak /etc/selinux/config >> "$LOG_FILE" 2>&1
     fi
+    [ "$skipped" == "true" ] && echo "[跳过]   未找到 SELinux 备份。"
     
+    skipped=true
     echo "[任务]   正在恢复 journald..."
-    [ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
-    systemctl restart systemd-journald >/dev/null 2>/dev/null || true
-    
+    if [ -d "${BACKUP_DIR}/journald.conf.d.bak" ]; then
+        skipped=false
+        [ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
+        systemctl restart systemd-journald >/dev/null 2>/dev/null || true
+    fi
+    [ "$skipped" == "true" ] && echo "[跳过]   未找到 journald 备份。"
+
     [ -f "${BACKUP_DIR}/apt.sources.list.bak" ] && cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt.sources.list 2>/dev/null || true
     
     echo "[任务]   正在 unmask 系统服务..."
@@ -532,31 +564,38 @@ EOF
     [ -f "${BACKUP_DIR}/enabled_services.before.txt" ] && while read -r s; do [ -z "$s" ] && continue; (systemctl enable "$s") >> "$LOG_FILE" 2>&1 || true; done < "${BACKUP_DIR}/enabled_services.before.txt"
     [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
     
+    skipped=true
     echo "[任务]   正在停用 ZRAM 及 swapfile..."
     fn_log "信息" "正在停用 ZRAM..."
+    if swapon -s | grep -q 'zram' || swapon -s | grep -q 'swapfile_zram'; then
+        skipped=false
+    fi
     (systemctl disable --now systemd-zram-setup@zram0.service) >> "$LOG_FILE" 2>&1 || true
     rm -f /etc/systemd/zram-generator.conf
-    
     fn_log "信息" "正在停用 swapfile 回退..."
     swapoff -a >/dev/null 2>&1 || true
     if [ -f "${BACKUP_DIR}/created_swapfiles.txt" ]; then
+        skipped=false
         while read -r swapfile; do
             [ -n "$swapfile" ] && [ -f "$swapfile" ] && rm -f "$swapfile"
         done < "${BACKUP_DIR}/created_swapfiles.txt"
         rm -f "${BACKUP_DIR}/created_swapfiles.txt"
     fi
     modprobe -r zram >/dev/null 2>&1 || true
+    [ "$skipped" == "true" ] && echo "[跳过]   未检测到 ZRAM 或 swapfile。"
     
+    skipped=true
     echo "[任务]   正在移除 Fail2ban..."
     rm -f /etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf
     fn_log "调试" "已移除 99-vps_optimizert-systemd.conf"
-    
     if dpkg -s fail2ban >/dev/null 2>&1; then
+        skipped=false
         fn_log "信息" "正在卸载 Fail2ban..."
         fn_wait_for_apt_lock || fn_log "警告" "APT 锁等待失败，跳过卸载 Fail2ban。"
         (apt-get remove -y fail2ban --purge) >> "$LOG_FILE" 2>&1
     fi
-    
+    [ "$skipped" == "true" ] && echo "[跳过]   Fail2ban 未安装。"
+
     echo "[完成] 撤销优化完成。"
     fn_log "成功" "撤销优化完成。"
 }
@@ -591,7 +630,9 @@ fn_show_status_report() {
        [ "$(sysctl -n net.core.default_qdisc 2>/dev/null)" == "fq" ]; then
         bbr_status="true"
     fi
-    fn_print_line "BBR+FQ" "$bbr_status" "[ 已启用 ]" "[ 未启用 ]"
+    local bbr_details=""
+    [ "$bbr_status" == "true" ] && bbr_details="(已启用BBR+FQ)"
+    fn_print_line "网络调优" "$bbr_status" "[ 已优化 ]" "[ 未优化 ]" "$bbr_details"
 
     local swap_status="false"
     [ "$(sysctl -n vm.swappiness 2>/dev/null)" == "10" ] && swap_status="true"
@@ -615,12 +656,14 @@ fn_show_status_report() {
             selinux_status="true"
             selinux_details="(已禁用)"
         else
+            selinux_status="false"
             selinux_details="(状态: $selinux_state)"
         fi
     else
-        selinux_status="true"
+        selinux_status="false"
+        selinux_details="(未检测到)"
     fi
-    fn_print_line "$selinux_line" "$selinux_status" "[ 已优化 ]" "[ 警告 ]" "$selinux_details"
+    fn_print_line "$selinux_line" "$selinux_status" "[ 已优化 ]" "[ 未优化 ]" "$selinux_details"
 
     local f2b_line="Fail2ban"
     local f2b_status="false"
@@ -708,6 +751,8 @@ fn_show_status_report() {
 }
 
 fn_optimize_auto() {
+    local result
+    
     echo "[任务 1 ] ：创建备份文件..."
     if fn_backup_state; then
         echo "[完成] 备份文件创建成功: $BACKUP_DIR"
@@ -728,48 +773,76 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 3 ] ：检查 SELinux 状态..."
-    if fn_handle_selinux; then
-        echo "[完成] SELinux 检查完成。"
+    fn_handle_selinux
+    result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] SELinux 检查完成 (已操作)。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] SELinux 状态良好或未检测到。"
     fi
     echo "--------------"
     
     echo "[任务 4 ] ：配置 Journald (日志)..."
-    if fn_setup_journald_volatile; then
+    fn_setup_journald_volatile
+    result=$?
+    if [ $result -eq 0 ]; then
         echo "[完成] Journald 已配置为内存模式。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
     fi
     echo "--------------"
 
     echo "[任务 5 ] ：应用 sysctl 网络调优..."
-    if fn_setup_sysctl_lowmem; then
-        echo "[完成] sysctl (BBR+FQ) 已应用。"
+    fn_setup_sysctl_lowmem
+    result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] sysctl (BBR+FQ) 配置文件已创建并应用。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
     fi
     echo "--------------"
 
     echo "[任务 6 ] ：配置 ZRAM..."
-    if fn_setup_zram_adaptive; then
+    fn_setup_zram_adaptive
+    result=$?
+    if [ $result -eq 0 ]; then
         echo "[完成] ZRAM 配置成功。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
     else
         echo "[警告] ZRAM 配置失败，已启用 swapfile 回退。"
     fi
     echo "--------------"
 
     echo "[任务 7 ] ：配置 Fail2ban..."
-    if fn_setup_fail2ban; then
+    fn_setup_fail2ban
+    result=$?
+    if [ $result -eq 0 ]; then
         echo "[完成] Fail2ban 配置成功。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
     else
         echo "[警告] Fail2ban 配置失败。请检查日志。"
     fi
     echo "--------------"
 
     echo "[任务 8 ] ：优化网络代理服务..."
-    if fn_prioritize_network_services_auto; then
+    fn_prioritize_network_services_auto
+    result=$?
+    if [ $result -eq 0 ]; then
         echo "[完成] 网络代理服务优化完成。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 未检测到服务或服务均已配置。"
     fi
     echo "--------------"
     
     echo "[任务 9 ] ：精简系统服务..."
-    if fn_trim_services_auto; then
+    fn_trim_services_auto
+    result=$?
+    if [ $result -eq 0 ]; then
         echo "[完成] 系统服务精简完成。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 未检测到需要新屏蔽的服务。"
     fi
     echo "--------------"
     
@@ -801,8 +874,8 @@ fn_show_menu() {
     detected_svcs_str=$(fn_get_detected_services_string)
 
     echo "==============================================="
-    echo " VPS 低内存自动优化脚本 (vps_optimizert)"
-    echo " 脚本版本: $SCRIPT_VERSION"
+    echo " VPS 自动优化脚本 (vps_optimizert)"
+    echo " 版本: $SCRIPT_VERSION"
     echo " 备份目录: $BACKUP_DIR"
     echo " 日志文件: $LOG_FILE"
     echo "==============================================="
@@ -828,9 +901,14 @@ fn_show_menu() {
             read -rp "按回车返回菜单..." dummy 
             ;;
         4) 
-            echo "[任务] 正在刷新网络代理服务优化..."
+            echo "[任务] 正在优化网络代理服务..."
             fn_prioritize_network_services_auto
-            echo "[完成] 刷新完成。"
+            result=$?
+            if [ $result -eq 0 ]; then
+                echo "[完成] 优化完成。"
+            elif [ $result -eq 2 ]; then
+                echo "[跳过] 未检测到服务或服务均已配置。"
+            fi
             read -rp "按回车返回菜单..." dummy
             ;;
         0) 
