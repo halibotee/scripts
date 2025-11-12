@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.8-GM"
+SCRIPT_VERSION="2.9-GM"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -252,7 +252,7 @@ if systemctl list-unit-files --quiet "$svc"; then
     local svc_status
     svc_status=$(systemctl is-enabled "$svc" 2>/dev/null || echo "not-found")
     if [[ "$svc_status" != *"masked"* ]]; then
-        echo "  正在屏蔽 (mask) $svc"
+        echo "  正在屏蔽 $svc"
         fn_log "信息" "  正在屏蔽 (mask) $svc"
         (systemctl mask --now "$svc") >> "$LOG_FILE" 2>&1 || true
         echo "$svc" >> "$TOUCHED_SERVICES_FILE"
@@ -273,7 +273,6 @@ echo "系统服务精简完成 (共屏蔽 ${masked_count} 个新服务)。"
 fn_log "成功" "系统服务精简完成 (共屏蔽 ${masked_count} 个新服务)。"
 fi
 }
-
 fn_setup_zram_adaptive() {
     echo "配置 ZRAM..."
     fn_log "信息" "启用 ZRAM (systemd-zram-generator 方案)..."
@@ -293,7 +292,7 @@ fn_setup_zram_adaptive() {
         }
         echo "ZRAM (systemd-zram-generator) 安装完成。"
         fn_log "信息" "ZRAM (systemd-zram-generator) 安装完成。"
-    }
+    fi
 
     mem_mb="$MEM_MB"
     zram_mb=$(( mem_mb / 2 ))
@@ -335,7 +334,6 @@ EOF
         fn_setup_zram_fallback "ZRAM 激活失败"
     fi
 }
-
 fn_setup_zram_fallback() {
     local reason="$1"
     echo "启用 swapfile 回退..."
