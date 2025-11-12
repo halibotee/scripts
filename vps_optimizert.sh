@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.1.3"
+SCRIPT_VERSION="1.1.4"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -539,7 +539,7 @@ EOF
 
     [ -f "${BACKUP_DIR}/apt.sources.list.bak" ] && cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt.sources.list 2>/dev/null || true
     
-    # [修复 1] 仅在文件存在时才执行 Unmask
+    # [修复] 仅在文件存在时才执行 Unmask
     if [ -f "$TOUCHED_SERVICES_FILE" ]; then
         echo "[任务]   正在 unmask 系统服务..."
         fn_log "信息" "正在 unmask 系统服务..."
@@ -551,7 +551,7 @@ EOF
         echo "[跳过]   未找到服务记录文件 ($TOUCHED_SERVICES_FILE)，跳过 unmask。"
     fi
 
-    # [修复 2] 仅在检测到配置文件时才执行网络服务移除
+    # [修复] 仅在检测到配置文件时才执行网络服务移除
     local network_files_found=0
     for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
         if [ -f "/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf" ]; then
@@ -615,6 +615,7 @@ EOF
     echo "[完成] 撤销优化完成。"
     fn_log "成功" "撤销优化完成。"
 }
+
 fn_show_status_report() {
     if [ "${1:-}" != "noclear" ]; then
         clear
@@ -640,7 +641,7 @@ fn_show_status_report() {
         printf "  %-30s %-15s %s\n" "$name" "$status_msg" "$details_str"
     }
 
-    # [修复 1] 统一检查优化配置文件是否存在
+    # [修复] 统一检查优化配置文件是否存在
     local sysctl_conf_file="/etc/sysctl.d/99-vps_optimizert.conf"
     local sysctl_status="false"
     local bbr_status="false"
@@ -653,10 +654,8 @@ fn_show_status_report() {
     local bbr_details=""
     [ "$bbr_status" == "true" ] && bbr_details="(已启用BBR+FQ)"
     
-    # 网络调优 = BBR 检查 (BBR可能由内核自带，但其他调优依赖配置文件)
     fn_print_line "网络调优 (BBR)" "$bbr_status" "[ 已启用 ]" "[ 未启用 ]" "$bbr_details"
     
-    # Swappiness, VFS, IPv6 检查 = 配置文件是否存在
     local swappiness_details=""
     [ "$sysctl_status" == "true" ] && swappiness_details="(当前: $(sysctl -n vm.swappiness 2>/dev/null))"
     fn_print_line "Swappiness (10)" "$sysctl_status" "[ 已优化 ]" "[ 未优化 ]" "$swappiness_details"
@@ -684,8 +683,8 @@ fn_show_status_report() {
             selinux_details="(状态: $selinux_state)"
         fi
     else
-        # [修复] 即使未检测到，也应标记为 true (已优化)
-        selinux_status="true"
+        # [修复] 未检测到，应标记为 "false" (未优化)
+        selinux_status="false"
         selinux_details="(未检测到)"
     fi
     fn_print_line "$selinux_line" "$selinux_status" "[ 已优化 ]" "[ 未优化 ]" "$selinux_details"
@@ -699,7 +698,6 @@ fn_show_status_report() {
         f2b_status="true"
         f2b_details="(已激活)"
     elif dpkg -s fail2ban >/dev/null 2>&1; then
-        # [修复 3] 已安装但未运行，仍是 "未激活"
         f2b_status="false"
         f2b_details="(已安装/未运行)"
     fi
@@ -719,7 +717,7 @@ fn_show_status_report() {
     fi
     fn_print_line "Journald 日志存储模式" "$journal_status" "[ 已优化 ]" "[ 未优化 ]" "$journal_details"
 
-    # [修复 2] 仅检查被 "masked" 的服务
+    # [修复] 仅检查被 "masked" 的服务
     local masked_count=0
     local services_to_check=("${FN_TRIM_SERVICES_LIST[@]}" "rsyslog.service")
     
@@ -780,6 +778,7 @@ fn_show_status_report() {
 
     echo "======================================================"
 }
+
 fn_optimize_auto() {
     local result
     
@@ -803,8 +802,7 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 3 ] ：检查 SELinux 状态..."
-    fn_handle_selinux
-    result=$?
+    fn_handle_selinux; result=$? # [修复] set -e 退出
     if [ $result -eq 0 ]; then
         echo "[完成] SELinux 检查完成 (已操作)。"
     elif [ $result -eq 2 ]; then
@@ -813,8 +811,7 @@ fn_optimize_auto() {
     echo "--------------"
     
     echo "[任务 4 ] ：配置 Journald (日志)..."
-    fn_setup_journald_volatile
-    result=$?
+    fn_setup_journald_volatile; result=$? # [修复] set -e 退出
     if [ $result -eq 0 ]; then
         echo "[完成] Journald 已配置为内存模式。"
     elif [ $result -eq 2 ]; then
@@ -823,8 +820,7 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 5 ] ：应用 sysctl 网络调优..."
-    fn_setup_sysctl_lowmem
-    result=$?
+    fn_setup_sysctl_lowmem; result=$? # [修复] set -e 退出
     if [ $result -eq 0 ]; then
         echo "[完成] sysctl (BBR+FQ) 配置文件已创建并应用。"
     elif [ $result -eq 2 ]; then
@@ -833,8 +829,7 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 6 ] ：配置 ZRAM..."
-    fn_setup_zram_adaptive
-    result=$?
+    fn_setup_zram_adaptive; result=$? # [修复] set -e 退出
     if [ $result -eq 0 ]; then
         echo "[完成] ZRAM 配置成功。"
     elif [ $result -eq 2 ]; then
@@ -845,8 +840,7 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 7 ] ：配置 Fail2ban..."
-    fn_setup_fail2ban
-    result=$?
+    fn_setup_fail2ban; result=$? # [修复] set -e 退出
     if [ $result -eq 0 ]; then
         echo "[完成] Fail2ban 配置成功。"
     elif [ $result -eq 2 ]; then
@@ -857,8 +851,7 @@ fn_optimize_auto() {
     echo "--------------"
 
     echo "[任务 8 ] ：优化网络代理服务..."
-    fn_prioritize_network_services_auto
-    result=$?
+    fn_prioritize_network_services_auto; result=$? # [修复] set -e 退出
     if [ $result -eq 0 ]; then
         echo "[完成] 网络代理服务优化完成。"
     elif [ $result -eq 2 ]; then
@@ -867,8 +860,7 @@ fn_optimize_auto() {
     echo "--------------"
     
     echo "[任务 9 ] ：精简系统服务..."
-    fn_trim_services_auto
-    result=$?
+    fn_trim_services_auto; result=$? # [修复] set -e 退出
     if [ $result -eq 0 ]; then
         echo "[完成] 系统服务精简完成。"
     elif [ $result -eq 2 ]; then
@@ -933,8 +925,7 @@ fn_show_menu() {
             ;;
         4) 
             echo "[任务] 正在优化网络代理服务..."
-            fn_prioritize_network_services_auto
-            result=$?
+            fn_prioritize_network_services_auto; result=$? # [修复] set -e 退出
             if [ $result -eq 0 ]; then
                 echo "[完成] 优化完成。"
             elif [ $result -eq 2 ]; then
@@ -953,6 +944,7 @@ fn_show_menu() {
     esac
     fn_show_menu
 }
+
 fn_check_root
 fn_detect_os
 
