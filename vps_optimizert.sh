@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.2.1" # 版本号微调
+SCRIPT_VERSION="1.3.0" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -54,7 +54,7 @@ FN_NETWORK_SERVICES_LIST=(
 
 mkdir -p "$BACKUP_DIR"
 touch "$LOG_FILE"
-> "$LOG_FILE" # <-- [修改] 每次运行时清空主日志文件
+> "$LOG_FILE" # [修改] 每次运行时清空主日志文件
 touch "$ACTION_LOG"
 
 fn_log() {
@@ -149,13 +149,9 @@ fn_wait_for_pkg_lock() {
 
 # [修改] 替换为包含包管理器抽象化的版本
 fn_detect_os() {
-    # [修复] 拆分命令和参数以修复 "command not found" (Bug A)
-    export PKG_BIN=""
-    export PKG_OPTS_INSTALL=""
-    export PKG_OPTS_REMOVE=""
-    export PKG_OPTS_CHECK=""
-    export PKG_OPTS_UPDATE=""
-
+    # [修复] 使用数组来处理包管理器命令 (修复 Bug 1)
+    declare -gA PKG_CMD # 创建全局关联数组
+    
     if [ -f /etc/os-release ]; then
         source /etc/os-release
         OS_PRETTY="${PRETTY_NAME:-unknown}"
@@ -169,21 +165,19 @@ fn_detect_os() {
         exit 1
     fi
 
-    # [修复] 拆分命令和参数 (Bug A)
+    # [修复] 使用 Bash 数组定义命令，避免所有 word-splitting 问题
     case "$OS_ID" in
         debian|ubuntu)
-            PKG_BIN="apt-get"
-            PKG_OPTS_INSTALL="install -y"
-            PKG_OPTS_REMOVE="remove -y --purge"
-            PKG_OPTS_CHECK="dpkg -s"
-            PKG_OPTS_UPDATE="update"
+            PKG_CMD[INSTALL]=("apt-get" "install" "-y")
+            PKG_CMD[REMOVE]=("apt-get" "remove" "-y" "--purge")
+            PKG_CMD[CHECK]=("dpkg" "-s")
+            PKG_CMD[UPDATE]=("apt-get" "update")
             ;;
         fedora|rhel|centos|almalinux|rocky)
-            PKG_BIN="dnf"
-            PKG_OPTS_INSTALL="install -y"
-            PKG_OPTS_REMOVE="remove -y"
-            PKG_OPTS_CHECK="rpm -q"
-            PKG_OPTS_UPDATE="check-update --quiet"
+            PKG_CMD[INSTALL]=("dnf" "install" "-y")
+            PKG_CMD[REMOVE]=("dnf" "remove" "-y")
+            PKG_CMD[CHECK]=("rpm" "-q")
+            PKG_CMD[UPDATE]=("dnf" "check-update" "--quiet")
             ;;
         *)
             echo "错误: 不支持的操作系统 $OS_ID。"
@@ -215,7 +209,7 @@ cp -ran /etc/systemd/journald.conf.d "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/
 sysctl -n net.ipv4.tcp_congestion_control > "${BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || true
 sysctl -n net.core.default_qdisc > "${BACKUP_DIR}/sysctl_q_algo.bak" 2>/dev/null || true
 
-# [修复] 修正备份逻辑，只抓取服务名 (Bug B)
+# [修复] 修正备份逻辑，只抓取服务名 (修复 Bug 2)
 systemctl list-unit-files --type=service --state=enabled | awk '/enabled/ {print $1}' > "${BACKUP_DIR}/enabled_services.before.txt" 2>/dev/null || true
 
 # [修改] 创建/清空操作日志
@@ -229,7 +223,7 @@ fn_fix_apt_sources_if_needed() {
 fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
 fn_log "信息" "检查包管理器源健康状况..."
 
-# [修复] 立即强制 APT 使用 IPv4 (Bug C)
+# [修复] 立即强制 APT 使用 IPv4 (保留此修复)
 if [ "$OS_ID" = "debian" ] || [ "$OS_ID" = "ubuntu" ]; then
     mkdir -p /etc/apt/apt.conf.d
     cat > /etc/apt/apt.conf.d/99-force-ipv4 <<'EOF'
@@ -239,8 +233,8 @@ EOF
     fn_log_action "CREATE_FILE" "/etc/apt/apt.conf.d/99-force-ipv4"
 fi
 
-# [修复] 使用新变量，并移除 -qq 以显示错误
-if $PKG_BIN $PKG_OPTS_UPDATE; then
+# [修复] 使用数组调用，并移除 -qq 以显示错误
+if "${PKG_CMD[UPDATE][@]}"; then
 fn_log "成功" "包管理器源正常。"
 return 0
 else
@@ -278,12 +272,13 @@ else
     return 1
 fi
 
-# [修复] 使用新变量，并移除 -qq
-if $PKG_BIN $PKG_OPTS_UPDATE; then
+# [修复] 使用数组调用，并移除 -qq
+if "${PKG_CMD[UPDATE][@]}"; then
     fn_log "成功" "APT 源替换并刷新成功。"
     return 0
 else
-    fn_log "错误" "替换源后 $PKG_BIN $PKG_OPTS_UPDATE 仍然失败。"
+    local update_cmd_str="${PKG_CMD[UPDATE][@]}"
+    fn_log "错误" "替换源后 ${update_cmd_str} 仍然失败。"
     echo "-----------------------------------------------------"
     echo "[错误] 致命错误: 'apt update' 彻底失败。"
     echo "       请检查 DNS (例如 /etc/resolv.conf) 和网络连接。"
@@ -352,14 +347,14 @@ fn_setup_fail2ban() {
         return 2
     fi
     
-    # [修复] 使用 $PKG_OPTS_CHECK (Bug A)
-    if $PKG_BIN $PKG_OPTS_CHECK fail2ban >/dev/null 2>&1; then
+    # [修复] 使用数组调用 (修复 Bug 1)
+    if "${PKG_CMD[CHECK][@]}" fail2ban >/dev/null 2>&1; then
         fn_log "信息" "Fail2ban 已安装 (但未运行)。"
     else
         fn_log "信息" "正在安装 Fail2ban..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
-        # [修复] 使用 $PKG_BIN $PKG_OPTS_INSTALL (Bug A)
-        $PKG_BIN $PKG_OPTS_INSTALL fail2ban >>"$LOG_FILE" 2>&1 || { 
+        # [修复] 使用数组调用 (修复 Bug 1)
+        "${PKG_CMD[INSTALL][@]}" fail2ban >>"$LOG_FILE" 2>&1 || { 
             fn_log "警告" "Fail2ban 安装失败。"; 
             return 1; 
         }
@@ -526,14 +521,14 @@ fn_setup_zram_adaptive() {
         return 2 # 返回 "跳过"
     fi
     
-    # [修复] 使用 $PKG_OPTS_CHECK (Bug A)
-    if $PKG_BIN $PKG_OPTS_CHECK systemd-zram-generator >/dev/null 2>&1; then
+    # [修复] 使用数组调用 (修复 Bug 1)
+    if "${PKG_CMD[CHECK][@]}" systemd-zram-generator >/dev/null 2>&1; then
         fn_log "信息" "ZRAM (systemd-zram-generator) 已安装。"
     else
         fn_log "信息" "正在安装 ZRAM (systemd-zram-generator)..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
-        # [修复] 使用 $PKG_BIN $PKG_OPTS_INSTALL (Bug A)
-        $PKG_BIN $PKG_OPTS_INSTALL systemd-zram-generator >>"$LOG_FILE" 2>&1 || { 
+        # [修复] 使用数组调用 (修复 Bug 1)
+        "${PKG_CMD[INSTALL][@]}" systemd-zram-generator >>"$LOG_FILE" 2>&1 || { 
             fn_log "警告" "安装失败"; 
             fn_setup_zram_fallback "安装失败"; 
             return 1; 
@@ -746,10 +741,10 @@ fn_restore_all() {
                 INSTALL_PKG)
                     echo "[撤销]   Purging package $value"
                     fn_log "信息" "[撤销] Purging package $value"
-                    # [修复] 使用 $PKG_BIN $PKG_OPTS_REMOVE (Bug A)
-                    if [ -n "$PKG_BIN" ]; then
+                    # [修复] 使用数组调用 (修复 Bug 1)
+                    if [ ${#PKG_CMD[@]} -gt 0 ]; then
                         fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过卸载 $value"
-                        ($PKG_BIN $PKG_OPTS_REMOVE "$value") >> "$LOG_FILE" 2>&1
+                        ("${PKG_CMD[REMOVE][@]}" "$value") >> "$LOG_FILE" 2>&1
                     fi
                     ;;
                 MODIFY_FILE)
@@ -770,7 +765,7 @@ fn_restore_all() {
         done
     fi # 结束对 ACTION_LOG 的读取
 
-    # [修复] 恢复 enabled_services.before.txt (Bug B)
+    # [修复] 恢复 enabled_services.before.txt (修复 Bug 2)
     # 这个文件现在只包含干净的服务名
     if [ -f "${BACKUP_DIR}/enabled_services.before.txt" ]; then
         echo "[任务]   正在恢复之前启用的服务..."
@@ -882,11 +877,11 @@ fn_show_status_report() {
     local f2b_success_msg="[ 已激活 ]"
     local f2b_fail_msg="[ 未激活 ]"
     local f2b_details="(未安装)"
-    # [修复] 使用 $PKG_BIN $PKG_OPTS_CHECK (Bug A)
+    # [修复] 使用数组调用 (修复 Bug 1)
     if systemctl is-active fail2ban >/dev/null 2>&1; then
         f2b_status="true"
         f2b_details="(已激活)"
-    elif $PKG_BIN $PKG_OPTS_CHECK fail2ban >/dev/null 2>&1; then
+    elif "${PKG_CMD[CHECK][@]}" fail2ban >/dev/null 2>&1; then
         f2b_status="false"
         f2b_details="(已安装/未运行)"
     fi
