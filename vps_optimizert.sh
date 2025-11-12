@@ -640,26 +640,35 @@ fn_show_status_report() {
         printf "  %-30s %-15s %s\n" "$name" "$status_msg" "$details_str"
     }
 
+    # [修复 1] 统一检查优化配置文件是否存在
+    local sysctl_conf_file="/etc/sysctl.d/99-vps_optimizert.conf"
+    local sysctl_status="false"
     local bbr_status="false"
+    [ -f "$sysctl_conf_file" ] && sysctl_status="true"
+    
     if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" == "bbr" ] && \
        [ "$(sysctl -n net.core.default_qdisc 2>/dev/null)" == "fq" ]; then
         bbr_status="true"
     fi
     local bbr_details=""
     [ "$bbr_status" == "true" ] && bbr_details="(已启用BBR+FQ)"
-    fn_print_line "网络调优" "$bbr_status" "[ 已优化 ]" "[ 未优化 ]" "$bbr_details"
+    
+    # 网络调优 = BBR 检查 (BBR可能由内核自带，但其他调优依赖配置文件)
+    fn_print_line "网络调优 (BBR)" "$bbr_status" "[ 已启用 ]" "[ 未启用 ]" "$bbr_details"
+    
+    # Swappiness, VFS, IPv6 检查 = 配置文件是否存在
+    local swappiness_details=""
+    [ "$sysctl_status" == "true" ] && swappiness_details="(当前: $(sysctl -n vm.swappiness 2>/dev/null))"
+    fn_print_line "Swappiness (10)" "$sysctl_status" "[ 已优化 ]" "[ 未优化 ]" "$swappiness_details"
 
-    local swap_status="false"
-    [ "$(sysctl -n vm.swappiness 2>/dev/null)" == "10" ] && swap_status="true"
-    fn_print_line "Swappiness" "$swap_status" "[ 已优化 ]" "[ 未优化 ]"
+    local vfs_details=""
+    [ "$sysctl_status" == "true" ] && vfs_details="(当前: $(sysctl -n vm.vfs_cache_pressure 2>/dev/null))"
+    fn_print_line "VFS 缓存压力 (100)" "$sysctl_status" "[ 已优化 ]" "[ 未优化 ]" "$vfs_details"
 
-    local vfs_status="false"
-    [ "$(sysctl -n vm.vfs_cache_pressure 2>/dev/null)" == "100" ] && vfs_status="true"
-    fn_print_line "VFS 缓存压力" "$vfs_status" "[ 已优化 ]" "[ 未优化 ]"
+    local ipv6_details=""
+    [ "$sysctl_status" == "true" ] && ipv6_details="(当前: $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null))"
+    fn_print_line "禁用IPv6" "$sysctl_status" "[ 已优化 ]" "[ 未优化 ]" "$ipv6_details"
 
-    local ipv6_status="false"
-    [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" == "1" ] && ipv6_status="true"
-    fn_print_line "禁用IPv6" "$ipv6_status" "[ 已优化 ]" "[ 未优化 ]"
 
     local selinux_line="SELinux"
     local selinux_status="false"
@@ -675,7 +684,8 @@ fn_show_status_report() {
             selinux_details="(状态: $selinux_state)"
         fi
     else
-        selinux_status="false"
+        # [修复] 即使未检测到，也应标记为 true (已优化)
+        selinux_status="true"
         selinux_details="(未检测到)"
     fi
     fn_print_line "$selinux_line" "$selinux_status" "[ 已优化 ]" "[ 未优化 ]" "$selinux_details"
@@ -689,8 +699,8 @@ fn_show_status_report() {
         f2b_status="true"
         f2b_details="(已激活)"
     elif dpkg -s fail2ban >/dev/null 2>&1; then
+        # [修复 3] 已安装但未运行，仍是 "未激活"
         f2b_status="false"
-        f2b_fail_msg="[ 失败 ]"
         f2b_details="(已安装/未运行)"
     fi
     fn_print_line "$f2b_line" "$f2b_status" "$f2b_success_msg" "$f2b_fail_msg" "$f2b_details"
@@ -699,33 +709,39 @@ fn_show_status_report() {
     journal_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
     local journal_status="false"
     local journal_details="(模式: ${journal_storage:-disk})"
-    if [ "$journal_storage" == "volatile" ]; then
+    # [修复] 检查优化配置文件是否存在
+    if [ -f /etc/systemd/journald.conf.d/10-volatile.conf ] && [ "$journal_storage" == "volatile" ]; then
         journal_status="true"
         journal_details="(模式: 仅内存, 上限: 16M)"
+    elif [ "$journal_storage" == "volatile" ]; then
+        journal_status="true"
+        journal_details="(模式: 仅内存, 未知配置)"
     fi
     fn_print_line "Journald 日志存储模式" "$journal_status" "[ 已优化 ]" "[ 未优化 ]" "$journal_details"
 
-    local trimmed_count=0
+    # [修复 2] 仅检查被 "masked" 的服务
+    local masked_count=0
     local services_to_check=("${FN_TRIM_SERVICES_LIST[@]}" "rsyslog.service")
     
     for svc in "${services_to_check[@]}"; do
         local svc_status
         svc_status=$(systemctl is-enabled "$svc" 2>/dev/null || echo "not-found")
-        if [[ "$svc_status" == *"disabled"* || \
-              "$svc_status" == *"masked"* || \
-              "$svc_status" == *"static"* || \
-              "$svc_status" == *"not-found"* || \
-              -z "$svc_status" ]]; then
-            trimmed_count=$((trimmed_count + 1))
+        if [[ "$svc_status" == *"masked"* ]]; then
+            masked_count=$((masked_count + 1))
         fi
     done
     local trim_status="false"
-    [ "$trimmed_count" -gt 0 ] && trim_status="true"
-    fn_print_line "系统服务精简" "$trim_status" "[ 已优化 ]" "[ 未优化 ]"
+    local trim_details="(未屏蔽服务)"
+    if [ "$masked_count" -gt 0 ]; then
+        trim_status="true"
+        trim_details="(已屏蔽 $masked_count 个服务)"
+    fi
+    fn_print_line "系统服务精简" "$trim_status" "[ 已优化 ]" "[ 未优化 ]" "$trim_details"
 
     local zram_status="false"
     local zram_details="(未激活)"
-    if swapon -s | grep -q 'zram'; then
+    # [修复] 检查 ZRAM 配置文件是否存在
+    if [ -f /etc/systemd/zram-generator.conf ] && swapon -s | grep -q 'zram'; then
         zram_status="true"
         local free_swap_line
         free_swap_line=$(free -h | grep '^Swap:')
@@ -764,7 +780,6 @@ fn_show_status_report() {
 
     echo "======================================================"
 }
-
 fn_optimize_auto() {
     local result
     
