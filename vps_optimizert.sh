@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.11" # 版本号更新
+SCRIPT_VERSION="1.3.12" # 版本号更新
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -22,8 +22,6 @@ declare -ga PKG_CMD_CHECK
 declare -ga PKG_CMD_UPDATE
 
 FN_TRIM_SERVICES_LIST=(
-"apt-daily.timer"
-"apt-daily-upgrade.timer"
 "unattended-upgrades.service"
 "motd-news.service"
 "man-db.timer"
@@ -39,10 +37,6 @@ FN_TRIM_SERVICES_LIST=(
 "ModemManager.service"
 "ssh-askpass.service"
 "e2scrub_reap.timer"
-"cloud-init.service"
-"cloud-init-local.service"
-"cloud-config.service"
-"cloud-final.service"
 "packagekit.service"
 "thermald.service"
 "qemu-guest-agent.service"
@@ -727,21 +721,21 @@ fi
 fn_log "成功" "网络服务优化成功 (${detected_svcs_str})。"
 return 0
 }
-# [修改] 完全重构为状态化恢复
+
+
 fn_restore_all() {
     echo "[任务] 开始执行撤销优化..."
     fn_log "警告" "开始执行撤销优化... 将从 $ACTION_LOG 恢复。"
 
     # [修复] 立即停用所有 swap 和 ZRAM
     echo "[任务]   正在停用 ZRAM 和 Swap..."
-    (systemctl disable --now zramswap.service) >> "$LOG_FILE" 2>&1 || true # <-- [修复] 使用 zram-tools 的服务
+    (systemctl disable --now zramswap.service) >> "$LOG_FILE" 2>&1 || true # <-- 使用 zram-tools 的服务
     swapoff -a >/dev/null 2>&1 || true
     modprobe -r zram >/dev/null 2>&1 || true
 
     if [ ! -f "$ACTION_LOG" ] || [ $(grep -vc '^#' "$ACTION_LOG") -eq 0 ]; then
-        echo "[失败] 未找到操作日志或日志为空: $ACTION_LOG。无法自动撤销。"
+        echo "[失败] 未找到操作日志或日志为空: $ACTION_LOG。无法自动撤销所有操作。"
         fn_log "错误" "未找到 $ACTION_LOG 或其为空。"
-        # 即使日志为空，我们依然要恢复备份文件
     fi
 
     # [核心] 使用 tac 命令倒序读取日志文件，确保按相反顺序撤销
@@ -773,13 +767,12 @@ fn_restore_all() {
                 INSTALL_PKG)
                     echo "[撤销]   Purging package $value"
                     fn_log "信息" "[撤销] Purging package $value"
-                    # [修复] 使用数组调用 (修复 Bug 1)
                     if [ ${#PKG_CMD_REMOVE[@]} -gt 0 ]; then
                         fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过卸载 $value"
                         ("${PKG_CMD_REMOVE[@]}" "$value") >> "$LOG_FILE" 2>&1
                     fi
                     ;;
-                UNINSTALL_PKG) # <-- [新增] 撤销卸载 = 重新安装
+                UNINSTALL_PKG) # 撤销卸载 = 重新安装
                     echo "[撤销]   Re-installing package $value"
                     fn_log "信息" "[撤销] Re-installing package $value"
                     if [ ${#PKG_CMD_INSTALL[@]} -gt 0 ]; then
@@ -805,8 +798,7 @@ fn_restore_all() {
         done
     fi # 结束对 ACTION_LOG 的读取
 
-    # [修复] 恢复 enabled_services.before.txt (修复 Bug 2)
-    # 这个文件现在只包含干净的服务名
+    # [修复] 恢复 enabled_services.before.txt
     if [ -f "${BACKUP_DIR}/enabled_services.before.txt" ]; then
         echo "[任务]   正在恢复之前启用的服务..."
         while read -r s; do 
@@ -815,10 +807,12 @@ fn_restore_all() {
         done < "${BACKUP_DIR}/enabled_services.before.txt"
     fi
 
-    # [修改] 保留 BBR 和恢复 journald/fstab 的备份文件
+    # [兜底] 恢复核心备份文件
     echo "[任务]   正在恢复 sysctl..."
     [ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
     [ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
+    
+    # 保留 BBR (不使用 action log 记录，总是保留)
     cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
@@ -830,6 +824,60 @@ EOF
     systemctl restart systemd-journald >/dev/null 2>/dev/null || true
     
     [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
+    
+    # [新增] FORCE_CLEANUP: 清理所有由本脚本创建的特定文件
+    echo "[任务]   正在执行强制配置清理..."
+    
+    # 清理 sysctl 配置文件
+    local sysctl_conf_file="/etc/sysctl.d/99-vps_optimizert.conf"
+    if [ -f "$sysctl_conf_file" ]; then
+        rm -f "$sysctl_conf_file"
+        fn_log "信息" "[清理] 移除 $sysctl_conf_file"
+    fi
+    
+    # 清理强制 IPv4 配置
+    local ipv4_conf_file="/etc/apt/apt.conf.d/99-force-ipv4"
+    if [ -f "$ipv4_conf_file" ]; then
+        rm -f "$ipv4_conf_file"
+        fn_log "信息" "[清理] 移除 $ipv4_conf_file"
+    fi
+
+    # 清理 journald 内存模式配置
+    local journald_conf_file="/etc/systemd/journald.conf.d/10-volatile.conf"
+    if [ -f "$journald_conf_file" ]; then
+        rm -f "$journald_conf_file"
+        fn_log "信息" "[清理] 移除 $journald_conf_file"
+    fi
+
+    # 清理 Fail2ban 后端配置
+    local f2b_conf_file="/etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf"
+    if [ -f "$f2b_conf_file" ]; then
+        rm -f "$f2b_conf_file"
+        fn_log "信息" "[清理] 移除 $f2b_conf_file"
+    fi
+    
+    # 清理 ZRAM 配置文件
+    local zram_conf_file="/etc/default/zramswap"
+    if [ -f "$zram_conf_file" ]; then
+        rm -f "$zram_conf_file"
+        fn_log "信息" "[清理] 移除 $zram_conf_file"
+    fi
+
+    # 清理 Fallback Swapfile
+    local swapfile="/swapfile_zram"
+    if [ -f "$swapfile" ]; then
+        rm -f "$swapfile"
+        fn_log "信息" "[清理] 移除 $swapfile"
+    fi
+
+    # 清理所有网络代理服务的 drop-in 配置目录
+    echo "[任务]   正在清理网络服务 drop-in 配置..."
+    find /etc/systemd/system/ -type d -name "*.service.d" 2>/dev/null | while read -r dropin_dir; do
+        if [ -f "${dropin_dir}/90-vps_optimizert.conf" ]; then
+            rm -rf "$dropin_dir"
+            fn_log "信息" "[清理] 移除网络服务配置目录 $dropin_dir"
+        fi
+    done
     
     # [修复] 将 daemon-reload 移到所有 systemd 更改之后
     (systemctl daemon-reload) >> "$LOG_FILE" 2>&1
