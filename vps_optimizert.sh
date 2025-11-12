@@ -9,7 +9,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.2.1"
+SCRIPT_VERSION="1.2.2"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
@@ -83,6 +83,23 @@ fn_log_action() {
     # 格式: ACTION:VALUE
     echo "${action}:${value}" >> "$ACTION_LOG"
     fn_log "调试" "记录操作: ${action}:${value}"
+}
+
+# [新增] 检查系统是否已被优化 (通过检查 action log)
+fn_check_if_optimized() {
+    if [ ! -f "$ACTION_LOG" ]; then
+        return 1 # 未优化 (文件不存在)
+    fi
+    
+    # 检查日志中是否有超过 0 条的 "非注释" 和 "非空" 行
+    local action_count
+    action_count=$(grep -vc -E '(^#|^$)' "$ACTION_LOG" 2>/dev/null || true)
+    
+    if [ "${action_count:-0}" -gt 0 ]; then
+        return 0 # 已优化 (日志中有操作记录)
+    else
+        return 1 # 未优化 (日志为空)
+    fi
 }
 
 fn_check_root() {
@@ -225,11 +242,13 @@ if [ "$OS_ID" = "debian" ] || [ "$OS_ID" = "ubuntu" ]; then
         return 1
     fi
     cp -an /etc/apt/sources.list "${BACKUP_DIR}/apt.sources.list.bak" 2>/dev/null || true
+    
+    # [修复] 修正了 Debian 的 security URL 并为 Bookworm 添加了 non-free-firmware
     if [ "$OS_ID" = "debian" ]; then
 cat > /etc/apt/sources.list <<EOF
-deb http://deb.debian.org/debian/ $codename main contrib non-free
-deb http://deb.debian.org/debian/ $codename-updates main contrib non-free
-deb http://deb.debian.org/debian/ $codename-security main contrib non-free
+deb http://deb.debian.org/debian/ $codename main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian/ $codename-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security/ $codename-security main contrib non-free non-free-firmware
 EOF
     elif [ "$OS_ID" = "ubuntu" ]; then
 cat > /etc/apt/sources.list <<EOF
@@ -666,61 +685,69 @@ fn_restore_all() {
     echo "[任务] 开始执行撤销优化..."
     fn_log "警告" "开始执行撤销优化... 将从 $ACTION_LOG 恢复。"
 
+    # [修复] 立即停用所有 swap 和 ZRAM，防止 "cannot remove" 错误
+    echo "[任务]   正在停用 ZRAM 和 Swap..."
+    (systemctl disable --now systemd-zram-setup@zram0.service) >> "$LOG_FILE" 2>&1 || true
+    swapoff -a >/dev/null 2>&1 || true
+    modprobe -r zram >/dev/null 2>&1 || true
+
     if [ ! -f "$ACTION_LOG" ] || [ $(grep -vc '^#' "$ACTION_LOG") -eq 0 ]; then
         echo "[失败] 未找到操作日志或日志为空: $ACTION_LOG。无法自动撤销。"
         fn_log "错误" "未找到 $ACTION_LOG 或其为空。"
-        return 1
+        # 即使日志为空，我们依然要恢复备份文件
     fi
 
     # [核心] 使用 tac 命令倒序读取日志文件，确保按相反顺序撤销
-    tac "$ACTION_LOG" | while read -r line; do
-        [ -z "$line" ] && continue
-        [[ "$line" == \#* ]] && continue # 跳过注释
-        
-        # 解析 "ACTION:VALUE"
-        local action=$(echo "$line" | cut -d: -f1)
-        local value=$(echo "$line" | cut -d: -f2-)
+    if [ -f "$ACTION_LOG" ]; then
+        tac "$ACTION_LOG" | while read -r line; do
+            [ -z "$line" ] && continue
+            [[ "$line" == \#* ]] && continue # 跳过注释
+            
+            # 解析 "ACTION:VALUE"
+            local action=$(echo "$line" | cut -d: -f1)
+            local value=$(echo "$line" | cut -d: -f2-)
 
-        case "$action" in
-            MASK_SERVICE)
-                echo "[撤销]   Unmasking $value"
-                fn_log "信息" "[撤销] Unmasking $value"
-                (systemctl unmask "$value") >> "$LOG_FILE" 2>&1 || true
-                ;;
-            CREATE_FILE)
-                echo "[撤销]   Removing file/dir $value"
-                fn_log "信息" "[撤销] Removing file/dir $value"
-                rm -rf "$value" # 使用 rm -rf 来处理 .service.d 目录
-                
-                # [改进] 顺便清理 .service.d 的空父目录
-                if [[ "$value" == *.service.d/*.conf ]]; then
-                    rmdir "$(dirname "$value")" 2>/dev/null || true
-                fi
-                ;;
-            INSTALL_PKG)
-                echo "[撤销]   Purging package $value"
-                fn_log "信息" "[撤销] Purging package $value"
-                if [ -n "$PKG_REMOVE" ]; then
-                    fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过卸载 $value"
-                    ($PKG_REMOVE "$value") >> "$LOG_FILE" 2>&1
-                fi
-                ;;
-            MODIFY_FILE)
-                # 对于文件修改，我们仍然依赖 .bak 备份
-                if [ -f "${value}.bak" ]; then
-                    echo "[撤销]   Restoring $value from ${value}.bak"
-                    fn_log "信息" "[撤销] Restoring $value from ${value}.bak"
-                    mv "${value}.bak" "$value" >> "$LOG_FILE" 2>&1
-                else
-                    echo "[跳过]   未找到 ${value}.bak，无法恢复 $value"
-                    fn_log "警告" "未找到 ${value}.bak，无法恢复 $value"
-                fi
-                ;;
-            *)
-                fn_log "警告" "未知的撤销操作: $action"
-                ;;
-        esac
-    done
+            case "$action" in
+                MASK_SERVICE)
+                    echo "[撤销]   Unmasking $value"
+                    fn_log "信息" "[撤销] Unmasking $value"
+                    (systemctl unmask "$value") >> "$LOG_FILE" 2>&1 || true
+                    ;;
+                CREATE_FILE)
+                    echo "[撤销]   Removing file/dir $value"
+                    fn_log "信息" "[撤销] Removing file/dir $value"
+                    rm -rf "$value" # 使用 rm -rf 来处理 .service.d 目录
+                    
+                    # [改进] 顺便清理 .service.d 的空父目录
+                    if [[ "$value" == *.service.d/*.conf ]]; then
+                        rmdir "$(dirname "$value")" 2>/dev/null || true
+                    fi
+                    ;;
+                INSTALL_PKG)
+                    echo "[撤销]   Purging package $value"
+                    fn_log "信息" "[撤销] Purging package $value"
+                    if [ -n "$PKG_REMOVE" ]; then
+                        fn_wait_for_pkg_lock || fn_log "警告" "包管理器锁等待失败，跳过卸载 $value"
+                        ($PKG_REMOVE "$value") >> "$LOG_FILE" 2>&1
+                    fi
+                    ;;
+                MODIFY_FILE)
+                    # 对于文件修改，我们仍然依赖 .bak 备份
+                    if [ -f "${value}.bak" ]; then
+                        echo "[撤销]   Restoring $value from ${value}.bak"
+                        fn_log "信息" "[撤销] Restoring $value from ${value}.bak"
+                        mv "${value}.bak" "$value" >> "$LOG_FILE" 2>&1
+                    else
+                        echo "[跳过]   未找到 ${value}.bak，无法恢复 $value"
+                        fn_log "警告" "未找到 ${value}.bak，无法恢复 $value"
+                    fi
+                    ;;
+                *)
+                    fn_log "警告" "未知的撤销操作: $action"
+                    ;;
+            esac
+        done
+    fi # 结束对 ACTION_LOG 的读取
 
     # [修改] 保留 BBR 和恢复 journald/fstab 的备份文件
     echo "[任务]   正在恢复 sysctl..."
@@ -738,11 +765,7 @@ EOF
     
     [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
     
-    echo "[任务]   正在停用 ZRAM (如果存在)..."
-    (systemctl disable --now systemd-zram-setup@zram0.service) >> "$LOG_FILE" 2>&1 || true
-    swapoff -a >/dev/null 2>&1 || true
-    modprobe -r zram >/dev/null 2>&1 || true
-
+    # [修复] 将 daemon-reload 移到所有 systemd 更改之后
     (systemctl daemon-reload) >> "$LOG_FILE" 2>&1
     
     # [新增] 完成后清空日志，以便下次运行
@@ -751,6 +774,8 @@ EOF
     echo "[完成] 撤销优化完成。"
     fn_log "成功" "撤销优化完成。"
 }
+
+
 
 fn_show_status_report() {
     if [ "${1:-}" != "noclear" ]; then
@@ -914,6 +939,19 @@ fn_show_status_report() {
 fn_optimize_auto() {
     local result
     
+    # [新增] 检查是否已优化
+    if fn_check_if_optimized; then
+        echo "-----------------------------------------------------"
+        echo "[错误] 检测到系统已被优化。"
+        echo "操作日志: $ACTION_LOG (已包含内容)"
+        echo ""
+        echo "为防止覆盖现有配置和日志，操作已停止。"
+        echo " * 如果您想重新优化，请先运行 [选项 2] 撤销优化。"
+        echo "-----------------------------------------------------"
+        fn_log "错误" "检测到已优化，fn_optimize_auto 已停止。"
+        return 1 # 停止执行
+    fi
+
     echo "[任务 1 ] ：创建备份文件..."
     result=0
     fn_backup_state || result=$?
@@ -922,7 +960,6 @@ fn_optimize_auto() {
         fn_log "错误" "fn_backup_state 失败，退出。"
         return 1
     fi
-    # [修改] 恢复输出
     echo "[完成] 备份文件创建成功: $BACKUP_DIR"
     echo "--------------"
     
@@ -933,16 +970,13 @@ fn_optimize_auto() {
         echo "[失败] 包管理器源检查失败。请检查日志。"
         fn_log "错误" "fn_fix_apt_sources_if_needed 失败。"
     else
-        # [修改] 恢复输出
         echo "[完成] 包管理器源检查通过。"
     fi
-    # [修改] 恢复输出
     echo "--------------"
 
     echo "[任务 3 ] ：检查 SELinux 状态..."
     result=0
     fn_handle_selinux || result=$?
-    # [修改] 恢复输出
     if [ $result -eq 0 ]; then
         echo "[完成] SELinux 检查完成 (已操作)。"
     elif [ $result -eq 2 ]; then
@@ -953,7 +987,6 @@ fn_optimize_auto() {
     echo "[任务 4 ] ：配置 Journald (日志)..."
     result=0
     fn_setup_journald_volatile || result=$?
-    # [修改] 恢复输出
     if [ $result -eq 0 ]; then
         echo "[完成] Journald 已配置为内存模式。"
     elif [ $result -eq 2 ]; then
@@ -964,7 +997,6 @@ fn_optimize_auto() {
     echo "[任务 5 ] ：应用 sysctl 网络调优..."
     result=0
     fn_setup_sysctl_lowmem || result=$?
-    # [修改] 恢复输出
     if [ $result -eq 0 ]; then
         echo "[完成] sysctl (BBR+FQ) 配置文件已创建并应用。"
     elif [ $result -eq 2 ]; then
@@ -975,7 +1007,6 @@ fn_optimize_auto() {
     echo "[任务 6 ] ：配置 ZRAM..."
     result=0
     fn_setup_zram_adaptive || result=$?
-    # [修改] 恢复输出
     if [ $result -eq 0 ]; then
         echo "[完成] ZRAM 配置成功。"
     elif [ $result -eq 2 ]; then
@@ -988,7 +1019,6 @@ fn_optimize_auto() {
     echo "[任务 7 ] ：配置 Fail2ban..."
     result=0
     fn_setup_fail2ban || result=$?
-    # [修改] 恢复输出
     if [ $result -eq 0 ]; then
         echo "[完成] Fail2ban 配置成功。"
     elif [ $result -eq 2 ]; then
@@ -1001,7 +1031,6 @@ fn_optimize_auto() {
     echo "[任务 8 ] ：优化网络代理服务..."
     result=0
     fn_prioritize_network_services_auto || result=$?
-    # [修改] 恢复输出
     if [ $result -eq 0 ]; then
         echo "[完成] 网络代理服务优化完成。"
     elif [ $result -eq 2 ]; then
@@ -1012,7 +1041,6 @@ fn_optimize_auto() {
     echo "[任务 9 ] ：精简系统服务..."
     result=0
     fn_trim_services_auto || result=$?
-    # [修改] 恢复输出
     if [ $result -eq 0 ]; then
         echo "[完成] 系统服务精简完成。"
     elif [ $result -eq 2 ]; then
