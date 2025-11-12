@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.0-GM"
+SCRIPT_VERSION="2.9-GM"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
@@ -182,6 +182,80 @@ fi
 fi
 }
 
+fn_handle_selinux() {
+    echo "检查 SELinux 状态..."
+    fn_log "信息" "检查 SELinux 状态..."
+    
+    if command -v getenforce >/dev/null 2>&1; then
+        local selinux_status
+        selinux_status=$(getenforce)
+
+        if [ "$selinux_status" != "Disabled" ]; then
+            fn_log "警告" "检测到 SELinux 状态为: $selinux_status"
+            echo "-----------------------------------------------------"
+            echo "警告: 检测到 SELinux 状态为: $selinux_status"
+            echo "SELinux 会导致性能问题并可能与优化冲突。"
+            read -rp "是否要将其永久禁用 (推荐)? (y/n): " selinux_choice
+            
+            if [ "$selinux_choice" = "y" ] || [ "$selinux_choice" = "Y" ]; then
+                echo "正在禁用 SELinux..."
+                fn_log "信息" "正在禁用 SELinux..."
+                setenforce 0 2>/dev/null || fn_log "警告" "setenforce 0 失败 (可能无权限或已禁用)。"
+                if [ -f /etc/selinux/config ]; then
+                    sed -i.bak 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+                    echo "SELinux 已永久禁用。需要重启生效。"
+                    fn_log "成功" "SELinux 已永久禁用。需要重启生效。"
+                else
+                    echo "错误: 未找到 /etc/selinux/config，无法永久禁用。"
+                    fn_log "错误" "未找到 /etc/selinux/config，无法永久禁用。"
+                fi
+                echo "selinux" >> "$TOUCHED_SERVICES_FILE"
+            else
+                echo "跳过禁用 SELinux。"
+                fn_log "警告" "跳过禁用 SELinux。这可能导致后续步骤失败。"
+            fi
+        else
+             echo "SELinux 状态: Disabled (良好)。"
+             fn_log "信息" "SELinux 状态: Disabled (良好)。"
+        fi
+    else
+        echo "未检测到 SELinux (正常)。"
+        fn_log "信息" "未检测到 SELinux (正常)。"
+    fi
+}
+
+fn_setup_fail2ban() {
+    echo "配置 Fail2ban..."
+    fn_log "信息" "配置 Fail2ban..."
+    
+    if dpkg -s fail2ban >/dev/null 2>&1; then
+        echo "Fail2ban 已安装。"
+        fn_log "信息" "Fail2ban 已安装。"
+    else
+        echo "正在安装 Fail2ban..."
+        fn_log "信息" "正在安装 Fail2ban..."
+        fn_wait_for_apt_lock || { echo "错误: APT 锁等待失败。"; fn_log "错误" "APT 锁等待失败"; return 1; }
+        apt-get install -y fail2ban >>"$LOG_FILE" 2>&1 || { 
+            echo "警告: Fail2ban 安装失败。"
+            fn_log "警告" "Fail2ban 安装失败。"; 
+            return 1; 
+        }
+        echo "Fail2ban 安装完成。"
+        fn_log "信息" "Fail2ban 安装完成。"
+    fi
+    
+    (systemctl enable --now fail2ban) >> "$LOG_FILE" 2>&1
+    
+    if systemctl is-active fail2ban >/dev/null 2>&1; then
+        echo "成功: Fail2ban 已激活。"
+        fn_log "成功" "Fail2ban 已激活。"
+        echo "fail2ban.service" >> "$TOUCHED_SERVICES_FILE"
+    else
+        echo "错误: Fail2ban 启动失败。"
+        fn_log "错误" "Fail2ban 启动失败。"
+    fi
+}
+
 fn_setup_journald_volatile() {
 echo "配置 journald 为 volatile (内存) 模式..."
 local journal_storage
@@ -277,6 +351,7 @@ echo "系统服务精简完成 (共屏蔽 ${masked_count} 个新服务)。"
 fn_log "成功" "系统服务精简完成 (共屏蔽 ${masked_count} 个新服务)。"
 fi
 }
+
 fn_setup_zram_adaptive() {
     echo "配置 ZRAM..."
     fn_log "信息" "启用 ZRAM (systemd-zram-generator 方案)..."
@@ -338,6 +413,7 @@ EOF
         fn_setup_zram_fallback "ZRAM 激活失败"
     fi
 }
+
 fn_setup_zram_fallback() {
     local reason="$1"
     echo "启用 swapfile 回退..."
@@ -443,6 +519,12 @@ net.ipv4.tcp_congestion_control = bbr
 EOF
     sysctl --system >/dev/null 2>/dev/null || true
     
+    echo "  正在恢复 SELinux..."
+    if [ -f /etc/selinux/config.bak ]; then
+        fn_log "信息" "正在恢复 SELinux 配置..."
+        mv /etc/selinux/config.bak /etc/selinux/config >> "$LOG_FILE" 2>&1
+    fi
+    
     echo "  正在恢复 journald..."
     [ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
     systemctl restart systemd-journald >/dev/null 2>/dev/null || true
@@ -488,6 +570,13 @@ EOF
         rm -f "${BACKUP_DIR}/created_swapfiles.txt"
     fi
     modprobe -r zram >/dev/null 2>&1 || true
+    
+    echo "  正在移除 Fail2ban..."
+    if dpkg -s fail2ban >/dev/null 2>&1; then
+        fn_log "信息" "正在卸载 Fail2ban..."
+        fn_wait_for_apt_lock || fn_log "警告" "APT 锁等待失败，跳过卸载 Fail2ban。"
+        (apt-get remove -y fail2ban --purge) >> "$LOG_FILE" 2>&1
+    fi
     
     echo "撤销优化完成。"
     fn_log "成功" "撤销优化完成。"
@@ -536,6 +625,34 @@ fn_show_status_report() {
     local ipv6_status="false"
     [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" == "1" ] && ipv6_status="true"
     fn_print_line "禁用IPv6" "$ipv6_status" "[ 已禁用 ]" "[ 未禁用 ]"
+
+    local selinux_line="SELinux"
+    local selinux_status="false"
+    local selinux_details="(未检测到)"
+    if command -v getenforce >/dev/null 2>&1; then
+        local selinux_state
+        selinux_state=$(getenforce)
+        if [ "$selinux_state" == "Disabled" ]; then
+            selinux_status="true"
+            selinux_details="(已禁用)"
+        else
+            selinux_details="(状态: $selinux_state)"
+        fi
+    else
+        selinux_status="true"
+    fi
+    fn_print_line "$selinux_line" "$selinux_status" "[ 已优化 ]" "[ 警告 ]" "$selinux_details"
+
+    local f2b_line="Fail2ban"
+    local f2b_status="false"
+    local f2b_details="(未安装)"
+    if systemctl is-active fail2ban >/dev/null 2>&1; then
+        f2b_status="true"
+        f2b_details="(已激活)"
+    elif dpkg -s fail2ban >/dev/null 2>&1; then
+        f2b_details="(已安装/未运行)"
+    fi
+    fn_print_line "$f2b_line" "$f2b_status" "[ 已激活 ]" "[ 未激活 ]" "$f2b_details"
 
     local journal_storage
     journal_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
@@ -610,9 +727,11 @@ fn_show_status_report() {
 fn_optimize_auto() {
 fn_backup_state
 fn_fix_apt_sources_if_needed
+fn_handle_selinux
 fn_setup_journald_volatile
 fn_setup_sysctl_lowmem
 fn_setup_zram_adaptive
+fn_setup_fail2ban
 fn_prioritize_network_services_auto
 fn_trim_services_auto
 echo "系统优化完成。请重启系统以完全生效。"
