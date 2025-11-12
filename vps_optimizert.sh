@@ -2,9 +2,10 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.5-GM" # 增加了 GM (Gemini Modified) 标记
-BACKUP_DIR="/etc/sysopt_lowmem_backup"
-LOG_FILE="/var/log/sysopt_lowmem.log"
+# --- 修改：版本和名称已更新 ---
+SCRIPT_VERSION="2.6-GM"
+BACKUP_DIR="/etc/vps_optimizert_backup"
+LOG_FILE="/var/log/vps_optimizert.log"
 TOUCHED_SERVICES_FILE="${BACKUP_DIR}/touched_services.txt"
 export DEBIAN_FRONTEND=noninteractive
 
@@ -123,7 +124,8 @@ cp -ran /etc/systemd/journald.conf.d "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/
 sysctl -n net.ipv4.tcp_congestion_control > "${BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || true
 sysctl -n net.core.default_qdisc > "${BACKUP_DIR}/sysctl_q_algo.bak" 2>/dev/null || true
 systemctl list-unit-files --type=service --state=enabled > "${BACKUP_DIR}/enabled_services.before.txt" 2>/dev/null || true
-echo "# 由 sysOpt 脚本接触过的服务" > "$TOUCHED_SERVICES_FILE"
+# --- 修改：名称 ---
+echo "# 由 vps_optimizert 脚本接触过的服务" > "$TOUCHED_SERVICES_FILE"
 fn_log "信息" "备份完成。"
 }
 
@@ -250,61 +252,108 @@ swapon -s | tee -a "$LOG_FILE"
 lsblk | grep zram | tee -a "$LOG_FILE"
 }
 
+# --- 修改：(fn_prioritize_network_services_auto) ---
+# 1. 优化日志输出
+# 2. 修正提权配置文件名为 90-vps_optimizert.conf
 fn_prioritize_network_services_auto() {
-fn_log "信息" "为网络核心服务设置持久化高优先级。"
-local changes_made=0
-for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
-if systemctl list-unit-files --quiet "${svc}.service"; then
-fn_log "信息" "为 $svc 设置 Nice=-5, CPUQuota=70%。"
-local svc_conf_dir="/etc/systemd/system/${svc}.service.d"
-mkdir -p "$svc_conf_dir"
-cat > "${svc_conf_dir}/90-sysopt-lowmem.conf" <<EOF
+    local detected_svcs=()
+    local changes_made=0
+    
+    # 1. 检测服务
+    for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
+        if systemctl list-unit-files --quiet "${svc}.service"; then
+            detected_svcs+=("$svc")
+        fi
+    done
+
+    # 2. 如果未检测到，则记录并退出
+    if [ ${#detected_svcs[@]} -eq 0 ]; then
+        fn_log "信息" "未检测到 [${FN_NETWORK_SERVICES_LIST[*]}] 中的任何服务。网络服务提权退出。"
+        return 0
+    fi
+
+    # 3. 如果检测到，则记录并应用
+    local IFS=','
+    fn_log "信息" "检测到网络服务: ${detected_svcs[*]}。开始刷新网络服务提权..."
+    
+    for svc in "${detected_svcs[@]}"; do
+        fn_log "信息" "为 $svc 设置 Nice=-5, CPUQuota=70%。"
+        local svc_conf_dir="/etc/systemd/system/${svc}.service.d"
+        # --- 修改：内部配置文件名 ---
+        local conf_file="${svc_conf_dir}/90-vps_optimizert.conf" 
+        
+        mkdir -p "$svc_conf_dir"
+        cat > "$conf_file" <<EOF
 [Service]
 Nice=-5
 CPUQuota=70%
 EOF
-echo "${svc}.service" >> "$TOUCHED_SERVICES_FILE"
-changes_made=1
-fi
-done
-if [ "$changes_made" -eq 1 ]; then
-    fn_log "信息" "检测到提权变更，重载 systemd daemon..."
-    systemctl daemon-reload
-else
-    fn_log "信息" "未检测到需要提权的新服务。"
-fi
+        echo "${svc}.service" >> "$TOUCHED_SERVICES_FILE"
+        changes_made=1
+    done
+
+    if [ "$changes_made" -eq 1 ]; then
+        fn_log "信息" "检测到提权变更，重载 systemd daemon..."
+        systemctl daemon-reload
+    fi
+    fn_log "成功" "网络服务提权刷新成功。"
 }
 
-# --- 修改：文件名已改为 99-vps_optimizert.conf ---
+
+# --- 修改：(fn_restore_all) ---
+# 1. 修正 sysctl 配置文件名
+# 2. 增加移除网络服务提权配置的逻辑
 fn_restore_all() {
-fn_log "警告" "开始执行撤销优化... 将从 $BACKUP_DIR 恢复备份。"
-rm -f /etc/sysctl.d/99-vps_optimizert.conf
-[ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
-[ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
-cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
+    fn_log "警告" "开始执行撤销优化... 将从 $BACKUP_DIR 恢复备份。"
+    # --- 修正文件名 ---
+    rm -f /etc/sysctl.d/99-vps_optimizert.conf 
+    
+    [ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null || true
+    [ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null || true
+    cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
-sysctl --system >/dev/null 2>/dev/null || true
-[ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
-systemctl restart systemd-journald >/dev/null 2>/dev/null || true
-[ -f "${BACKUP_DIR}/apt.sources.list.bak" ] && cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt.sources.list 2>/dev/null || true
-if [ -f "$TOUCHED_SERVICES_FILE" ]; then
-while read -r svc; do
-[ -z "$svc" ] && continue
-[[ "$svc" == *.service ]] || [[ "$svc" == *.timer ]] || [[ "$svc" == *.socket ]] && systemctl unmask "$svc" >/dev/null 2>&1 || true
-done < <(grep -v '^#' "$TOUCHED_SERVICES_FILE")
-fi
-[ -f "${BACKUP_DIR}/enabled_services.before.txt" ] && while read -r s; do [ -z "$s" ] && continue; systemctl enable "$s" >/dev/null 2>/dev/null || true; done < "${BACKUP_DIR}/enabled_services.before.txt"
-[ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
-swapoff -a >/dev/null 2>/dev/null || true
-modprobe -r zram >/dev/null 2>/dev/null || true
-fn_log "成功" "撤销优化完成。"
+    sysctl --system >/dev/null 2>/dev/null || true
+    [ -d "${BACKUP_DIR}/journald.conf.d.bak" ] && rm -rf /etc/systemd/journald.conf.d/ && cp -ar "${BACKUP_DIR}/journald.conf.d.bak" /etc/systemd/journald.conf.d/ 2>/dev/null || true
+    systemctl restart systemd-journald >/dev/null 2>/dev/null || true
+    [ -f "${BACKUP_DIR}/apt.sources.list.bak" ] && cp -an "${BACKUP_DIR}/apt.sources.list.bak" /etc/apt.sources.list 2>/dev/null || true
+    
+    # Unmask services
+    if [ -f "$TOUCHED_SERVICES_FILE" ]; then
+        while read -r svc; do
+            [ -z "$svc" ] && continue
+            [[ "$svc" == *.service ]] || [[ "$svc" == *.timer ]] || [[ "$svc" == *.socket ]] && systemctl unmask "$svc" >/dev/null 2>&1 || true
+        done < <(grep -v '^#' "$TOUCHED_SERVICES_FILE")
+    fi
+
+    # --- 新增：移除提权配置 ---
+    fn_log "信息" "正在移除网络服务提权配置..."
+    local changes_made=0
+    for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
+        # --- 修改：修正检查的文件名 ---
+        local conf_file="/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf"
+        if [ -f "$conf_file" ]; then
+            rm -rf "/etc/systemd/system/${svc}.service.d"
+            fn_log "信息" "已移除 ${svc}.service.d 目录"
+            changes_made=1
+        fi
+    done
+    [ "$changes_made" -eq 1 ] && systemctl daemon-reload
+    # --- 新增结束 ---
+
+    [ -f "${BACKUP_DIR}/enabled_services.before.txt" ] && while read -r s; do [ -z "$s" ] && continue; systemctl enable "$s" >/dev/null 2>/dev/null || true; done < "${BACKUP_DIR}/enabled_services.before.txt"
+    [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null || true
+    swapoff -a >/dev/null 2>/dev/null || true
+    modprobe -r zram >/dev/null 2>/dev/null || true
+    fn_log "成功" "撤销优化完成。"
 }
 
+
 # --- 修复：(fn_show_status_report) ---
-# 替换了此函数以修复状态报告中 'masked\nnot-found' 的 BUG
-# 并使 ZRAM 报告更易读
+# 1. 修正 "进程不存在" 的显示逻辑
+# 2. 优化 ZRAM 报告
+# 3. 修正提权配置的检查文件名
 fn_show_status_report() {
     clear
     echo "==================== 系统优化状态 ===================="
@@ -314,7 +363,7 @@ fn_show_status_report() {
     printf "内核: %s\n" "$(uname -r)"
     echo "------------------------------------------------------"
 
-    # 健壮的检查函数，使用子字符串匹配
+    # 健壮的检查函数
     fn_print_check() {
         local name="$1"
         local expected="$2"
@@ -327,23 +376,21 @@ fn_show_status_report() {
             status_msg="[ 已优化 ]"
         elif [ "$expected" == "disabled" ]; then
             # 2. 服务检查 (expected="disabled")
-            # 使用子字符串匹配 (== *) 来处理 "masked", "not-found", "static",
-            # 以及异常的 "masked\nnot-found"
-            if [[ "$actual" == *"disabled"* || \
-                  "$actual" == *"masked"* || \
-                  "$actual" == *"static"* || \
-                  "$actual" == *"not-found"* || \
-                  -z "$actual" ]]; then
-                
+            
+            # --- 修改："(进程不存在)" 逻辑 ---
+            if [[ "$actual" == *"not-found"* || -z "$actual" ]]; then
+                status_msg="[ (进程不存在) ]" # 替换 [ 已优化 ]
+                details="" # 清空 details
+            elif [[ "$actual" == *"disabled"* || \
+                    "$actual" == *"masked"* || \
+                    "$actual" == *"static"* ]]; then
                 status_msg="[ 已优化 ]"
-                
-                if [[ "$actual" == *"not-found"* || -z "$actual" ]]; then
-                    details="(进程不存在)"
-                fi
+                details="" # 清空 details
             else
                 status_msg="[ 未优化 ]"
                 details="(状态: $(echo "$actual" | tr '\n' ' '))"
             fi
+            # --- 修改结束 ---
         else
             # 3. 默认未优化
             status_msg="[ 未优化 ]"
@@ -365,7 +412,6 @@ fn_show_status_report() {
     journal_storage=$(systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage=' | tail -n 1 | cut -d= -f2 2>/dev/null || echo "disk")
     fn_print_check "Journald 存储模式" "volatile" "${journal_storage:-disk}"
     
-    # --- 修改：ZRAM 报告方式 ---
     echo "3. 交换空间 (Swap/ZRAM):"
     if swapon -s | grep -q 'zram'; then
         local free_swap_line
@@ -384,9 +430,7 @@ fn_show_status_report() {
     fi
     echo "--- 当前内存与 Swap 详情 (free -h) ---"
     free -h
-    # 移除了 'swapon -s'，因为它对非专业用户不友好
     echo "--------------------------------------"
-    # --- 修改结束 ---
 
     echo "4. 系统服务精简:"
     local svc_status
@@ -400,7 +444,8 @@ fn_show_status_report() {
     echo "5. 网络服务提权 (Drop-in):"
     local drop_in_found="no"
     for svc in "${FN_NETWORK_SERVICES_LIST[@]}"; do
-        if [ -f "/etc/systemd/system/${svc}.service.d/90-sysopt-lowmem.conf" ]; then
+        # --- 修改：修正检查的文件名 ---
+        if [ -f "/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf" ]; then
             echo "  提权配置: ${svc} [ 已配置 ]"
             drop_in_found="yes"
         fi
@@ -449,6 +494,8 @@ fn_get_detected_services_string() {
 # --- 修复：(fn_show_menu) ---
 # 1. 修复了菜单循环退出的 BUG
 # 2. 增加了动态检测服务的功能 (选项 4)
+# 3. 移除了选项4中冗余的日志
+# 4. 更新脚本标题
 fn_show_menu() {
     clear
     # 动态检测服务，用于菜单显示
@@ -456,7 +503,8 @@ fn_show_menu() {
     detected_svcs_str=$(fn_get_detected_services_string)
 
     echo "==============================================="
-    echo " VPS 低内存自动优化脚本 (sysOpt_lowmem)"
+    # --- 修改：名称 ---
+    echo " VPS 低内存自动优化脚本 (vps_optimizert)"
     echo " 脚本版本: $SCRIPT_VERSION"
     echo " 备份目录: $BACKUP_DIR"
     echo " 日志文件: $LOG_FILE"
@@ -483,9 +531,8 @@ fn_show_menu() {
             read -rp "按回车返回菜单..." dummy 
             ;;
         4) 
-            fn_log "信息" "开始刷新网络服务提权..."
+            # --- 修改：移除冗余日志 (函数自己会记录) ---
             fn_prioritize_network_services_auto
-            fn_log "成功" "网络服务提权刷新完成。"
             read -rp "刷新完成。按回车返回菜单..." dummy
             ;;
         0) 
