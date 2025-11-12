@@ -1146,37 +1146,34 @@ fn_get_detected_services_string() {
 
 fn_show_menu() {
     clear
-    local detected_svcs_str
-    detected_svcs_str=$(fn_get_detected_services_string)
+    # [修改] 移除了对 fn_get_detected_services_string 的调用，以隐藏所有检测输出
+    # local detected_svcs_str
+    # detected_svcs_str=$(fn_get_detected_services_string)
 
     echo "==============================================="
     echo " VPS 自动优化脚本 (vps_optimizert)"
-    echo " 版本: $SCRIPT_VERSION"
+    echo " 版本: 1.3.10" # [修改] 更新版本号以匹配
     echo " 备份目录: $BACKUP_DIR"
     echo " 日志文件: $LOG_FILE"
     echo "==============================================="
     echo " 1) 执行系统优化 (全自动)"
     echo " 2) 撤销优化 (保留BBR)"
-    echo " 3) 显示系统优化状态"
-    echo " 4) 优化网络代理服务${detected_svcs_str}"
+    echo " 3) 优化网络代理服务" # <-- [修改] 调整顺序，移除检测文本
+    echo " 4) 显示系统优化状态" # <-- [修改] 调整顺序
     echo " 0) 退出"
     echo "===============================================
 "
     read -rp "请选择: " CH || true
     case "$CH" in
         1) 
-            fn_optimize_auto || true # <-- [修改] 添加 || true
+            fn_optimize_auto || true 
             read -rp "按回车返回主菜单..." dummy || true
             ;;
         2) 
-            fn_restore_all || true # <-- [修改] 建议也添加 || true
+            fn_restore_all || true 
             read -rp "撤销完成。按回车返回主菜单..." dummy || true
             ;;
-        3) 
-            fn_show_status_report
-            read -rp "按回车返回菜单..." dummy || true 
-            ;;
-        4) 
+        3) # <-- [修改] 调整顺序 (原 4)
             echo "[任务] 正在优化网络代理服务..."
             result=0
             fn_prioritize_network_services_auto || result=$?
@@ -1186,6 +1183,10 @@ fn_show_menu() {
                 echo "[跳过] 未检测到服务或服务均已配置。"
             fi
             read -rp "按回车返回菜单..." dummy || true
+            ;;
+        4) # <-- [修改] 调整顺序 (原 3)
+            fn_show_status_report
+            read -rp "按回车返回菜单..." dummy || true 
             ;;
         0) 
             echo "退出。"
