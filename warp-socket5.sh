@@ -18,7 +18,7 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- [修改] 版本号定义 ---
-SCRIPT_VERSION="1.2.2-UIFix-Lite"
+SCRIPT_VERSION="1.2.5"
 # ------------------------
 
 [[ $EUID -ne 0 ]] && yellow "请以root模式运行脚本" && exit
@@ -151,7 +151,6 @@ else
 fi
 }
 
-# --- [重构] ShowSOCKS5 函数现在直接打印状态，并修复颜色 ---
 ShowSOCKS5(){
     blue " 脚本版本: $(green "$SCRIPT_VERSION")"
     
@@ -183,7 +182,8 @@ ShowSOCKS5(){
             echo -e " $(blue "Cloudflare IPV4：") $(green "$s5ip  $country")"
             echo -e " $(blue "奈飞NF解锁：") $(green "$NF")"
             echo -e " $(blue "ChatGPT解锁：") $(green "$chat")"
-            echo -e " $(blue "Gemini 解锁：") $(green "$gemini")"
+            # --- [修改] 移除 Gemini 文本空格 ---
+            echo -e " $(blue "Gemini解锁：") $(green "$gemini")"
 
         else
             echo -e " $(blue "Socks5 WARP状态：") $(yellow "已安装，但Socks5代理连接失败 (端口: $mport)")"
@@ -208,7 +208,7 @@ $yumapt autoremove
 green "Socks5-WARP 卸载完成。"
 }
 
-# --- [修改] 增加重启服务逻辑 ---
+# --- [修改] 彻底修复端口修改逻辑 ---
 SOCKS5WARPPORT(){
 [[ ! $(type -P warp-cli) ]] && red "未安装Socks5-WARP，无法更改端口" && return 1
 readp "请输入自定义socks5端口[2000～65535]（回车跳过为2000-65535之间的随机端口）:" port
@@ -226,20 +226,29 @@ done
 fi
 
 if [[ -n $port ]]; then
-    warp-cli --accept-tos set-proxy-port $port >/dev/null 2>&1
     green "新端口设置成功：$port"
-    yellow "正在应用新端口并重启服务 (约 5 秒)..."
-    systemctl restart warp-svc
-    sleep 2
+    yellow "正在应用新端口并重启服务 (约 10 秒)..."
+    
+    # 1. 断开连接
+    warp-cli --accept-tos disconnect >/dev/null 2>&1
+    # 2. 停止服务
+    systemctl stop warp-svc
+    sleep 1
+    # 3. 修改配置
+    warp-cli --accept-tos set-proxy-port $port >/dev/null 2>&1
+    # 4. 启动服务
+    systemctl start warp-svc
+    sleep 3
+    # 5. 重新连接
     warp-cli --accept-tos connect
     sleep 3 # 等待连接建立
+    
     green "服务已重启并连接。"
 else
     red "端口设置失败。"
 fi
 }
 
-# --- [修改] 增加 --accept-tos 和 sleep 修复 ---
 install_socks5(){
     # 1. 检查状态
     yellow "正在检查 Cloudflare WARP Socks5 (warp-cli) 状态..."
@@ -286,21 +295,22 @@ install_socks5(){
     fi
     if [[ $release != Centos ]]; then 
     apt install net-tools -y
-    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpo --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-    sudo apt-get update && sudo apt-get install cloudflare-warp
+    # --- [修改] 自动同意 [Y/n] ---
+    sudo apt-get update && sudo apt-get install -y cloudflare-warp
     fi
     
     # 5. 配置
     warpip
     yellow "正在自动注册新账户 (--accept-tos)..."
-    warp-cli --accept-tos registration new # [Bug 1 修复]
+    warp-cli --accept-tos registration new
     warp-cli mode proxy 
     warp-cli proxy port 40000
     warp-cli --accept-tos connect
     
     yellow "正在等待连接稳定 (5 秒)..."
-    sleep 5 # [Bug 2 修复]
+    sleep 5
     
     # 6. 确认
     if [[ $(systemctl is-active warp-svc) = active ]] && [[ $(warp-cli --accept-tos status 2>/dev/null) =~ 'Connected' ]]; then
@@ -365,7 +375,6 @@ fi
 done
 }
 
-# --- [重构] 菜单 UI 和颜色修复 ---
 main_menu() {
     while true; do
         clear
@@ -377,12 +386,13 @@ main_menu() {
         yellow " 正在获取实时状态 (可能需要几秒钟)..."
         echo
         blue "------------------------------------------------------------------------------------------------"
-        ShowSOCKS5 # [UI 修复] 函数现在直接打印状态
+        ShowSOCKS5
         blue "------------------------------------------------------------------------------------------------"
         echo
         
         # 菜单选项
-        green " 1. 安装/启动 Socks5-WARP (默认端口 40000)"
+        # --- [修改] 移除菜单 1 的 (默认端口) ---
+        green " 1. 安装/启动 Socks5-WARP"
         green " 2. 修改 Socks5 端口"
         red   " 3. 卸载 Socks5-WARP"
         echo
