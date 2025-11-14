@@ -18,7 +18,7 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- [修改] 版本号定义 ---
-SCRIPT_VERSION="1.1.0-Menu-Lite"
+SCRIPT_VERSION="1.2.2-UIFix-Lite"
 # ------------------------
 
 [[ $EUID -ne 0 ]] && yellow "请以root模式运行脚本" && exit
@@ -141,32 +141,59 @@ chat='杯具，当前IP无法解锁ChatGPT服务'
 fi
 }
 
-ShowSOCKS5(){
-# 此函数现在只设置 S5Status 变量, 不打印它
-if [[ $(systemctl is-active warp-svc) = active ]]; then
-mport=`warp-cli --accept-tos settings 2>/dev/null | grep 'WarpProxy on port' | awk -F "port " '{print $2}'`
-s5ip=`curl -sx socks5h://localhost:$mport icanhazip.com -k`
-nfs5
-gpt1=$(curl -sx socks5h://localhost:$mport https://chat.openai.com 2>&1)
-gpt2=$(curl -sx socks5h://localhost:$mport https://android.chat.openai.com 2>&1)
-checkgpt
-nonf=$(curl -sx socks5h://localhost:$mport --user-agent "${UA_Browser}" http://ip-api.com/json/$s5ip?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
-country=$nonf
-socks5=$(curl -sx socks5h://localhost:$mport www.cloudflare.com/cdn-cgi/trace -k --connect-timeout 2 | grep warp | cut -d= -f2) 
-case ${socks5} in 
-plus) 
-S5Status=$(white "Socks5 WARP+状态：\c" ; rred "运行中，WARP+账户(剩余WARP+流量：$((`warp-cli --accept-tos account | grep Quota | awk '{ print $(NF) }'`/1000000000)) GB)" ; white " Socks5 端口：\c" ; rred "$mport" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; rred "$s5ip  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat");;  
-on) 
-S5Status=$(white "Socks5 WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " Socks5 端口：\c" ; green "$mport" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; green "$s5ip  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat");;  
-*) 
-S5Status=$(white "Socks5 WARP状态：\c" ; yellow "已安装Socks5-WARP客户端，但端口处于关闭状态")
-esac 
+checkgemini(){
+if echo "$gemini_raw" | grep -q "not available in your country" || echo "$gemini_raw" | grep -q "unavailable in your region"; then
+    gemini='杯具，当前IP地区不可用'
+elif [[ -n "$gemini_raw" ]]; then
+    gemini='恭喜，可访问Gemini'
 else
-S5Status=$(white "Socks5 WARP状态：\c" ; red "未安装Socks5-WARP客户端")
+    gemini='检测失败 (超时或连接错误)'
 fi
 }
 
-# --- [新增] 复活 cso (卸载) 函数 ---
+# --- [重构] ShowSOCKS5 函数现在直接打印状态，并修复颜色 ---
+ShowSOCKS5(){
+    blue " 脚本版本: $(green "$SCRIPT_VERSION")"
+    
+    if [[ $(systemctl is-active warp-svc) = active ]]; then
+        mport=`warp-cli --accept-tos settings 2>/dev/null | grep 'WarpProxy on port' | awk -F "port " '{print $2}'`
+        
+        # 检查SOCKS5是否真的在工作
+        socks5=$(curl -sx socks5h://localhost:$mport www.cloudflare.com/cdn-cgi/trace -k --connect-timeout 4 | grep warp | cut -d= -f2) 
+        
+        if [[ $socks5 =~ on|plus ]]; then
+            s5ip=`curl -sx socks5h://localhost:$mport icanhazip.com -k --max-time 5`
+            nfs5
+            gpt1=$(curl -sx socks5h://localhost:$mport https://chat.openai.com 2>&1)
+            gpt2=$(curl -sx socks5h://localhost:$mport https://android.chat.openai.com 2>&1)
+            checkgpt
+            gemini_raw=$(curl -sx socks5h://localhost:$mport -sL --user-agent "${UA_Browser}" --max-time 5 https://gemini.google.com/ 2>&1)
+            checkgemini
+            nonf=$(curl -sx socks5h://localhost:$mport --user-agent "${UA_Browser}" http://ip-api.com/json/$s5ip?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
+            country=$nonf
+
+            if [[ $socks5 = plus ]]; then
+                echo -e " $(blue "Socks5 WARP+状态：") $(rred "运行中 (WARP+账户)")"
+                echo -e " $(blue "剩余WARP+流量：") $(rred "$((`warp-cli --accept-tos account | grep Quota | awk '{ print $(NF) }'`/1000000000)) GB")"
+            else
+                echo -e " $(blue "Socks5 WARP状态：") $(green "运行中 (WARP普通账户)")"
+            fi
+            
+            echo -e " $(blue "Socks5 端口：") $(green "$mport")"
+            echo -e " $(blue "Cloudflare IPV4：") $(green "$s5ip  $country")"
+            echo -e " $(blue "奈飞NF解锁：") $(green "$NF")"
+            echo -e " $(blue "ChatGPT解锁：") $(green "$chat")"
+            echo -e " $(blue "Gemini 解锁：") $(green "$gemini")"
+
+        else
+            echo -e " $(blue "Socks5 WARP状态：") $(yellow "已安装，但Socks5代理连接失败 (端口: $mport)")"
+        fi
+    else
+        echo -e " $(blue "Socks5 WARP状态：") $(red "未安装或服务未运行")"
+    fi
+}
+
+
 cso(){
 warp-cli --accept-tos disconnect >/dev/null 2>&1
 warp-cli --accept-tos disable-always-on >/dev/null 2>&1
@@ -181,7 +208,7 @@ $yumapt autoremove
 green "Socks5-WARP 卸载完成。"
 }
 
-# --- [新增] 复活 SOCKS5WARPPORT (改端口) 函数 ---
+# --- [修改] 增加重启服务逻辑 ---
 SOCKS5WARPPORT(){
 [[ ! $(type -P warp-cli) ]] && red "未安装Socks5-WARP，无法更改端口" && return 1
 readp "请输入自定义socks5端口[2000～65535]（回车跳过为2000-65535之间的随机端口）:" port
@@ -197,11 +224,22 @@ do
 [[ -n $(ss -ntlp | awk '{print $4}' | sed 's/.*://g' | grep -w "$port") ]] && yellow "\n端口被占用，请重新输入端口" && readp "自定义socks5端口:" port
 done
 fi
-[[ -n $port ]] && warp-cli --accept-tos set-proxy-port $port >/dev/null 2>&1
-green "当前socks5端口：$port"
+
+if [[ -n $port ]]; then
+    warp-cli --accept-tos set-proxy-port $port >/dev/null 2>&1
+    green "新端口设置成功：$port"
+    yellow "正在应用新端口并重启服务 (约 5 秒)..."
+    systemctl restart warp-svc
+    sleep 2
+    warp-cli --accept-tos connect
+    sleep 3 # 等待连接建立
+    green "服务已重启并连接。"
+else
+    red "端口设置失败。"
+fi
 }
 
-# --- [重构] 重命名为 install_socks5 ---
+# --- [修改] 增加 --accept-tos 和 sleep 修复 ---
 install_socks5(){
     # 1. 检查状态
     yellow "正在检查 Cloudflare WARP Socks5 (warp-cli) 状态..."
@@ -248,17 +286,21 @@ install_socks5(){
     fi
     if [[ $release != Centos ]]; then 
     apt install net-tools -y
-    curl -fsSl https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpo --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
     sudo apt-get update && sudo apt-get install cloudflare-warp
     fi
     
     # 5. 配置
     warpip
-    echo y | warp-cli registration new
+    yellow "正在自动注册新账户 (--accept-tos)..."
+    warp-cli --accept-tos registration new # [Bug 1 修复]
     warp-cli mode proxy 
     warp-cli proxy port 40000
-    warp-cli connect
+    warp-cli --accept-tos connect
+    
+    yellow "正在等待连接稳定 (5 秒)..."
+    sleep 5 # [Bug 2 修复]
     
     # 6. 确认
     if [[ $(systemctl is-active warp-svc) = active ]] && [[ $(warp-cli --accept-tos status 2>/dev/null) =~ 'Connected' ]]; then
@@ -300,7 +342,6 @@ fi
 }
 
 warpyl(){
-# --- [修改] 增加 ss (iproute2/net-tools) 依赖 ---
 if [[ $release = Centos ]]; then
     packages=("curl" "openssl" "bc" "python3" "screen" "qrencode" "wget" "ss")
     inspackages=("curl" "openssl" "bc" "python3" "screen" "qrencode" "wget" "net-tools")
@@ -311,7 +352,7 @@ fi
 
 for i in "${!packages[@]}"; do
 package="${packages[$i]}"
-inspackage="${inspackages[$i]}"
+inspackage="${inspackages[i]}"
 if ! command -v "$package" &> /dev/null; then
 if [ -x "$(command -v apt-get)" ]; then
 apt-get install -y "$inspackage"
@@ -324,21 +365,20 @@ fi
 done
 }
 
-# --- [新增] 脚本主菜单 ---
+# --- [重构] 菜单 UI 和颜色修复 ---
 main_menu() {
     while true; do
         clear
         green "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
         bblue " CFwarp Socks5 (warp-cli) 管理脚本"
-        white " 脚本版本: $(blue "$SCRIPT_VERSION")"
         green "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
         
         # 实时显示状态
-        ShowSOCKS5
+        yellow " 正在获取实时状态 (可能需要几秒钟)..."
         echo
-        white "------------------------------------------------------------------------------------------------"
-        echo -e " ${S5Status}"
-        white "------------------------------------------------------------------------------------------------"
+        blue "------------------------------------------------------------------------------------------------"
+        ShowSOCKS5 # [UI 修复] 函数现在直接打印状态
+        blue "------------------------------------------------------------------------------------------------"
         echo
         
         # 菜单选项
