@@ -110,7 +110,7 @@ masquerade:
   proxy:
     url: __MASQUERADE_URL__
     rewriteHost: true
-ignoreClientBandwidth: true
+ignoreClientBandwidth: false
 sniff:
   enable: true
   timeout: 2s
