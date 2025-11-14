@@ -427,8 +427,8 @@ else
     cat > "$conf_file" <<'EOF'
 vm.swappiness = 10
 vm.vfs_cache_pressure = 100
-net.core.rmem_max = 4194304
-net.core.wmem_max = 4194304
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
 net.core.netdev_max_backlog = 2500
 net.core.somaxconn = 1024
 net.ipv4.tcp_rmem = 4096 87380 16777216
