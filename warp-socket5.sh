@@ -18,7 +18,7 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- [修改] 版本号定义 ---
-SCRIPT_VERSION="1.3.2 from halibotee"
+SCRIPT_VERSION="1.3.3 from halibotee"
 # --- [新增] 日志文件定义 ---
 FULL_LOG_FILE="/var/log/cfwarp_socks5.log"
 ERROR_LOG_FILE="/var/log/cfwarp_socks5.error.log"
@@ -154,7 +154,7 @@ else
 fi
 }
 
-# --- [修改] ShowSOCKS5 函数, 增加日志提示 ---
+# --- [修改] ShowSOCKS5 函数, 增加 curl 超时 ---
 ShowSOCKS5(){
     blue " 脚本版本: $(green "$SCRIPT_VERSION")"
     
@@ -166,13 +166,18 @@ ShowSOCKS5(){
         
         if [[ $socks5 =~ on|plus ]]; then
             s5ip=`curl -sx socks5h://localhost:$mport icanhazip.com -k --max-time 5`
-            nfs5
-            gpt1=$(curl -sx socks5h://localhost:$mport https://chat.openai.com 2>&1)
-            gpt2=$(curl -sx socks5h://localhost:$mport https://android.chat.openai.com 2>&1)
+            nfs5 # nfs5 函数内部自带 --max-time 10
+            
+            # --- [Bug B 修复] 增加 --max-time 5 ---
+            gpt1=$(curl -sx socks5h://localhost:$mport --max-time 5 https://chat.openai.com 2>&1)
+            gpt2=$(curl -sx socks5h://localhost:$mport --max-time 5 https://android.chat.openai.com 2>&1)
             checkgpt
+            
             gemini_raw=$(curl -sx socks5h://localhost:$mport -sL --user-agent "${UA_Browser}" --max-time 5 https://gemini.google.com/ 2>&1)
             checkgemini
-            nonf=$(curl -sx socks5h://localhost:$mport --user-agent "${UA_Browser}" http://ip-api.com/json/$s5ip?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
+            
+            # --- [Bug B 修复] 增加 --max-time 5 ---
+            nonf=$(curl -sx socks5h://localhost:$mport --user-agent "${UA_Browser}" --max-time 5 http://ip-api.com/json/$s5ip?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
             country=$nonf
 
             if [[ $socks5 = plus ]]; then
@@ -186,7 +191,6 @@ ShowSOCKS5(){
             echo -e " $(blue "Cloudflare IPV4：") $(green "$s5ip  $country")"
             echo -e " $(blue "奈飞NF解锁：") $(green "$NF")"
             echo -e " $(blue "ChatGPT解锁：") $(green "$chat")"
-            # --- [修改] 移除 Gemini 文本空格 ---
             echo -e " $(blue "Gemini解锁：") $(green "$gemini")"
 
         else
@@ -196,7 +200,6 @@ ShowSOCKS5(){
         echo -e " $(blue "Socks5 WARP状态：") $(red "未安装或服务未运行")"
     fi
     
-    # --- [新增] 日志分隔线 与 三日志提示 ---
     echo -e " $(blue "------------------------------------------------------------------------------------------------")"
     echo -e " $(yellow "提示: 使用 'cat $FULL_LOG_FILE' 查看完整日志")"
     echo -e " $(yellow "提示: 使用 'cat $ERROR_LOG_FILE' 查看错误日志")"
@@ -218,7 +221,7 @@ $yumapt autoremove
 green "Socks5-WARP 卸载完成。"
 }
 
-# --- [重大修复] v1.3.1 端口修改 Bug 修复 ---
+# --- [重大修复] v1.3.3 端口修改 Bug 修复 ---
 SOCKS5WARPPORT(){
 [[ ! $(type -P warp-cli) ]] && red "未安装Socks5-WARP，无法更改端口" && return 1
 readp "请输入自定义socks5端口[2000～65535]（回车跳过为2000-65535之间的随机端口）:" port
@@ -239,9 +242,9 @@ if [[ -n $port ]]; then
     green "新端口设置成功：$port"
     yellow "正在应用新端口 (约 2 秒)..."
     
-    # [v1.3.1 修复方案] 采纳 menu.sh 逻辑, 仅设置并等待服务热加载
+    # [v1.3.3 修复方案] 采纳 menu.sh 逻辑, 使用正确的 'proxy port' 命令
     # 1. (服务运行时) 修改配置
-    warp-cli --accept-tos set-proxy-port $port
+    warp-cli --accept-tos proxy port $port
     # 2. 等待服务自动热加载
     sleep 2
     
@@ -393,7 +396,6 @@ main_menu() {
         echo
         
         # 菜单选项
-        # --- [修改] 移除菜单 1 的 (默认端口) ---
         green " 1. 安装/启动 Socks5-WARP"
         green " 2. 修改 Socks5 端口"
         red   " 3. 卸载 Socks5-WARP"
