@@ -18,10 +18,11 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- [修改] 版本号定义 ---
-SCRIPT_VERSION="1.3.0 from halibotee"
+SCRIPT_VERSION="1.3.2 from halibotee"
 # --- [新增] 日志文件定义 ---
 FULL_LOG_FILE="/var/log/cfwarp_socks5.log"
 ERROR_LOG_FILE="/var/log/cfwarp_socks5.error.log"
+LOG_LIMIT_BYTES=1048576 # 1MB
 
 [[ $EUID -ne 0 ]] && yellow "请以root模式运行脚本" && exit
 
@@ -195,8 +196,8 @@ ShowSOCKS5(){
         echo -e " $(blue "Socks5 WARP状态：") $(red "未安装或服务未运行")"
     fi
     
-    # --- [新增] 三日志提示 ---
-    echo
+    # --- [新增] 日志分隔线 与 三日志提示 ---
+    echo -e " $(blue "------------------------------------------------------------------------------------------------")"
     echo -e " $(yellow "提示: 使用 'cat $FULL_LOG_FILE' 查看完整日志")"
     echo -e " $(yellow "提示: 使用 'cat $ERROR_LOG_FILE' 查看错误日志")"
     echo -e " $(yellow "提示: 使用 'journalctl -u warp-svc -f' 查看服务日志")"
@@ -217,7 +218,7 @@ $yumapt autoremove
 green "Socks5-WARP 卸载完成。"
 }
 
-# --- [修改] v1.2.6 端口修改 Bug 修复 ---
+# --- [重大修复] v1.3.1 端口修改 Bug 修复 ---
 SOCKS5WARPPORT(){
 [[ ! $(type -P warp-cli) ]] && red "未安装Socks5-WARP，无法更改端口" && return 1
 readp "请输入自定义socks5端口[2000～65535]（回车跳过为2000-65535之间的随机端口）:" port
@@ -236,24 +237,15 @@ fi
 
 if [[ -n $port ]]; then
     green "新端口设置成功：$port"
-    yellow "正在应用新端口并重启服务 (约 10-12 秒)..."
+    yellow "正在应用新端口 (约 2 秒)..."
     
-    # [v1.2.6 修复方案]
+    # [v1.3.1 修复方案] 采纳 menu.sh 逻辑, 仅设置并等待服务热加载
     # 1. (服务运行时) 修改配置
-    warp-cli --accept-tos set-proxy-port $port >/dev/null 2>&1
-    # 2. 断开连接
-    warp-cli --accept-tos disconnect >/dev/null 2>&1
-    # 3. 停止服务 (强制释放旧端口)
-    systemctl stop warp-svc
+    warp-cli --accept-tos set-proxy-port $port
+    # 2. 等待服务自动热加载
     sleep 2
-    # 4. 启动服务 (强制读取新配置)
-    systemctl start warp-svc
-    sleep 3
-    # 5. 重新连接
-    warp-cli --accept-tos connect
-    sleep 3 # 等待连接建立
     
-    green "服务已重启并连接。"
+    green "服务已自动应用新端口。"
 else
     red "端口设置失败。"
 fi
@@ -437,21 +429,39 @@ main_menu() {
 
 # --- [新增] 脚本主包裹函数 (用于日志捕获) ---
 script_main_wrapper() {
-    # --- [新增] 日志生命周期管理 ---
-    rm -f "$FULL_LOG_FILE" "$ERROR_LOG_FILE"
+    # --- [修改] v1.3.1 日志生命周期管理 ---
+    
+    # 1. 完整日志: 始终删除重建
+    rm -f "$FULL_LOG_FILE"
     echo "CFwarp v$SCRIPT_VERSION - 完整日志 - 开始于: $(date)" >> "$FULL_LOG_FILE"
-    echo "CFwarp v$SCRIPT_VERSION - 错误日志 - 开始于: $(date)" >> "$ERROR_LOG_FILE"
 
-    # 1. 运行必要的依赖检查
+    # 2. 错误日志: 检查并截断 (Log Rotation)
+    if [ -f "$ERROR_LOG_FILE" ]; then
+        # 尝试获取文件大小
+        local current_size=$(stat -c%s "$ERROR_LOG_FILE" 2>/dev/null)
+        if [ -z "$current_size" ]; then
+             current_size=0
+        fi
+
+        if [ "$current_size" -gt "$LOG_LIMIT_BYTES" ]; then
+            echo "--- (错误日志超过 1MB，正在截断...) ---" >> "$FULL_LOG_FILE"
+            # 使用 tail 截断, -c $LOG_LIMIT_BYTES 获取最后 1MB
+            # 创建临时文件，移动，以保证原子性
+            tail -c $LOG_LIMIT_BYTES "$ERROR_LOG_FILE" > "$ERROR_LOG_FILE.tmp" && mv "$ERROR_LOG_FILE.tmp" "$ERROR_LOG_FILE"
+            echo "--- (日志已截断于 $(date)) ---" >> "$ERROR_LOG_FILE"
+        fi
+    fi
+    # 每次会话都在错误日志中追加一个时间戳
+    echo "CFwarp v$SCRIPT_VERSION - 错误日志 - 会话开始于: $(date)" >> "$ERROR_LOG_FILE"
+
+    # 3. 运行主程序
     checkyl
     warpyl
     cpujg
-
-    # 2. 进入主菜单
     main_menu
 }
 
 # --- [修改] 脚本主入口 (用于双日志捕获) ---
-# 1. 所有 stderr (错误) 都被 'tee' 捕获到 ERROR_LOG_FILE
-# 2. stdout (标准输出) 和 stderr (错误) 都被 |& (管道) 合并，并 'tee' 捕获到 FULL_LOG_FILE
+# 1. 所有 stderr (错误) 都被 'tee' 捕获到 ERROR_LOG_FILE (追加)
+# 2. stdout (标准输出) 和 stderr (错误) 都被 |& (管道) 合并，并 'tee' 捕获到 FULL_LOG_FILE (追加)
 script_main_wrapper 2> >(tee -a "$ERROR_LOG_FILE") |& tee -a "$FULL_LOG_FILE"
