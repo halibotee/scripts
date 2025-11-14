@@ -18,8 +18,10 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- [修改] 版本号定义 ---
-SCRIPT_VERSION="1.2.5"
-# ------------------------
+SCRIPT_VERSION="1.3.0 from halibotee"
+# --- [新增] 日志文件定义 ---
+FULL_LOG_FILE="/var/log/cfwarp_socks5.log"
+ERROR_LOG_FILE="/var/log/cfwarp_socks5.error.log"
 
 [[ $EUID -ne 0 ]] && yellow "请以root模式运行脚本" && exit
 
@@ -151,6 +153,7 @@ else
 fi
 }
 
+# --- [修改] ShowSOCKS5 函数, 增加日志提示 ---
 ShowSOCKS5(){
     blue " 脚本版本: $(green "$SCRIPT_VERSION")"
     
@@ -191,6 +194,12 @@ ShowSOCKS5(){
     else
         echo -e " $(blue "Socks5 WARP状态：") $(red "未安装或服务未运行")"
     fi
+    
+    # --- [新增] 三日志提示 ---
+    echo
+    echo -e " $(yellow "提示: 使用 'cat $FULL_LOG_FILE' 查看完整日志")"
+    echo -e " $(yellow "提示: 使用 'cat $ERROR_LOG_FILE' 查看错误日志")"
+    echo -e " $(yellow "提示: 使用 'journalctl -u warp-svc -f' 查看服务日志")"
 }
 
 
@@ -208,7 +217,7 @@ $yumapt autoremove
 green "Socks5-WARP 卸载完成。"
 }
 
-# --- [修改] 彻底修复端口修改逻辑 ---
+# --- [修改] v1.2.6 端口修改 Bug 修复 ---
 SOCKS5WARPPORT(){
 [[ ! $(type -P warp-cli) ]] && red "未安装Socks5-WARP，无法更改端口" && return 1
 readp "请输入自定义socks5端口[2000～65535]（回车跳过为2000-65535之间的随机端口）:" port
@@ -227,16 +236,17 @@ fi
 
 if [[ -n $port ]]; then
     green "新端口设置成功：$port"
-    yellow "正在应用新端口并重启服务 (约 10 秒)..."
+    yellow "正在应用新端口并重启服务 (约 10-12 秒)..."
     
-    # 1. 断开连接
-    warp-cli --accept-tos disconnect >/dev/null 2>&1
-    # 2. 停止服务
-    systemctl stop warp-svc
-    sleep 1
-    # 3. 修改配置
+    # [v1.2.6 修复方案]
+    # 1. (服务运行时) 修改配置
     warp-cli --accept-tos set-proxy-port $port >/dev/null 2>&1
-    # 4. 启动服务
+    # 2. 断开连接
+    warp-cli --accept-tos disconnect >/dev/null 2>&1
+    # 3. 停止服务 (强制释放旧端口)
+    systemctl stop warp-svc
+    sleep 2
+    # 4. 启动服务 (强制读取新配置)
     systemctl start warp-svc
     sleep 3
     # 5. 重新连接
@@ -425,12 +435,23 @@ main_menu() {
     done
 }
 
+# --- [新增] 脚本主包裹函数 (用于日志捕获) ---
+script_main_wrapper() {
+    # --- [新增] 日志生命周期管理 ---
+    rm -f "$FULL_LOG_FILE" "$ERROR_LOG_FILE"
+    echo "CFwarp v$SCRIPT_VERSION - 完整日志 - 开始于: $(date)" >> "$FULL_LOG_FILE"
+    echo "CFwarp v$SCRIPT_VERSION - 错误日志 - 开始于: $(date)" >> "$ERROR_LOG_FILE"
 
-# --- 脚本主入口 ---
-# 1. 运行必要的依赖检查
-checkyl
-warpyl
-cpujg
+    # 1. 运行必要的依赖检查
+    checkyl
+    warpyl
+    cpujg
 
-# 2. 进入主菜单
-main_menu
+    # 2. 进入主菜单
+    main_menu
+}
+
+# --- [修改] 脚本主入口 (用于双日志捕获) ---
+# 1. 所有 stderr (错误) 都被 'tee' 捕获到 ERROR_LOG_FILE
+# 2. stdout (标准输出) 和 stderr (错误) 都被 |& (管道) 合并，并 'tee' 捕获到 FULL_LOG_FILE
+script_main_wrapper 2> >(tee -a "$ERROR_LOG_FILE") |& tee -a "$FULL_LOG_FILE"
