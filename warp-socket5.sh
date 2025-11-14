@@ -18,7 +18,7 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- [修改] 版本号定义 ---
-SCRIPT_VERSION="1.3.6 from halibotee"
+SCRIPT_VERSION="1.0.1 from halibotee"
 # --- [新增] 日志文件定义 ---
 FULL_LOG_FILE="/var/log/cfwarp_socks5.log"
 ERROR_LOG_FILE="/var/log/cfwarp_socks5.error.log"
@@ -154,7 +154,7 @@ else
 fi
 }
 
-# --- [修改] ShowSOCKS5 函数, 增加 curl 超时 ---
+# --- [修改] ShowSOCKS5 函数, 移除日志提示 ---
 ShowSOCKS5(){
     blue " 脚本版本: $(green "$SCRIPT_VERSION")"
     
@@ -201,10 +201,7 @@ ShowSOCKS5(){
         echo -e " $(blue "Socks5 WARP状态：") $(red "未安装或服务未运行")"
     fi
     
-    echo -e " $(blue "------------------------------------------------------------------------------------------------")"
-    echo -e " $(yellow "提示: 使用 'cat $FULL_LOG_FILE' 查看完整日志")"
-    echo -e " $(yellow "提示: 使用 'cat $ERROR_LOG_FILE' 查看错误日志")"
-    echo -e " $(yellow "提示: 使用 'journalctl -u warp-svc -f' 查看服务日志")"
+    # --- [v1.3.7 修复] 移除所有日志提示和分隔线 ---
 }
 
 
@@ -390,9 +387,8 @@ main_menu() {
         green "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
         
         # 实时显示状态
-        # --- [v1.3.6 修复] 移除冗余的 "正在获取" 提示 ---
+        # --- [v1.3.7 修复] 移除冗余的 "正在获取" 和 顶部分隔线 ---
         echo
-        blue "------------------------------------------------------------------------------------------------"
         ShowSOCKS5
         blue "------------------------------------------------------------------------------------------------"
         echo
