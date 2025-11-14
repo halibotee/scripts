@@ -18,7 +18,7 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- [修改] 版本号定义 ---
-SCRIPT_VERSION="1.3.5 from halibotee"
+SCRIPT_VERSION="1.3.6 from halibotee"
 # --- [新增] 日志文件定义 ---
 FULL_LOG_FILE="/var/log/cfwarp_socks5.log"
 ERROR_LOG_FILE="/var/log/cfwarp_socks5.error.log"
@@ -390,7 +390,7 @@ main_menu() {
         green "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
         
         # 实时显示状态
-        yellow " 正在获取实时状态 (可能需要几秒钟)..."
+        # --- [v1.3.6 修复] 移除冗余的 "正在获取" 提示 ---
         echo
         blue "------------------------------------------------------------------------------------------------"
         ShowSOCKS5
