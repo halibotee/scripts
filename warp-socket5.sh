@@ -18,7 +18,7 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- [修改] 版本号定义 ---
-SCRIPT_VERSION="1.3.3 from halibotee"
+SCRIPT_VERSION="1.3.5 from halibotee"
 # --- [新增] 日志文件定义 ---
 FULL_LOG_FILE="/var/log/cfwarp_socks5.log"
 ERROR_LOG_FILE="/var/log/cfwarp_socks5.error.log"
@@ -161,8 +161,9 @@ ShowSOCKS5(){
     if [[ $(systemctl is-active warp-svc) = active ]]; then
         mport=`warp-cli --accept-tos settings 2>/dev/null | grep 'WarpProxy on port' | awk -F "port " '{print $2}'`
         
+        # --- [v1.3.4 修复] 增加 --max-time 5 ---
         # 检查SOCKS5是否真的在工作
-        socks5=$(curl -sx socks5h://localhost:$mport www.cloudflare.com/cdn-cgi/trace -k --connect-timeout 4 | grep warp | cut -d= -f2) 
+        socks5=$(curl -sx socks5h://localhost:$mport www.cloudflare.com/cdn-cgi/trace -k --connect-timeout 4 --max-time 5 | grep warp | cut -d= -f2) 
         
         if [[ $socks5 =~ on|plus ]]; then
             s5ip=`curl -sx socks5h://localhost:$mport icanhazip.com -k --max-time 5`
@@ -221,7 +222,7 @@ $yumapt autoremove
 green "Socks5-WARP 卸载完成。"
 }
 
-# --- [重大修复] v1.3.3 端口修改 Bug 修复 ---
+# --- [重大修复] v1.3.5 端口修改 Bug 修复 ---
 SOCKS5WARPPORT(){
 [[ ! $(type -P warp-cli) ]] && red "未安装Socks5-WARP，无法更改端口" && return 1
 readp "请输入自定义socks5端口[2000～65535]（回车跳过为2000-65535之间的随机端口）:" port
@@ -240,13 +241,14 @@ fi
 
 if [[ -n $port ]]; then
     green "新端口设置成功：$port"
-    yellow "正在应用新端口 (约 2 秒)..."
+    yellow "正在应用新端口 (约 5 秒)..."
     
     # [v1.3.3 修复方案] 采纳 menu.sh 逻辑, 使用正确的 'proxy port' 命令
     # 1. (服务运行时) 修改配置
     warp-cli --accept-tos proxy port $port
-    # 2. 等待服务自动热加载
-    sleep 2
+    
+    # [v1.3.5 修复] 延长等待时间, 确保服务热加载完成
+    sleep 5
     
     green "服务已自动应用新端口。"
 else
