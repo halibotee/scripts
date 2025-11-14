@@ -5,20 +5,17 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# [新增] 默认为交互模式
 export FORCE_YES=0
-# [新增] 解析 $1 (非交互式标志)
 if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.13" # 版本号更新
+SCRIPT_VERSION="1.3.2"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
-ACTION_LOG="${BACKUP_DIR}/actions.log" # [新增] 状态日志
+ACTION_LOG="${BACKUP_DIR}/actions.log"
 export DEBIAN_FRONTEND=noninteractive
 
-# [修复] 声明为索引数组 (indexed arrays)
 declare -ga PKG_CMD_INSTALL
 declare -ga PKG_CMD_REMOVE
 declare -ga PKG_CMD_CHECK
@@ -61,18 +58,16 @@ FN_NETWORK_SERVICES_LIST=(
 
 mkdir -p "$BACKUP_DIR"
 touch "$LOG_FILE"
-> "$LOG_FILE" # [修改] 每次运行时清空主日志文件
+> "$LOG_FILE"
 touch "$ACTION_LOG"
 
 fn_log() {
-    # [新增] 首次调用时记录 -y 状态
     if [ -z "${LOG_Y_RECORDED:-}" ]; then
         if [ $FORCE_YES -eq 1 ]; then
-            # 直接写入，避免 fn_log 递归
             local ts=$(date '+%F %T')
             printf '%s [%s] %s\n' "$ts" "警告" "非交互模式 (-y) 已激活。将自动同意所有提示。" >> "$LOG_FILE"
         fi
-        export LOG_Y_RECORDED=1 # 确保只记录一次
+        export LOG_Y_RECORDED=1
     fi
     
 local level="$1"; shift
@@ -82,31 +77,25 @@ ts=$(date '+%F %T')
 printf '%s [%s] %s\n' "$ts" "$level" "$msg" >> "$LOG_FILE"
 }
 
-# [新增] 记录一个可逆向的操作到状态日志
-# $1: 操作类型 (例如 MASK_SERVICE, CREATE_FILE)
-# $2: 操作的值 (例如 "xray.service", "/etc/sysctl.d/99-vps_optimizert.conf")
 fn_log_action() {
     local action="$1"
     local value="$2"
-    # 格式: ACTION:VALUE
     echo "${action}:${value}" >> "$ACTION_LOG"
     fn_log "调试" "记录操作: ${action}:${value}"
 }
 
-# [新增] 检查系统是否已被优化 (通过检查 action log)
 fn_check_if_optimized() {
     if [ ! -f "$ACTION_LOG" ]; then
-        return 1 # 未优化 (文件不存在)
+        return 1
     fi
     
-    # 检查日志中是否有超过 0 条的 "非注释" 和 "非空" 行
     local action_count
     action_count=$(grep -vc -E '(^#|^$)' "$ACTION_LOG" 2>/dev/null || true)
     
     if [ "${action_count:-0}" -gt 0 ]; then
-        return 0 # 已优化 (日志中有操作记录)
+        return 0
     else
-        return 1 # 未优化 (日志为空)
+        return 1
     fi
 }
 
@@ -119,7 +108,6 @@ exit 1
 fi
 }
 
-# [修改] 重命名并重构 fn_check_apt_lock
 fn_check_pkg_lock() {
     if [ "$OS_ID" = "debian" ] || [ "$OS_ID" = "ubuntu" ]; then
         if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; then
@@ -135,12 +123,10 @@ fn_check_pkg_lock() {
     return 0
 }
 
-# [修改] 重命名并重构 fn_wait_for_apt_lock
 fn_wait_for_pkg_lock() {
     local max_wait=120
     local count=0
     fn_log "信息" "检查包管理器锁..."
-    # [修改] 使用新的 fn_check_pkg_lock
     while ! fn_check_pkg_lock; do
         if [ "$count" -ge "$max_wait" ]; then
             fn_log "错误" "等待包管理器锁超时 (120 秒)。操作可能失败。"
@@ -154,9 +140,7 @@ fn_wait_for_pkg_lock() {
     return 0
 }
 
-# [修改] 替换为包含包管理器抽象化的版本
 fn_detect_os() {
-    # [修复] 不在此处声明，已移至脚本顶部
     
     if [ -f /etc/os-release ]; then
         source /etc/os-release
@@ -171,7 +155,6 @@ fn_detect_os() {
         exit 1
     fi
 
-    # [修复] 分配到独立的全局数组
     case "$OS_ID" in
         debian|ubuntu)
             PKG_CMD_INSTALL=("apt-get" "install" "-y")
@@ -215,10 +198,8 @@ cp -ran /etc/systemd/journald.conf.d "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/
 sysctl -n net.ipv4.tcp_congestion_control > "${BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || true
 sysctl -n net.core.default_qdisc > "${BACKUP_DIR}/sysctl_q_algo.bak" 2>/dev/null || true
 
-# [修复] 修正备份逻辑，只抓取服务名 (修复 Bug 2)
 systemctl list-unit-files --type=service --state=enabled | awk '/enabled/ {print $1}' > "${BACKUP_DIR}/enabled_services.before.txt" 2>/dev/null || true
 
-# [修改] 创建/清空操作日志
 echo "# vps_optimizert action log ($(date))" > "$ACTION_LOG"
 
 fn_log "信息" "备份完成。"
@@ -229,7 +210,6 @@ fn_fix_apt_sources_if_needed() {
 fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
 fn_log "信息" "检查包管理器源健康状况..."
 
-# [修复] 立即强制 APT 使用 IPv4 (保留此修复)
 if [ "$OS_ID" = "debian" ] || [ "$OS_ID" = "ubuntu" ]; then
     mkdir -p /etc/apt/apt.conf.d
     cat > /etc/apt/apt.conf.d/99-force-ipv4 <<'EOF'
@@ -239,14 +219,12 @@ EOF
     fn_log_action "CREATE_FILE" "/etc/apt/apt.conf.d/99-force-ipv4"
 fi
 
-# [修复] 使用数组调用，并移除 -qq 以显示错误
 if "${PKG_CMD_UPDATE[@]}"; then
 fn_log "成功" "包管理器源正常。"
 return 0
 else
 fn_log "警告" "包管理器 update 失败。将尝试保守替换 sources.list (仅限 Debian/Ubuntu)"
 
-# [修改] 仅为 debian/ubuntu 修复源
 if [ "$OS_ID" = "debian" ] || [ "$OS_ID" = "ubuntu" ]; then
     if command -v lsb_release >/dev/null 2>&1; then
         codename=$(lsb_release -cs)
@@ -259,7 +237,6 @@ if [ "$OS_ID" = "debian" ] || [ "$OS_ID" = "ubuntu" ]; then
     fi
     cp -an /etc/apt/sources.list "${BACKUP_DIR}/apt.sources.list.bak" 2>/dev/null || true
     
-    # [修复] 修正了 Debian 的 security URL 并为 Bookworm 添加了 non-free-firmware
     if [ "$OS_ID" = "debian" ]; then
 cat > /etc/apt/sources.list <<EOF
 deb http://deb.debian.org/debian/ $codename main contrib non-free non-free-firmware
@@ -278,7 +255,6 @@ else
     return 1
 fi
 
-# [修复] 使用数组调用，并移除 -qq
 if "${PKG_CMD_UPDATE[@]}"; then
     fn_log "成功" "APT 源替换并刷新成功。"
     return 0
@@ -307,7 +283,6 @@ fn_handle_selinux() {
             echo "警告: 检测到 SELinux 状态为: $selinux_status"
             echo "SELinux 会导致性能问题并可能与优化冲突。"
             
-            # [修改] 检查 FORCE_YES 标志
             local selinux_choice="n"
             if [ $FORCE_YES -eq 1 ]; then
                 selinux_choice="y"
@@ -323,7 +298,7 @@ fn_handle_selinux() {
                 setenforce 0 2>/dev/null || fn_log "警告" "setenforce 0 失败 (可能无权限或已禁用)。"
                 if [ -f /etc/selinux/config ]; then
                     sed -i.bak 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
-                    fn_log_action "MODIFY_FILE" "/etc/selinux/config" # [新增] 记录操作
+                    fn_log_action "MODIFY_FILE" "/etc/selinux/config"
                     echo "SELinux 已永久禁用。需要重启生效。"
                     fn_log "成功" "SELinux 已永久禁用。需要重启生效。"
                 else
@@ -353,25 +328,23 @@ fn_setup_fail2ban() {
         return 2
     fi
     
-    # [修复] 使用数组调用 (修复 Bug 1)
     if "${PKG_CMD_CHECK[@]}" fail2ban >/dev/null 2>&1; then
         fn_log "信息" "Fail2ban 已安装 (但未运行)。"
     else
         fn_log "信息" "正在安装 Fail2ban..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
-        # [修复] 使用数组调用 (修复 Bug 1)
         "${PKG_CMD_INSTALL[@]}" fail2ban >>"$LOG_FILE" 2>&1 || { 
             fn_log "警告" "Fail2ban 安装失败。"; 
             return 1; 
         }
-        fn_log_action "INSTALL_PKG" "fail2ban" # [新增] 记录操作
+        fn_log_action "INSTALL_PKG" "fail2ban"
         fn_log "信息" "Fail2ban 安装完成。"
     fi
     
     fn_log "信息" "配置 Fail2ban backend 为 systemd (以修复 sshd jail 冲突)..."
     
     mkdir -p /etc/fail2ban/jail.d
-    local conf_file="/etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf" # [新增]
+    local conf_file="/etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf"
     cat > "$conf_file" <<'EOF'
 [DEFAULT]
 backend = systemd
@@ -379,7 +352,7 @@ backend = systemd
 [sshd]
 backend = systemd
 EOF
-    fn_log_action "CREATE_FILE" "$conf_file" # [新增] 记录操作
+    fn_log_action "CREATE_FILE" "$conf_file"
     fn_log "调试" "已创建 /etc/fail2ban/jail.d/99-vps_optimizert-systemd.conf"
     
     (systemctl enable --now fail2ban) >> "$LOG_FILE" 2>&1
@@ -403,22 +376,22 @@ fi
 
 fn_log "信息" "配置 journald 为 volatile (内存) 模式 (RuntimeMaxUse=16M)..."
 mkdir -p /etc/systemd/journald.conf.d
-local conf_file="/etc/systemd/journald.conf.d/10-volatile.conf" # [新增]
+local conf_file="/etc/systemd/journald.conf.d/10-volatile.conf"
 cat > "$conf_file" <<'EOF'
 [Journal]
 Storage=volatile
 RuntimeMaxUse=16M
 MaxRetentionSec=1month
 EOF
-fn_log_action "CREATE_FILE" "$conf_file" # [新增] 记录操作
+fn_log_action "CREATE_FILE" "$conf_file"
 systemctl restart systemd-journald >/dev/null 2>&1 || true
 fn_log "成功" "journald 已配置为 volatile 模式。"
 return 0
 }
 
 fn_setup_sysctl_lowmem() {
-local skipped=false # <-- [修复] 修复 unbound variable 错误
-local conf_file="/etc/sysctl.d/99-vps_optimizert.conf" # [修改]
+local skipped=false
+local conf_file="/etc/sysctl.d/99-vps_optimizert.conf"
 if [ -f "$conf_file" ]; then
     fn_log "信息" "sysctl 配置文件 $conf_file 已存在，跳过写入。"
     skipped=true
@@ -439,8 +412,10 @@ net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_frto = 1
 EOF
-    fn_log_action "CREATE_FILE" "$conf_file" # [新增] 记录操作
+    fn_log_action "CREATE_FILE" "$conf_file"
     fn_log "成功" "sysctl 配置文件 $conf_file 已创建。"
 fi
 
@@ -458,7 +433,6 @@ fn_log "信息" "系统服务精简: 自动屏蔽非必要服务..."
 local masked_count=0
 local services_to_trim=("${FN_TRIM_SERVICES_LIST[@]}")
 
-# [修复] 修正 systemctl list-unit-files 的误报输出
 if systemctl list-unit-files "rsyslog.service" >/dev/null 2>&1; then
 services_to_trim+=("rsyslog.service")
 fi
@@ -475,7 +449,7 @@ if systemctl list-unit-files "$svc" >/dev/null 2>&1; then
     else
         fn_log "信息" "  正在屏蔽 (mask) $svc"
         (systemctl mask --now "$svc") >> "$LOG_FILE" 2>&1 || true
-        fn_log_action "MASK_SERVICE" "$svc" # [新增] 记录操作
+        fn_log_action "MASK_SERVICE" "$svc"
         masked_count=$((masked_count + 1))
     fi
 else
@@ -492,24 +466,19 @@ fi
 return 0
 }
 
-# [新增] ZRAM 激活成功后调用的内部辅助函数
-# 假设 /dev/zram0 已经被确认是激活的
 _fn_cleanup_fallback_swap() {
     local fallback_swap="/swapfile_zram"
     
-    # 检查回退 swapfile 是否存在
     if [ ! -f "$fallback_swap" ]; then
         return 0
     fi
 
-    # 检查回退 swapfile 是否仍被使用
     if swapon -s | grep -q "$fallback_swap"; then
         fn_log "信息" "ZRAM 已激活，正在自动清理不再需要的回退 swapfile..."
         (swapoff "$fallback_swap") >> "$LOG_FILE" 2>&1 || true
         (rm -f "$fallback_swap") >> "$LOG_FILE" 2>&1 || true
         fn_log "成功" "已自动清理回退 swapfile: $fallback_swap"
     
-    # 检查它是否存在但未被使用 (孤立文件)
     elif [ -f "$fallback_swap" ]; then
          fn_log "调试" "检测到未激活的回退 swapfile，正在清理..."
          (rm -f "$fallback_swap") >> "$LOG_FILE" 2>&1 || true
@@ -520,22 +489,19 @@ _fn_cleanup_fallback_swap() {
 fn_setup_zram_adaptive() {
     fn_log "信息" "启用 ZRAM (切换到 zram-tools 方案)..."
 
-    # [修改] 检查 zramswap 服务是否已激活
     if systemctl is-active zramswap.service >/dev/null 2>&1; then
         fn_log "信息" "ZRAM (zram-tools) 已激活，跳过。"
-        _fn_cleanup_fallback_swap # <-- [新增] 调用清理
-        return 2 # 返回 "跳过"
+        _fn_cleanup_fallback_swap
+        return 2
     fi
     
-    # [修改] 卸载冲突的 systemd-zram-generator (如果存在)
     if "${PKG_CMD_CHECK[@]}" systemd-zram-generator >/dev/null 2>&1; then
         fn_log "信息" "检测到冲突的 systemd-zram-generator，正在卸载..."
         fn_wait_for_pkg_lock || { fn_log "错误" "包管理器锁等待失败"; return 1; }
         "${PKG_CMD_REMOVE[@]}" systemd-zram-generator >>"$LOG_FILE" 2>&1 || true
-        fn_log_action "UNINSTALL_PKG" "systemd-zram-generator" # <-- [修复] 记录正确的动作
+        fn_log_action "UNINSTALL_PKG" "systemd-zram-generator"
     fi
     
-    # [修改] 确保 zram-tools 已安装
     if "${PKG_CMD_CHECK[@]}" zram-tools >/dev/null 2>&1; then
         fn_log "信息" "ZRAM (zram-tools) 已安装。"
     else
@@ -546,54 +512,45 @@ fn_setup_zram_adaptive() {
             fn_setup_zram_fallback "zram-tools 安装失败"; 
             return 1; 
         }
-        fn_log_action "INSTALL_PKG" "zram-tools" # [新增] 记录操作
+        fn_log_action "INSTALL_PKG" "zram-tools"
         fn_log "信息" "ZRAM (zram-tools) 安装完成。"
     fi
 
     mem_mb="$MEM_MB"
-    # [修改] 设置为 100% 物理内存 (高风险)
     local zram_percent=100
     fn_log "信息" "ZRAM 目标大小: ${zram_percent}% 物理内存 (高风险设置)"
 
-    # [修改] 移除旧的 zram-generator 配置文件 (如果存在)
     local old_conf_file="/etc/systemd/zram-generator.conf"
     if [ -f "$old_conf_file" ]; then
         rm -f "$old_conf_file"
         fn_log "调试" "已移除旧的 zram-generator.conf"
     fi
 
-    # [修改] 创建新的 zram-tools 配置文件
     local conf_file="/etc/default/zramswap"
     cat > "$conf_file" <<EOF
 # Configuration for zram-tools
-# ALGO uses lz4 for best performance
 ALGO=lz4
-# PERCENT sets percentage of RAM to use for zram
 PERCENT=${zram_percent}
 PRIORITY=100
 EOF
-    fn_log_action "CREATE_FILE" "$conf_file" # [新增] 记录操作
+    fn_log_action "CREATE_FILE" "$conf_file"
     fn_log "调试" "已写入 $conf_file"
 
     modprobe zram || true
     fn_log "调试" "已执行 modprobe zram"
     
-    # --- 尝试 1 ---
-    # [修改] 重启 zramswap.service
     (systemctl restart zramswap.service) >> "$LOG_FILE" 2>&1 || true
     fn_log "调试" "已重启 zramswap.service (尝试 1)，等待 3 秒..."
     sleep 3
 
-    # 检查 1
     if [ -b /dev/zram0 ] && swapon -s | grep -q 'zram'; then
         fn_log "成功" "ZRAM (zram-tools) 已激活 (尝试 1 成功)"
         (swapon -s) >> "$LOG_FILE" 2>&1
         systemctl enable zramswap.service >/dev/null 2>&1 || true
-        _fn_cleanup_fallback_swap # <-- [新增] 调用清理
-        return 0 # 返回 "成功"
+        _fn_cleanup_fallback_swap
+        return 0
     fi
 
-    # --- 尝试 2：清理内核缓存后重试 ---
     fn_log "警告" "ZRAM 激活失败 (尝试 1)，将尝试清理内核缓存后重试..."
     (sync && echo 3 > /proc/sys/vm/drop_caches) 2>/dev/null || true
     fn_log "调试" "已清理内核缓存，等待 2 秒..."
@@ -603,13 +560,12 @@ EOF
     fn_log "调试" "已重启 zramswap.service (尝试 2)，等待 3 秒..."
     sleep 3
 
-    # 检查 2
     if [ -b /dev/zram0 ] && swapon -s | grep -q 'zram'; then
         fn_log "成功" "ZRAM (zram-tools) 已激活 (尝试 2 成功)"
         (swapon -s) >> "$LOG_FILE" 2>&1
         systemctl enable zramswap.service >/dev/null 2>&1 || true
-        _fn_cleanup_fallback_swap # <-- [新增] 调用清理
-        return 0 # 返回 "成功"
+        _fn_cleanup_fallback_swap
+        return 0
     else
         fn_log "错误" "ZRAM (zram-tools) 激活失败 (尝试 2 仍失败)，使用 swapfile 回退"
         fn_log "警告" "100% 内存分配失败。这在低内存 VPS 上是常见情况 (os error 12)。"
@@ -625,7 +581,6 @@ fn_setup_zram_fallback() {
     local swapfile="/swapfile_zram"
     local swapsize_mb=$(( MEM_MB < 512 ? MEM_MB : 512 ))
     
-    # [修改] 确保在回退时也清理旧的 swapfile
     if [ -f "$swapfile" ]; then
         fn_log "调试" "检测到旧的 swapfile，正在移除..."
         swapoff "$swapfile" 2>/dev/null || true
@@ -634,7 +589,7 @@ fn_setup_zram_fallback() {
 
     fn_log "调试" "创建 swapfile: $swapfile (大小: ${swapsize_mb}M)"
     (fallocate -l "${swapsize_mb}M" "$swapfile" || dd if=/dev/zero of="$swapfile" bs=1M count="$swapsize_mb") >> "$LOG_FILE" 2>&1
-    fn_log_action "CREATE_FILE" "$swapfile" # [新增] 记录操作
+    fn_log_action "CREATE_FILE" "$swapfile"
     
     chmod 600 "$swapfile"
     (mkswap "$swapfile") >> "$LOG_FILE" 2>&1 || true
@@ -659,24 +614,17 @@ local IFS=','
 services_list_str="${FN_NETWORK_SERVICES_LIST[*]}"
 fn_log "信息" "正在搜索匹配的网络代理服务 (${services_list_str})..."
 
-# [修改] 重构逻辑以扩展通配符
 local found_names=()
 for pattern in "${FN_NETWORK_SERVICES_LIST[@]}"; do
-    # 使用 systemctl 搜索匹配的服务文件
-    # --no-legend 移除表头
-    # 2>/dev/null 隐藏 "0 loaded units listed" 错误
-    # awk '{print $1}' 只获取第一列 (服务名)
     while read -r service_file; do
         [ -z "$service_file" ] && continue
         
-        # 将 "ax_xray@vc1.service" 转换为 "ax_xray@vc1"
         local base_name="${service_file%.service}" 
         found_names+=("$base_name")
         
     done < <(systemctl list-unit-files --type=service --no-legend "${pattern}.service" 2>/dev/null | awk '{print $1}')
 done
 
-# 获取唯一的服务名
 local detected_svcs=()
 mapfile -t detected_svcs < <(printf "%s\n" "${found_names[@]}" | sort -u)
 
@@ -692,23 +640,22 @@ detected_svcs_str="${detected_svcs[*]}"
 fn_log "信息" "检测到: ${detected_svcs_str}。开始应用服务优化..."
 
 for svc in "${detected_svcs[@]}"; do
-    # 现在 'svc' 是扩展后的完整名称，例如 "ax_xray@vc1"
     local conf_file="/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf"
     if [ -f "$conf_file" ]; then
         fn_log "调试" "配置文件 $conf_file 已存在，跳过 $svc。"
         continue
     fi
     
-    fn_log "调试" "为 $svc 设置 Nice=-5, CPUQuota=70%。"
+    fn_log "调试" "为 $svc 设置 Nice=-15, CPUQuota=70%。"
     
     local svc_conf_dir="/etc/systemd/system/${svc}.service.d"
     mkdir -p "$svc_conf_dir"
     cat > "$conf_file" <<EOF
 [Service]
-Nice=-5
-CPUQuota=70%
+Nice=-15
+#CPUQuota=70%
 EOF
-    fn_log_action "CREATE_FILE" "$conf_file" # [新增] 记录操作
+    fn_log_action "CREATE_FILE" "$conf_file"
     changes_made=1
 done
 
@@ -729,7 +676,6 @@ fn_restore_all() {
     echo "[任务] 开始执行撤销优化..."
     fn_log "警告" "开始执行撤销优化... 将从 $ACTION_LOG 恢复。"
 
-    # --- 1. 主要恢复路径 (ACTION LOG) 状态检查 ---
     local log_restored=false
     if [ -f "$ACTION_LOG" ] && [ $(grep -vc '^#' "$ACTION_LOG") -gt 0 ]; then
         echo "[成功] 检测到操作日志: $ACTION_LOG (共 $(grep -vc '^#' "$ACTION_LOG") 条操作)。将执行日志反向撤销..."
@@ -740,24 +686,19 @@ fn_restore_all() {
         fn_log "错误" "未找到 $ACTION_LOG 或其为空，无法执行日志反向撤销。"
     fi
 
-    # --- 2. 物理状态变更 (Start) ---
     echo "[任务]   正在停用 ZRAM 和 Swap..."
     (systemctl disable --now zramswap.service) >> "$LOG_FILE" 2>&1 || true
     swapoff -a >/dev/null 2>&1 || true
     modprobe -r zram >/dev/null 2>&1 || true
     
-    # --- 3. 执行日志反向撤销 (如果已检测到) ---
     if [ "$log_restored" = "true" ]; then
-        # [核心] 使用 tac 命令倒序读取日志文件，执行反向操作
         tac "$ACTION_LOG" | while read -r line; do
             [ -z "$line" ] && continue
-            [[ "$line" == \#* ]] && continue # 跳过注释
+            [[ "$line" == \#* ]] && continue
             
-            # 解析 "ACTION:VALUE"
             local action=$(echo "$line" | cut -d: -f1)
             local value=$(echo "$line" | cut -d: -f2-)
 
-            # ... (Case 语句保持不变) ...
             case "$action" in
                 MASK_SERVICE)
                     echo "[日志撤销] Unmasking $value"
@@ -804,16 +745,14 @@ fn_restore_all() {
             esac
         done
         
-    fi # 结束对 ACTION_LOG 的读取
+    fi
 
-    # --- 4. 备份文件恢复 (Fallback) ---
     echo "[任务]   正在恢复核心备份文件..."
     
     echo "[任务]     恢复 sysctl..."
     [ -f "${BACKUP_DIR}/sysctl.conf.bak" ] && cp -an "${BACKUP_DIR}/sysctl.conf.bak" /etc/sysctl.conf 2>/dev/null && fn_log "信息" "恢复 /etc/sysctl.conf" || true
     [ -d "${BACKUP_DIR}/sysctl.d.bak" ] && cp -ar "${BACKUP_DIR}/sysctl.d.bak" /etc/sysctl.d/ 2>/dev/null && fn_log "信息" "恢复 /etc/sysctl.d/" || true
     
-    # 保留 BBR
     cat > /etc/sysctl.d/98-bbr-retention.conf <<'EOF'
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
@@ -827,7 +766,6 @@ EOF
     echo "[任务]     恢复 fstab..."
     [ -f "${BACKUP_DIR}/fstab.bak" ] && cp -an "${BACKUP_DIR}/fstab.bak" /etc/fstab 2>/dev/null && fn_log "信息" "恢复 /etc/fstab" || true
     
-    # --- 5. 强制清理 (Cleanup) ---
     echo "[任务]   正在执行强制配置清理 (确保无残留 vps_optimizert 配置)..."
     
     local files_to_clean=(
@@ -856,7 +794,6 @@ EOF
         fi
     done
     
-    # --- 6. 服务状态恢复 (End) ---
     echo "[任务]   正在恢复之前启用的服务 (来自 enabled_services.before.txt)..."
     if [ -f "${BACKUP_DIR}/enabled_services.before.txt" ]; then
         while read -r s; do 
@@ -868,7 +805,6 @@ EOF
         fn_log "警告" "未找到 enabled_services.before.txt，跳过服务启用恢复。"
     fi
 
-    # --- 7. 最终收尾 ---
     (systemctl daemon-reload) >> "$LOG_FILE" 2>&1
     rm -f "$ACTION_LOG"
     
@@ -898,7 +834,6 @@ fn_show_status_report() {
         [ "$status" == "true" ] && status_msg="$success_msg"
         local details_str=""
         [ -n "$details" ] && details_str="$details"
-        # [修改] 保持 printf 格式，它会在终端中正确对齐
         printf "  %-30s %-15s %s\n" "$name" "$status_msg" "$details_str"
     }
 
@@ -925,12 +860,11 @@ fn_show_status_report() {
     fn_print_line "VFS 缓存压力 (100)" "$sysctl_status" "[ 已优化 ]" "[ 未优化 ]" "$vfs_details"
 
     local ipv6_details=""
-    # [修改] 根据用户要求，将 (当前: 1) 替换为 (已禁用)
     if [ "$sysctl_status" == "true" ]; then
         if [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" == "1" ]; then
             ipv6_details="(已禁用)"
         else
-            ipv6_details="(当前: $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null))" # 保留回退
+            ipv6_details="(当前: $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null))"
         fi
     fi
     fn_print_line "禁用IPv6" "$sysctl_status" "[ 已优化 ]" "[ 未优化 ]" "$ipv6_details"
@@ -957,10 +891,9 @@ fn_show_status_report() {
 
     local f2b_line="Fail2ban"
     local f2b_status="false"
-    local f2b_success_msg="[ 已优化 ]" # <-- [修改] 更改措辞
+    local f2b_success_msg="[ 已优化 ]"
     local f2b_fail_msg="[ 未激活 ]"
     local f2b_details="(未安装)"
-    # [修复] 使用数组调用 (修复 Bug 1)
     if systemctl is-active fail2ban >/dev/null 2>&1; then
         f2b_status="true"
         f2b_details="(已激活)"
@@ -1004,11 +937,10 @@ fn_show_status_report() {
     local zram_status="false"
     local zram_details="(未激活)"
     
-    # [修复] 更改 ZRAM 检测逻辑，优先 zram-tools
     if systemctl is-active zramswap.service >/dev/null 2>&1 && swapon -s | grep -q 'zram'; then
         zram_status="true"
         local free_swap_line
-        free_swap_line=$(free -h --si | grep '^Swap:') # <-- [修改] 添加 --si
+        free_swap_line=$(free -h --si | grep '^Swap:')
         local swap_total
         swap_total=$(echo "$free_swap_line" | awk '{print $2}')
         local swap_used
@@ -1017,7 +949,7 @@ fn_show_status_report() {
     elif swapon -s | grep -q 'swapfile_zram'; then
         zram_status="true"
         local free_swap_line
-        free_swap_line=$(free -h --si | grep '^Swap:') # <-- [修改] 添加 --si
+        free_swap_line=$(free -h --si | grep '^Swap:')
         local swap_total
         swap_total=$(echo "$free_swap_line" | awk '{print $2}')
         local swap_used
@@ -1026,9 +958,7 @@ fn_show_status_report() {
     fi
     fn_print_line "ZRAM/Swap" "$zram_status" "[ 已优化 ]" "[ 未激活 ]" "$zram_details"
 
-    # [修复] 复制 fn_prioritize_network_services_auto 中的通配符搜索逻辑
     
-    # 1. 搜索匹配的服务
     local found_names=()
     for pattern in "${FN_NETWORK_SERVICES_LIST[@]}"; do
         while read -r service_file; do
@@ -1040,7 +970,6 @@ fn_show_status_report() {
     local detected_svcs=()
     mapfile -t detected_svcs < <(printf "%s\n" "${found_names[@]}" | sort -u)
 
-    # 2. 检查这些找到的服务是否 *已配置*
     local drop_in_found=()
     for svc in "${detected_svcs[@]}"; do 
         if [ -f "/etc/systemd/system/${svc}.service.d/90-vps_optimizert.conf" ]; then
@@ -1048,22 +977,20 @@ fn_show_status_report() {
         fi
     done
     
-    # 3. 设置状态
     local net_prio_status="false"
-    local net_prio_details="(未检测到网络代理服务)" # 默认
+    local net_prio_details="(未检测到网络代理服务)"
     
-    if [ ${#detected_svcs[@]} -gt 0 ]; then # 如果我们检测到了服务
-        if [ ${#drop_in_found[@]} -gt 0 ]; then # 并且它们之中有被配置的
+    if [ ${#detected_svcs[@]} -gt 0 ]; then
+        if [ ${#drop_in_found[@]} -gt 0 ]; then
             net_prio_status="true"
             local IFS=','
             net_prio_details="(已配置: ${drop_in_found[*]})"
-        else # 检测到了服务，但它们未被配置
+        else
             net_prio_status="false"
             local IFS=','
             net_prio_details="(检测到: ${detected_svcs[*]}; 未配置)"
         fi
     fi
-    # [修复] 结束
     
     fn_print_line "网络服务优化" "$net_prio_status" "[ 已配置 ]" "[ 未优化 ]" "$net_prio_details"
 
@@ -1073,7 +1000,6 @@ fn_show_status_report() {
 fn_optimize_auto() {
     local result
     
-    # [新增] 检查是否已优化
     if fn_check_if_optimized; then
         echo "-----------------------------------------------------"
         echo "[错误] 检测到系统已被优化。"
@@ -1083,7 +1009,7 @@ fn_optimize_auto() {
         echo " * 如果您想重新优化，请先运行 [选项 2] 撤销优化。"
         echo "-----------------------------------------------------"
         fn_log "错误" "检测到已优化，fn_optimize_auto 已停止。"
-        return 1 # 停止执行
+        return 1
     fi
 
     echo "[任务 1 ] ：创建备份文件..."
@@ -1206,20 +1132,17 @@ fn_get_detected_services_string() {
 
 fn_show_menu() {
     clear
-    # [修改] 移除了对 fn_get_detected_services_string 的调用，以隐藏所有检测输出
-    # local detected_svcs_str
-    # detected_svcs_str=$(fn_get_detected_services_string)
-
+    
     echo "==============================================="
     echo " VPS 自动优化脚本 (vps_optimizert)"
-    echo " 版本: $SCRIPT_VERSION" # [修改] 更新版本号以匹配
+    echo " 版本: $SCRIPT_VERSION"
     echo " 备份目录: $BACKUP_DIR"
     echo " 日志文件: $LOG_FILE"
     echo "==============================================="
     echo " 1) 执行系统优化 (全自动)"
     echo " 2) 撤销优化 (保留BBR)"
-    echo " 3) 优化网络代理服务" # <-- [修改] 调整顺序，移除检测文本
-    echo " 4) 显示系统优化状态" # <-- [修改] 调整顺序
+    echo " 3) 优化网络代理服务"
+    echo " 4) 显示系统优化状态"
     echo " 0) 退出"
     echo "===============================================
 "
@@ -1233,7 +1156,7 @@ fn_show_menu() {
             fn_restore_all || true 
             read -rp "撤销完成。按回车返回主菜单..." dummy || true
             ;;
-        3) # <-- [修改] 调整顺序 (原 4)
+        3)
             echo "[任务] 正在优化网络代理服务..."
             result=0
             fn_prioritize_network_services_auto || result=$?
@@ -1244,7 +1167,7 @@ fn_show_menu() {
             fi
             read -rp "按回车返回菜单..." dummy || true
             ;;
-        4) # <-- [修改] 调整顺序 (原 3)
+        4)
             fn_show_status_report
             read -rp "按回车返回菜单..." dummy || true 
             ;;
@@ -1262,8 +1185,5 @@ fn_show_menu() {
 
 fn_check_root
 fn_detect_os
-
-# [修改] 移除了旧的 fn_cleanup_fallback_swap 调用
-# 清理功能现已整合到 fn_setup_zram_adaptive 中
 
 fn_show_menu
