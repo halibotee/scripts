@@ -972,7 +972,8 @@ create_new_instance() {
             CONFIG_TEMPLATE="$HYSTERIA2_CONFIG_YAML_TEMPLATE"
 
             # --- [新] ACME 与伪装逻辑 ---
-            read -p "是否使用 ACME (Let's Encrypt) 证书? (否则将使用自签名证书) (默认“否”) [y/N]: " use_acme
+            read -p "是否使用 ACME (Let's Encrypt) 证书? (否则将使用自签名证书) (默认“是”) [Y/n]: " use_acme
+            use_acme=${use_acme:-y} # 回车默认为 y
             
             local cert_path="" key_path="" sni="" masquerade_url=""
             
@@ -1596,7 +1597,8 @@ start_new_chain_instance() {
         local hy2_password=$(generate_strong_password); echo -n "已自动生成 Hysteria2 密码: "; green "$hy2_password"
         
         # --- [新] ACME 证书支持 (串联模式) ---
-        read -p "是否使用 ACME (Let's Encrypt) 证书? (否则将使用自签名证书) (默认“否”) [y/N]: " use_acme
+        read -p "是否使用 ACME (Let's Encrypt) 证书? (否则将使用自签名证书) (默认“是”) [Y/n]: " use_acme
+        use_acme=${use_acme:-y} # 回车默认为 y
         
         local cert_path="" key_path="" masquerade_url=""
         
