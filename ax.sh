@@ -114,7 +114,7 @@ masquerade:
   proxy:
     url: https://www.macbed.com
     rewriteHost: true
-    insecure: false 
+    insecure: false
 ignoreClientBandwidth: true
 sniff:
   enable: true
