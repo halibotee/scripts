@@ -4,7 +4,7 @@
 # Modified with ACME integration (Standalone + Chain) & Robustness/UX improvements
 
 # --- 1. 核心全局变量与脚本版本 ---
-SCRIPT_VERSION="1.2.2" # 脚本版本号
+SCRIPT_VERSION="1.2.3" # 脚本版本号
 KCP_UDP_INSTALL_DIR="/etc/kcptun-udp2raw" # KCPTUN 和 UDP2RAW 的安装目录
 HY2_INSTALL_DIR="/etc/hysteria2"         # Hysteria2 的安装目录
 XRAY_INSTALL_DIR="/etc/xray"             # Xray 的安装目录
