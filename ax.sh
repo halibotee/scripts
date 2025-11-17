@@ -112,9 +112,10 @@ auth:
 masquerade:
   type: proxy
   proxy:
-    url: __MASQUERADE_URL__
+    url: https://www.macbed.com
     rewriteHost: true
-ignoreClientBandwidth: false
+    insecure: false 
+ignoreClientBandwidth: true
 sniff:
   enable: true
   timeout: 2s
