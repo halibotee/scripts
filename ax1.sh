@@ -898,7 +898,7 @@ display_instance_status_line() {
     case "$type" in
         "hy2_chain")
             full_id="c${id}"
-            read -r color hy2_status udp_status <<< "$(check_services_status "hysteria2@${full_id}.service" "ax-udp2raw@${full_id}.service")"
+            read -r color hy2_status udp_status <<< "$(check_services_status "ax-hysteria2@${full_id}.service" "ax-udp2raw@${full_id}.service")"
             local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
             local warp_status=$(get_warp_status_from_conf "$HY2_INSTALL_DIR/hy2_${full_id}.yaml")
             line="$($color "${prefix}Hysteria2 [${hy2_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
@@ -1821,7 +1821,7 @@ start_new_chain_instance() {
     if [[ "$chain_type" == "hy2" ]]; then
         main_config=${main_config/__OUTBOUNDS_AND_ACL__/$warp_config_block}
         main_config=${main_config/__IGNORE_BW__/false}
-        deploy_service_instance "hysteria2@${chain_id}.service" "$main_conf_path" "$main_config" || return 1
+        deploy_service_instance "ax-hysteria2@${chain_id}.service" "$main_conf_path" "$main_config" || return 1
     else # vless
         main_config=${main_config/__OUTBOUNDS_AND_ROUTING__/$warp_config_block}
         deploy_service_instance "ax-xray@${chain_id}.service" "$main_conf_path" "$main_config" || return 1
@@ -1847,7 +1847,7 @@ manage_chain_instance() {
     local id_prefix="" title="" service1_name="" service2_name="" main_conf_path=""
     
     if [[ "$chain_type" == "hy2" ]]; then
-        id_prefix="c"; title="Hysteria2"; service1_name="hysteria2"; main_conf_path="$HY2_INSTALL_DIR/hy2_c${id_num}.yaml"
+        id_prefix="c"; title="Hysteria2"; service1_name="ax-hysteria2"; main_conf_path="$HY2_INSTALL_DIR/hy2_c${id_num}.yaml"
     else # vless
         id_prefix="vc"; title="VLESS_mKCP"; service1_name="ax-xray"; main_conf_path="$XRAY_INSTALL_DIR/xray_vc${id_num}.json"
     fi
