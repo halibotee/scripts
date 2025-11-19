@@ -2058,7 +2058,7 @@ show_global_tls_status() {
     
     # 检查 ACME 证书目录
     if [ ! -d "$AX_CERT_DIR" ] || [ -z "$(ls -A $AX_CERT_DIR)" ]; then
-        yellow "  未找到 $AX_CERT_DIR 目录, 未管理任何 ACME 证书。"
+        yellow "  未找到ACME 证书。"
     else
         # 遍历 $AX_CERT_DIR 下的每个域名目录
         for domain_dir in "$AX_CERT_DIR"/*; do
