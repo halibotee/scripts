@@ -1771,6 +1771,47 @@ manage_chain_instance() {
     done
 }
 
+# [Bugfix] 3 组件串联实例的通用管理菜单
+chain_manager_menu_3() {
+    local title="SS+KCP+UDP 一键串联"
+    
+    while true; do
+        trap 'echo -e "\n\n${yellow}操作已取消, 返回上级菜单...${reset}"; sleep 1; break' SIGINT
+        clear; echo "=================================="; echo "  安装/管理 $title"; echo "=================================="; echo
+        
+        local INSTANCES=$(get_chain_instances_3)
+        if [[ -n "$INSTANCES" ]]; then 
+            echo "$(bold "--- 已存在的串联实例 ---")"
+            for i in $INSTANCES; do 
+                display_instance_status_line "ss_3_chain_chain" "$i" "  "
+            done
+        else 
+            yellow "当前没有已创建的串联实例。"
+        fi
+        
+        echo "----------------------------------"; echo "1) 启动一个新的串联实例"; echo "2) 管理一个已存在的串联实例"; echo "3) 查看配置"; echo "0) 返回主菜单"
+        read -p "请选择: " choice
+        case $choice in
+            1) start_new_chain_instance_3; read -p $'\n按任意键返回...' -n1 -s;;
+            2) 
+                if [[ -z "$INSTANCES" ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
+                read -p "请输入您想管理的串联实例ID (仅数字) [$(echo $INSTANCES | tr '\n' ' ')]: " manage_id_num
+                # 简单的存在性检查
+                if echo "$INSTANCES" | grep -w -q "$manage_id_num"; then 
+                    manage_chain_instance_3 "$manage_id_num"
+                else 
+                    red "无效的实例ID！"; sleep 2
+                fi
+                ;;
+            3) 
+                if [[ -z "$INSTANCES" ]]; then yellow "当前没有实例可供查看。"; sleep 2; continue; fi
+                local i; for i in $INSTANCES; do view_chain_client_config_3 "$i"; done
+                read -p $'\n按任意键返回...' -n1 -s
+                ;;
+            0) break;; *) red "无效输入"; sleep 1;;
+        esac
+    done; trap - SIGINT
+}
 
 # 2 组件串联实例的通用管理菜单
 chain_manager_menu() {
