@@ -1,11 +1,11 @@
 #!/bin/bash
 # ============================================================
-#  AX.sh v2.4 (CN Final)
-#  架构：激进重构 | 语言：中文 | 特性：指定源 + 全局卸载
+#  AX.sh v2.4.1 (CN Fix)
+#  架构：激进重构 | 语言：中文 | 修复：UDP2RAW 下载问题
 # ============================================================
 
 # --- 0. 全局配置与辅助函数 ---
-SCRIPT_VERSION="2.4.0 CN"
+SCRIPT_VERSION="2.4.1 CN"
 DEBUG_LOG="/root/ax_debug.log"
 
 # 核心目录路径
@@ -55,31 +55,49 @@ menu_sel() {
     [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le "${#opts[@]}" ] && echo "${opts[$((c-1))]}" || echo "${opts[0]}"
 }
 
-# --- 2. 通用安装器 (DRY模式) ---
+# --- 2. 通用安装器 (已修复 UDP2RAW 逻辑) ---
 install_bin() {
     local repo=$1 pattern=$2 dest_dir=$3 bin_name=$4 type=$5 # type: zip/tar/bin
     [ -f "$dest_dir/$bin_name" ] && return 0
     info "正在安装 $bin_name (源: $repo)..."
     
+    # 获取下载链接
     local url=$(curl -s "https://api.github.com/repos/$repo/releases/latest" | jq -r --arg p "$pattern" '.assets[]|select(.name|test($p))|.browser_download_url' | head -1)
-    [ -z "$url" ] && die "未找到 $repo 的发布资源"
+    [ -z "$url" ] && die "未找到 $repo 的发布资源 (匹配规则: $pattern)"
     
     local tmp="/tmp/ax_dl_$(date +%s)"; curl -L -o "$tmp" "$url" || die "下载失败"
+    
     case "$type" in
         zip) unzip -o "$tmp" -d "$dest_dir" ;;
         tar) tar -xzf "$tmp" -C "$dest_dir" ;;
         bin) mv "$tmp" "$dest_dir/$bin_name" ;;
     esac
-    chmod +x "$dest_dir/$bin_name"; rm -f "$tmp"
-    # 特殊处理
+    
+    # --- 特殊后续处理 ---
+    # 1. Xray: 复制 Geo 文件
     [ "$bin_name" == "xray" ] && cp -n "$dest_dir/geoip.dat" "$DIR_HY2/" 2>/dev/null
+    
+    # 2. UDP2RAW: 提取并重命名 amd64 二进制 (因为压缩包里包含多个架构)
+    if [ "$bin_name" == "udp2raw" ]; then
+        if [ -f "$dest_dir/udp2raw_amd64" ]; then
+            mv "$dest_dir/udp2raw_amd64" "$dest_dir/udp2raw"
+        fi
+    fi
+    
+    chmod +x "$dest_dir/$bin_name"
+    rm -f "$tmp"
 }
 
 update_all() {
+    # Xray: 保持不变
     install_bin "XTLS/Xray-core" "linux-64.zip" "$DIR_XRAY" "xray" "zip"
+    # Hysteria2: 保持不变
     install_bin "apernet/hysteria" "linux-amd64" "$DIR_HY2" "hysteria" "bin"
+    # KCPTUN: 保持不变
     install_bin "xtaci/kcptun" "linux-amd64" "$DIR_KCP" "kcptun_server" "tar"
-    install_bin "wangyu-/udp2raw" "amd64" "$DIR_UDP" "udp2raw" "tar"
+    
+    # UDP2RAW: [修复] 匹配规则改为 "tar.gz"，不再匹配 "amd64"
+    install_bin "wangyu-/udp2raw" "tar.gz" "$DIR_UDP" "udp2raw" "tar"
     
     # 生成通用的 Systemd 模板
     create_systemd "ax-xray" "$DIR_XRAY/xray -c $DIR_XRAY/xray_%i.json"
@@ -266,7 +284,6 @@ manage_services() {
 }
 
 # --- 6. 专用外部脚本调用器 ---
-
 run_sys_opt() {
     info "正在下载并运行 VPS 优化脚本..."
     wget --no-check-certificate -O vps_optimizert.sh "https://raw.githubusercontent.com/halibotee/scripts/main/vps_optimizert.sh" && chmod +x vps_optimizert.sh && ./vps_optimizert.sh
@@ -286,7 +303,6 @@ uninstall_all() {
     [[ "$confirm" != "y" && "$confirm" != "Y" ]] && return
 
     info "正在停止所有相关服务..."
-    # 停止所有可能的服务模式
     systemctl stop "ax-xray@*" "ax-hysteria2@*" "ax-kcptun@*" "ax-udp2raw@*" 2>/dev/null
     systemctl disable "ax-xray@*" "ax-hysteria2@*" "ax-kcptun@*" "ax-udp2raw@*" 2>/dev/null
 
