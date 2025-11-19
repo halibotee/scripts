@@ -495,7 +495,6 @@ handle_password_input() {
     local pass_file
     local last_pass=""
     
-    # 确定文件路径
     case "$service_type" in
         kcptun) mkdir -p "$KCPTUN_INSTALL_DIR"; pass_file="$KCPTUN_INSTALL_DIR/last_kcptun_pass.txt" ;;
         udp2raw) mkdir -p "$UDP2RAW_INSTALL_DIR"; pass_file="$UDP2RAW_INSTALL_DIR/last_udp2raw_pass.txt" ;;
@@ -506,68 +505,65 @@ handle_password_input() {
     
     if [[ -f "$pass_file" ]]; then last_pass=$(cat "$pass_file"); fi
 
-    # 提示文本
     local prompt_label="密码"
     if [[ "$service_type" == "shadowsocks" ]]; then prompt_label="Base64 密钥"; fi
     if [[ "$service_type" == "xray_mkcp" ]]; then prompt_label="mKCP Seed"; fi
 
-    echo "请选择 ${prompt_label} 生成方式:"
+    # [FIX] 使用 >&2 确保不污染 stdout
+    echo "请选择 ${prompt_label} 生成方式:" >&2
     local options=("自动生成 ${prompt_label}")
     local default_opt="1"
     
     if [[ -n "$last_pass" ]]; then
         options+=("保留原有 ${prompt_label} (当前: ${last_pass:0:10}...)")
-        default_opt="1" # 依然默认自动，或者用户习惯保留? 用户原话默认1(自动)
+        default_opt="1"
     fi
     options+=("手动输入 ${prompt_label}")
     
+    # read_input_with_options 内部已经处理了 stderr 显示，但返回的是 stdout 的数字
+    # 所以这里 capture 是安全的
     local choice_idx=$(read_input_with_options "请选择 [1-${#options[@]}]" "$default_opt" "${options[@]}")
-    
-    # 映射选择到逻辑
-    # options下标从0开始，但read_input返回 1,2,3
-    # 如果有 last_pass: 1=Auto, 2=Keep, 3=Manual
-    # 如果无 last_pass: 1=Auto, 2=Manual
     
     local final_password=""
     local is_manual=false
     
+    # 逻辑映射
     if [[ -n "$last_pass" ]]; then
-        if [[ "$choice_idx" == "1" ]]; then is_manual=false; # Auto
-        elif [[ "$choice_idx" == "2" ]]; then final_password="$last_pass"; # Keep
-        else is_manual=true; fi # Manual
+        if [[ "$choice_idx" == "1" ]]; then is_manual=false;
+        elif [[ "$choice_idx" == "2" ]]; then final_password="$last_pass";
+        else is_manual=true; fi
     else
-        if [[ "$choice_idx" == "1" ]]; then is_manual=false; # Auto
-        else is_manual=true; fi # Manual
+        if [[ "$choice_idx" == "1" ]]; then is_manual=false;
+        else is_manual=true; fi
     fi
 
     if [[ "$is_manual" == "true" ]]; then
+        # read -p 默认输出到 stderr (在 script 中), 显式加 >&2 更保险
         read -p "请输入 ${prompt_label}: " final_password
-        if [[ -z "$final_password" ]]; then red "输入不能为空！"; return 1; fi
+        if [[ -z "$final_password" ]]; then echo -e "[0;31m输入不能为空！[0m" >&2; return 1; fi
     elif [[ -z "$final_password" ]]; then
-        # 执行自动生成
+        # 自动生成
         if [[ "$service_type" == "shadowsocks" ]]; then
-            local key_length=32 # 默认 32 (2022-blake3-aes-256-gcm / chacha20)
-            # 根据 method 判断长度
-            if [[ "$ss_method" == *"aes-128-gcm"* ]]; then
-                key_length=16
-            fi
-            # 检查是否需要 Base64 (SS-2022 强制需要，旧版可以用任意字符串但 Base64 兼容性最好)
+            local key_length=32
+            if [[ "$ss_method" == *"aes-128-gcm"* ]]; then key_length=16; fi
+            
             if ! command -v openssl &>/dev/null; then
-                red "错误: 未找到 openssl，无法生成密钥。"
+                echo -e "[0;31m错误: 未找到 openssl[0m" >&2
                 final_password=$(generate_strong_password)
             else
                 final_password=$(openssl rand -base64 $key_length)
             fi
-            green "已自动生成 Shadowsocks 密钥: $final_password" >&2
+            echo -e "[0;32m已自动生成 Shadowsocks 密钥: $final_password[0m" >&2
         else
             final_password=$(generate_strong_password)
-            green "已自动生成随机密码: $final_password" >&2
+            echo -e "[0;32m已自动生成随机密码: $final_password[0m" >&2
         fi
     fi
 
-    # 保存并返回
     echo "$final_password" > "$pass_file"
     chmod 600 "$pass_file"
+    
+    # [关键] 只有这一行输出到 stdout
     echo "$final_password"
 }
 
