@@ -820,7 +820,7 @@ Description=Hysteria2 Service (Instance %i)
 After=network.target
 [Service]
 Type=simple
-ExecStart=$HY2_INSTALL_DIR/hysteria -c $HY2_INSTALL_DIR/hy2_%i.json server
+ExecStart=$HY2_INSTALL_DIR/hysteria -c $HY2_INSTALL_DIR/hy2_%i.yaml server
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 Restart=always
