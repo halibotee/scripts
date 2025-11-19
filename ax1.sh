@@ -322,7 +322,7 @@ dim(){ echo -e "\033[2m$1\033[0m"; }
 # 日志格式
 log(){ echo -e "[$(date '+%H:%M:%S')] $(bold "$1")"; }
 # 检查是否已安装任何实例
-is_installed(){ ls "$KCPTUN_INSTALL_DIR"/*.json >/dev/null 2>&1 || ls "$UDP2RAW_INSTALL_DIR"/*.conf >/dev/null 2>&1 || ls "$HY2_INSTALL_DIR"/*.json >/dev/null 2>&1 || ls "$XRAY_INSTALL_DIR"/*.json >/dev/null 2>&1; }
+is_installed(){ ls "$KCPTUN_INSTALL_DIR"/*.json >/dev/null 2>&1 || ls "$UDP2RAW_INSTALL_DIR"/*.conf >/dev/null 2>&1 || ls "$HY2_INSTALL_DIR"/*.yaml >/dev/null 2>&1 || ls "$XRAY_INSTALL_DIR"/*.json >/dev/null 2>&1; }
 
 # 获取公网 IP 地址
 get_public_ip() {
@@ -813,7 +813,6 @@ E_O_F
     if [[ ! -f "$HY2_TEMPLATE_FILE" ]]; then
         changed=1
         generate_self_signed_cert
-        # FIXED: Point to .json
         cat > "$HY2_TEMPLATE_FILE" <<E_O_F
 [Unit]
 Description=Hysteria2 Service (Instance %i)
@@ -890,7 +889,7 @@ display_instance_status_line() {
             full_id="c${id}"
             read -r color hy2_status udp_status <<< "$(check_services_status "ax-hysteria2@${full_id}.service" "ax-udp2raw@${full_id}.service")"
             local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
-            local warp_status=$(get_warp_status_from_conf "$HY2_INSTALL_DIR/hy2_${full_id}.json")
+            local warp_status=$(get_warp_status_from_conf "$HY2_INSTALL_DIR/hy2_${full_id}.yaml")
             line="$($color "${prefix}Hysteria2 [${hy2_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
             ;;
         "vless_chain")
@@ -910,7 +909,7 @@ display_instance_status_line() {
         "hysteria2"|"udp2raw"|"kcptun"|"xray_reality"|"xray_mkcp"|"xray_ss")
             local conf_file service_prefix title; local color_func="yellow"
             case "$type" in
-                hysteria2) conf_file="$HY2_INSTALL_DIR/hy2_${id}.json"; service_prefix="ax-hysteria2"; title="Hysteria2";;
+                hysteria2) conf_file="$HY2_INSTALL_DIR/hy2_${id}.yaml"; service_prefix="ax-hysteria2"; title="Hysteria2";;
                 udp2raw) conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"; service_prefix="ax-udp2raw"; title="UDP2RAW";;
                 kcptun) conf_file="$KCPTUN_INSTALL_DIR/kcptun_${id}.json"; service_prefix="ax-kcptun"; title="KCPTUN";;
                 xray_reality) conf_file="$XRAY_INSTALL_DIR/xray_${id}.json"; service_prefix="ax-xray"; title="VLESS+Reality";;
@@ -945,7 +944,7 @@ get_standalone_instances() {
     local standalone_instances=()
     
     case "$type_lowercase" in
-        "hysteria2") dir="$HY2_INSTALL_DIR"; pattern="hy2_*.json";;
+        "hysteria2") dir="$HY2_INSTALL_DIR"; pattern="hy2_*.yaml";;
         "xray_reality") dir="$XRAY_INSTALL_DIR"; pattern="xray_*.json";;
         "xray_mkcp") dir="$XRAY_INSTALL_DIR"; pattern="xray_*.json";;
         "xray_ss") dir="$XRAY_INSTALL_DIR"; pattern="xray_*.json";;
@@ -1027,7 +1026,7 @@ create_new_instance() {
     case "$type" in
         hysteria2)
             service_name="ax-hysteria2@${next_id}.service"
-            conf_path="$HY2_INSTALL_DIR/hy2_${next_id}.json"
+            conf_path="$HY2_INSTALL_DIR/hy2_${next_id}.yaml"
             
             local use_acme=$(read_input "使用 ACME 证书? [Y/n]" "y")
             local cert="" key=""
@@ -1201,7 +1200,7 @@ create_new_xray_instance() {
 
 # 生成 Hysteria2 订阅链接
 generate_hy2_subscription_link() {
-    local id=$1; local conf="$HY2_INSTALL_DIR/hy2_${id}.json"; if [[ ! -s "$conf" ]]; then echo "N/A"; return; fi
+    local id=$1; local conf="$HY2_INSTALL_DIR/hy2_${id}.yaml"; if [[ ! -s "$conf" ]]; then echo "N/A"; return; fi
     
     local password=$(grep -Po '(?<=password: ).*' "$conf" | tr -d '[:space:]')
     local port_info=$(get_listen_info_from_conf "$conf")
@@ -1536,7 +1535,7 @@ view_chain_client_config() {
     local chain_type=$1 id_num=$2
     local id_prefix="" main_conf_path="" client_listen_addr="" title=""
     if [[ "$chain_type" == "hy2" ]]; then
-        id_prefix="c"; title="Hysteria2"; main_conf_path="$HY2_INSTALL_DIR/hy2_c${id_num}.json"; client_listen_addr="$CLIENT_UDP2RAW_LISTEN_ADDR"
+        id_prefix="c"; title="Hysteria2"; main_conf_path="$HY2_INSTALL_DIR/hy2_c${id_num}.yaml"; client_listen_addr="$CLIENT_UDP2RAW_LISTEN_ADDR"
     else
         id_prefix="vc"; title="VLESS_mKCP"; main_conf_path="$XRAY_INSTALL_DIR/xray_vc${id_num}.json"; client_listen_addr="$CLIENT_VLESS_UDP2RAW_LISTEN_ADDR"
     fi
@@ -1618,7 +1617,7 @@ start_new_chain_instance() {
     
     if [[ "$chain_type" == "hy2" ]]; then
         id_prefix="c"; title="Hysteria2+UDP"; main_conf_dir="$HY2_INSTALL_DIR"; main_conf_template="$HYSTERIA2_CONFIG_YAML_TEMPLATE"
-        while true; do if [[ ! -f "$main_conf_dir/hy2_c${i}.json" ]]; then break; fi; i=$((i + 1)); done
+        while true; do if [[ ! -f "$main_conf_dir/hy2_c${i}.yaml" ]]; then break; fi; i=$((i + 1)); done
     else # vless
         id_prefix="vc"; title="VLESS_mKCP+UDP"; main_conf_dir="$XRAY_INSTALL_DIR"; main_conf_template="$XRAY_VLESS_MKCP_TEMPLATE"
         while true; do if [[ ! -f "$main_conf_dir/xray_vc${i}.json" ]]; then break; fi; i=$((i + 1)); done
@@ -1665,7 +1664,7 @@ start_new_chain_instance() {
         main_config="${main_config//__MASQUERADE_URL__/${masquerade_url}}"
         main_config="${main_config/__UDP_SNIFF_CONFIG__/udpPorts: all}"
         main_config="${main_config/__IGNORE_BW__/false}"
-        main_conf_path="$main_conf_dir/hy2_${chain_id}.json"
+        main_conf_path="$main_conf_dir/hy2_${chain_id}.yaml"
         
         # WARP (Hy2)
         local enable_warp=$(read_input "是否启用 WARP SOCKS5 分流 [y/N]" "n")
@@ -1779,7 +1778,7 @@ manage_chain_instance() {
     local id_prefix="" title="" service1_name="" service2_name="" main_conf_path=""
     
     if [[ "$chain_type" == "hy2" ]]; then
-        id_prefix="c"; title="Hysteria2"; service1_name="ax-hysteria2"; main_conf_path="$HY2_INSTALL_DIR/hy2_c${id_num}.json"
+        id_prefix="c"; title="Hysteria2"; service1_name="ax-hysteria2"; main_conf_path="$HY2_INSTALL_DIR/hy2_c${id_num}.yaml"
     else # vless
         id_prefix="vc"; title="VLESS_mKCP"; service1_name="ax-xray"; main_conf_path="$XRAY_INSTALL_DIR/xray_vc${id_num}.json"
     fi
@@ -1919,7 +1918,7 @@ chain_manager_menu() {
 main_manager_loop() {
     local type=$1; local title dir pattern service_prefix type_lowercase
     case $type in 
-        hysteria2) title="Hysteria2 (独立)"; dir="$HY2_INSTALL_DIR"; pattern="hy2_*.json"; service_prefix="ax-hysteria2"; type_lowercase="hysteria2";;
+        hysteria2) title="Hysteria2 (独立)"; dir="$HY2_INSTALL_DIR"; pattern="hy2_*.yaml"; service_prefix="ax-hysteria2"; type_lowercase="hysteria2";;
         udp2raw) title="UDP2RAW (独立)"; dir="$UDP2RAW_INSTALL_DIR"; pattern="udp2raw_*.conf"; service_prefix="ax-udp2raw"; type_lowercase="udp2raw";;
         kcptun) title="KCPTUN (独立)"; dir="$KCPTUN_INSTALL_DIR"; pattern="kcptun_*.json"; service_prefix="ax-kcptun"; type_lowercase="kcptun";;
         xray_reality) title="VLESS+Reality (独立)"; dir="$XRAY_INSTALL_DIR"; pattern="xray_*.json"; service_prefix="ax-xray"; type_lowercase="xray_reality";;
@@ -1954,7 +1953,7 @@ main_manager_loop() {
                 if [[ "$is_valid" == true ]]; then
                     local conf_path
                     case $type in
-                        hysteria2) conf_path="$dir/hy2_${manage_id}.json";;
+                        hysteria2) conf_path="$dir/hy2_${manage_id}.yaml";;
                         udp2raw) conf_path="$dir/udp2raw_${manage_id}.conf";;
                         kcptun) conf_path="$dir/kcptun_${manage_id}.json";;
                         xray_reality|xray_mkcp|xray_ss) conf_path="$dir/xray_${manage_id}.json";;
@@ -2381,7 +2380,7 @@ dispatch_management_menu() {
         "ss_3_chain_chain") manage_chain_instance_3 "$id" ;;
         "hy2_chain") manage_chain_instance "hy2" "$id" ;;
         "vless_chain") manage_chain_instance "vless" "$id" ;;
-        "hysteria2") manage_instance_menu "hysteria2" "$id" "ax-hysteria2@${id}" "$HY2_INSTALL_DIR/hy2_${id}.json" ;;
+        "hysteria2") manage_instance_menu "hysteria2" "$id" "ax-hysteria2@${id}" "$HY2_INSTALL_DIR/hy2_${id}.yaml" ;;
         "xray_reality") manage_instance_menu "xray_reality" "$id" "ax-xray@${id}" "$XRAY_INSTALL_DIR/xray_${id}.json" ;;
         "xray_mkcp") manage_instance_menu "xray_mkcp" "$id" "ax-xray@${id}" "$XRAY_INSTALL_DIR/xray_${id}.json" ;;
         "xray_ss") manage_instance_menu "xray_ss" "$id" "ax-xray@${id}" "$XRAY_INSTALL_DIR/xray_${id}.json" ;;
