@@ -1,11 +1,11 @@
 #!/bin/bash
 # ============================================================
-#  AX.sh v2.3 (CN Edition)
-#  架构：激进重构版 | 语言：中文 | 特性：指定源集成
+#  AX.sh v2.4 (CN Final)
+#  架构：激进重构 | 语言：中文 | 特性：指定源 + 全局卸载
 # ============================================================
 
 # --- 0. 全局配置与辅助函数 ---
-SCRIPT_VERSION="2.3.0 CN"
+SCRIPT_VERSION="2.4.0 CN"
 DEBUG_LOG="/root/ax_debug.log"
 
 # 核心目录路径
@@ -28,7 +28,6 @@ fi
 
 # --- 1. 依赖检查与系统核心 ---
 check_deps() {
-    # 增加 wget 检查，因为自定义脚本强制依赖它
     local deps=(curl wget tar unzip jq openssl uuidgen socat)
     local missing=()
     for d in "${deps[@]}"; do command -v "$d" &>/dev/null || missing+=("$d"); done
@@ -113,10 +112,8 @@ EOF
 build_xray_conf() {
     local file=$1 type=$2 port=$3 uuid=$4 arg1=$5 arg2=$6 warp_state=$7
     
-    # 1. 基础结构
     local json='{log:{loglevel:"warning"},inbounds:[{port:($p|tonumber),listen:"0.0.0.0",tag:"in",sniffing:{enabled:true,destOverride:["http","tls","quic"]}}],outbounds:[{protocol:"freedom",tag:"direct"},{protocol:"blackhole",tag:"block"}],routing:{domainStrategy:"IPIfNonMatch",rules:[{type:"field",outboundTag:"block",domain:["geosite:category-ads-all"]}]}}'
     
-    # 2. 协议参数注入
     case "$type" in
         reality)
             json=$(echo "$json" | jq --arg id "$uuid" --arg sni "$arg1" --arg pk "$arg2" '.inbounds[0] += {protocol:"vless",settings:{clients:[{id:$id,flow:"xtls-rprx-vision"}],decryption:"none"},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,fingerprint:"chrome",target:($sni+":443"),serverNames:[$sni],privateKey:$pk,shortIds:[(""+($id|split("-")[0]))]}}}') ;;
@@ -126,9 +123,7 @@ build_xray_conf() {
             json=$(echo "$json" | jq --arg m "$arg1" --arg p "$arg2" '.inbounds[0] += {protocol:"shadowsocks",settings:{method:$m,password:$p,network:"tcp,udp"}}') ;;
     esac
     
-    # 3. WARP 分流注入
     if [[ "$warp_state" == "y" ]]; then
-        # 注入 socks outbound 和 路由规则 (Google/OpenAI 走 WARP)
         json=$(echo "$json" | jq '.outbounds += [{protocol:"socks",tag:"warp",settings:{servers:[{address:"127.0.0.1",port:40000}]}}] | .routing.rules = ([{type:"field",outboundTag:"warp",domain:["geosite:google","geosite:openai","suffix:openai.com"]}] + .routing.rules)')
     fi
     
@@ -142,7 +137,6 @@ build_hy2_conf() {
     local json_args=(--arg p ":$port" --arg c "$cert" --arg k "$key" --arg pw "$pass")
     local base_tmpl='{listen: $p, tls: {cert: $c, key: $k}, auth: {type: "password", password: $pw}, masquerade: {type: "proxy", proxy: {url: "https://bing.com", rewriteHost: true}}, ignoreClientBandwidth: false}'
     
-    # 如果开启 WARP，注入 ACL 和 Outbound
     if [[ "$warp_state" == "y" ]]; then
         base_tmpl+=' + {outbounds: [{name: "warp", type: "socks5", socks5: {addr: "127.0.0.1:40000"}}], acl: {inline: ["warp(geosite:google)", "warp(geosite:openai)", "direct(all)"]}}'
     fi
@@ -170,7 +164,6 @@ create_instance() {
     local port=$(input "请输入监听端口" "$(get_port)")
     local warp_state="n"
     
-    # 询问是否开启 WARP 分流
     if [[ "$flavor" =~ ^(reality|mkcp|ss|hy2|chain_hy2)$ ]]; then
         warp_state=$(input "是否启用 WARP 分流? (需先通过菜单安装 WARP 客户端) [y/N]" "n")
     fi
@@ -272,7 +265,7 @@ manage_services() {
     done
 }
 
-# --- 6. 专用外部脚本调用器 (用户指定源) ---
+# --- 6. 专用外部脚本调用器 ---
 
 run_sys_opt() {
     info "正在下载并运行 VPS 优化脚本..."
@@ -286,16 +279,48 @@ run_warp_mgr() {
     read -p "按回车键继续..." -n1 -s
 }
 
-# --- 7. 主入口 ---
+# --- 7. 全局卸载逻辑 ---
+uninstall_all() {
+    echo -e "\n${C_RED}=== ⚠️  危险操作 ===${C_RESET}"
+    read -p "确认要卸载所有组件并清除配置吗? (输入 y 确认): " confirm
+    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && return
+
+    info "正在停止所有相关服务..."
+    # 停止所有可能的服务模式
+    systemctl stop "ax-xray@*" "ax-hysteria2@*" "ax-kcptun@*" "ax-udp2raw@*" 2>/dev/null
+    systemctl disable "ax-xray@*" "ax-hysteria2@*" "ax-kcptun@*" "ax-udp2raw@*" 2>/dev/null
+
+    info "正在清理文件与配置..."
+    rm -rf "$DIR_XRAY" "$DIR_HY2" "$DIR_KCP" "$DIR_UDP" "$DIR_CERT"
+    rm -f /etc/systemd/system/ax-xray@.service \
+          /etc/systemd/system/ax-hysteria2@.service \
+          /etc/systemd/system/ax-kcptun@.service \
+          /etc/systemd/system/ax-udp2raw@.service
+
+    systemctl daemon-reload
+    systemctl reset-failed
+    
+    info "卸载完成。外部安装的脚本 (WARP/SysOpt) 可能会残留，请按需手动卸载。"
+    
+    read -p "是否连同本脚本一起删除? [y/N]: " del_script
+    if [[ "$del_script" == "y" || "$del_script" == "Y" ]]; then
+        rm -f "$0"
+        echo "脚本已自毁，再见！"
+        exit 0
+    fi
+}
+
+# --- 8. 主入口 ---
 check_deps
 while true; do
     clear
-    echo -e "${C_CYAN}AX.sh v$SCRIPT_VERSION${C_RESET} (指定源版)"
+    echo -e "${C_CYAN}AX.sh v$SCRIPT_VERSION${C_RESET} (全能版)"
     echo "1. 服务管理 (创建/删除/查看)"
     echo "2. 更新核心组件 (Xray/Hy2等)"
     echo "3. 系统优化 (Halibotee版)"
     echo "4. WARP 管理 (Halibotee/YG版)"
     echo "5. ACME 证书申请"
+    echo "99. 卸载脚本与服务"
     echo "0. 退出脚本"
     read -p "请选择: " opt
     case $opt in
@@ -305,6 +330,7 @@ while true; do
         4) run_warp_mgr ;;
         5) input "请输入域名" ""; # ACME 占位
            ;;
+        99) uninstall_all ;;
         0) exit 0 ;;
     esac
 done
