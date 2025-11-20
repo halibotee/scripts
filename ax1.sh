@@ -1,18 +1,18 @@
 #!/bin/bash
 # ==================================================================
-# 全能隧道管理脚本 (Refactored Ultimate Fixed)
-# 修复: 数组越界报错、重复下载、缺少卸载、实例启动失败
-# 兼容: 完美复刻原版 UI/UX
+# 全能隧道管理脚本 (Refactored Ultimate v2.6.0)
+# 架构：OO模拟 + 泛型编程
+# 修复：Text file busy, 重复下载, 配置空格, 卸载缺失, 状态显示
 # ==================================================================
 
-SCRIPT_VERSION="2.3.0-Stable"
+SCRIPT_VERSION="2.6.0-Final"
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# --- 1. 核心注册表 (Registry) ---
+# --- 1. 核心注册表 (Service Registry) ---
 
 declare -A META
 
-# [原子服务]
+# [原子服务定义]
 META[hy2,name]="Hysteria2"; META[hy2,bin]="hysteria"; META[hy2,repo]="apernet/hysteria"; META[hy2,ext]="yaml"
 META[hy2,dir]="/etc/hysteria2"; META[hy2,svc]="ax-hysteria2"; META[hy2,install]="mv"
 
@@ -25,7 +25,14 @@ META[udp2raw,dir]="/etc/udp2raw"; META[udp2raw,svc]="ax-udp2raw"; META[udp2raw,i
 META[kcptun,name]="KCPTUN"; META[kcptun,bin]="kcptun_server"; META[kcptun,repo]="xtaci/kcptun"; META[kcptun,ext]="json"
 META[kcptun,dir]="/etc/kcptun"; META[kcptun,svc]="ax-kcptun"; META[kcptun,install]="tar_kcp"
 
-# [串联组合]
+# [别名定义]
+META[ss,name]="Shadowsocks"; META[ss,bin]="xray"; META[ss,repo]="XTLS/Xray-core"; META[ss,ext]="json"
+META[ss,dir]="/etc/xray"; META[ss,svc]="ax-xray"; META[ss,install]="unzip"
+
+META[xray_mkcp,name]="VLESS+mKCP"; META[xray_mkcp,bin]="xray"; META[xray_mkcp,repo]="XTLS/Xray-core"; META[xray_mkcp,ext]="json"
+META[xray_mkcp,dir]="/etc/xray"; META[xray_mkcp,svc]="ax-xray"; META[xray_mkcp,install]="unzip"
+
+# [串联组合定义]
 META[chain_hy2,is_chain]="true"; META[chain_hy2,parts]="hy2 udp2raw"; META[chain_hy2,name]="Hysteria2+UDP一键串联"
 META[chain_vless,is_chain]="true"; META[chain_vless,parts]="xray udp2raw"; META[chain_vless,name]="VLESS_KCP+UDP一键串联"
 META[chain_ss3,is_chain]="true"; META[chain_ss3,parts]="xray kcptun udp2raw"; META[chain_ss3,name]="SS+KCP+UDP 一键串联"
@@ -42,60 +49,92 @@ dim() { msg "2" "$1"; }; bold() { msg "1" "$1"; }
 log() { echo -e "[$(date '+%H:%M:%S')] $(bold "$1")"; }
 
 check_root() { [[ $EUID -ne 0 ]] && { red "错误: 必须 root 运行"; exit 1; }; }
+
 install_deps() {
     local deps=("curl" "wget" "tar" "unzip" "nano" "jq" "openssl" "uuid-runtime" "socat")
     local missing=(); for cmd in "${deps[@]}"; do ! command -v "$cmd" &>/dev/null && missing+=("$cmd"); done
     if [[ ${#missing[@]} -gt 0 ]]; then log "安装依赖: ${missing[*]}"; apt-get update &>/dev/null; apt-get install -y "${missing[@]}" &>/dev/null || yum install -y "${missing[@]}" &>/dev/null; fi
 }
+
 get_ip() { [[ -z "$PUBLIC_IP" ]] && PUBLIC_IP=$(curl -s4m2 ip.sb || curl -s4m2 ipinfo.io/ip || echo "127.0.0.1"); echo "$PUBLIC_IP"; }
 get_port() { local p; while true; do p=$((RANDOM%55535+10000)); ! ss -tuln | grep -q ":$p " && echo "$p" && return; done; }
 gen_uuid() { uuidgen || cat /proc/sys/kernel/random/uuid; }
 gen_pass() { openssl rand -base64 16; }
 
-# --- 3. 泛型逻辑层 (Generic Core) ---
+# --- 3. 泛型核心 (Generic Core) ---
 
-get_ver() { curl -s "$GITHUB_API/$1/releases/latest" | jq -r .tag_name; }
-
-# [Fix] 优化版本检测逻辑
-check_installed() {
-    local bin_path=$1 latest_tag=$2
-    [[ ! -f "$bin_path" ]] && return 1
-    chmod +x "$bin_path" # 确保可执行
-    local output=$("$bin_path" -version 2>&1 || "$bin_path" version 2>&1)
-    # 移除 v 前缀进行比较
-    local pure_tag=${latest_tag#v}
-    if [[ "$output" == *"$pure_tag"* ]]; then return 0; else return 1; fi
+get_ver() { 
+    # 获取 GitHub Tag，增加超时防止卡死，去除首尾空格换行
+    curl -s --connect-timeout 5 "$GITHUB_API/$1/releases/latest" | jq -r .tag_name | tr -d ' \n\r'
 }
 
 install_bin_generic() {
-    local type=$1; local bin=${META[$type,bin]} dir=${META[$type,dir]} repo=${META[$type,repo]} mode=${META[$type,install]}
-    local latest=$(get_ver "$repo")
-    [[ -z "$latest" ]] && { red "获取 $type 版本失败"; return 1; }
+    local type=$1
+    local bin=${META[$type,bin]} dir=${META[$type,dir]} repo=${META[$type,repo]} mode=${META[$type,install]}
+    local ver_file="$dir/.version"
     
-    # 检查版本
-    if check_installed "$dir/$bin" "$latest"; then
-        green "$type 已是最新 ($latest)，跳过下载。"
-        return 0
+    # 1. 获取远程版本
+    local latest=$(get_ver "$repo")
+    [[ -z "$latest" || "$latest" == "null" ]] && { return 0; } # 网络失败时不阻塞脚本
+
+    # 2. 检查本地标记 (解决重复下载问题)
+    local current=""
+    [[ -f "$ver_file" ]] && current=$(cat "$ver_file" | tr -d ' \n\r')
+    
+    if [[ -f "$dir/$bin" && "$current" == "$latest" ]]; then
+        return 0 # 版本一致，静默跳过
     fi
 
-    log "下载 $type ($latest)..."
+    log "正在安装/更新 $type ($latest)..."
+    
+    # 3. [Fix] 解决 Text file busy: 更新前停止服务
+    systemctl stop "${META[$type,svc]}*" 2>/dev/null
+
     mkdir -p "$dir"; local url=""
+    local dl_ok=false
+    
+    # 4. 下载策略
     case $mode in
-        mv) url="https://github.com/$repo/releases/download/$latest/${bin}-linux-amd64"; curl -L -o "$dir/$bin" "$url" && chmod +x "$dir/$bin" ;;
-        unzip) url="https://github.com/$repo/releases/download/$latest/Xray-linux-64.zip"; curl -L -o /tmp/dl.zip "$url" && unzip -o /tmp/dl.zip -d "$dir" "$bin" geoip.dat geosite.dat && chmod +x "$dir/$bin"; cp -n "$dir/geoip.dat" "/etc/hysteria2/" 2>/dev/null ;;
-        tar_udp) url="https://github.com/$repo/releases/download/$latest/udp2raw_binaries.tar.gz"; curl -L -o /tmp/dl.tar.gz "$url" && tar -xzf /tmp/dl.tar.gz -C "$dir" udp2raw_amd64 && mv "$dir/udp2raw_amd64" "$dir/$bin" && chmod +x "$dir/$bin" ;;
-        tar_kcp) url="https://github.com/$repo/releases/download/$latest/kcptun-linux-amd64-${latest#v}.tar.gz"; curl -L -o /tmp/dl.tar.gz "$url" && tar -xzf /tmp/dl.tar.gz -C "$dir" server_linux_amd64 && mv "$dir/server_linux_amd64" "$dir/$bin" && chmod +x "$dir/$bin" ;;
+        mv) 
+            url="https://github.com/$repo/releases/download/$latest/${bin}-linux-amd64"
+            curl -L --connect-timeout 20 -o "$dir/$bin" "$url" && chmod +x "$dir/$bin" && dl_ok=true ;;
+        unzip) 
+            url="https://github.com/$repo/releases/download/$latest/Xray-linux-64.zip"
+            curl -L --connect-timeout 20 -o /tmp/dl.zip "$url" && unzip -o /tmp/dl.zip -d "$dir" "$bin" geoip.dat geosite.dat && chmod +x "$dir/$bin" && dl_ok=true
+            cp -n "$dir/geoip.dat" "/etc/hysteria2/" 2>/dev/null ;;
+        tar_udp) 
+            url="https://github.com/$repo/releases/download/$latest/udp2raw_binaries.tar.gz"
+            curl -L --connect-timeout 20 -o /tmp/dl.tar.gz "$url" && tar -xzf /tmp/dl.tar.gz -C "$dir" udp2raw_amd64 && mv "$dir/udp2raw_amd64" "$dir/$bin" && chmod +x "$dir/$bin" && dl_ok=true ;;
+        tar_kcp) 
+            url="https://github.com/$repo/releases/download/$latest/kcptun-linux-amd64-${latest#v}.tar.gz"
+            curl -L --connect-timeout 20 -o /tmp/dl.tar.gz "$url" && tar -xzf /tmp/dl.tar.gz -C "$dir" server_linux_amd64 && mv "$dir/server_linux_amd64" "$dir/$bin" && chmod +x "$dir/$bin" && dl_ok=true ;;
     esac
+
+    # 5. 写入版本标记
+    if $dl_ok; then
+        echo "$latest" > "$ver_file"
+        green "$type 更新成功。"
+    else
+        red "$type 下载失败。"
+    fi
 }
 
 render_template() {
-    local tpl_var=$1 out_file=$2; local content="${!tpl_var}"; shift 2
-    while (( "$#" )); do content="${content//__$1__/$2}"; shift 2; done
+    local tpl_var=$1 out_file=$2
+    local content="${!tpl_var}"
+    shift 2
+    while (( "$#" )); do
+        # [Fix] 强制剔除参数中的空格，解决 UDP2RAW 启动报错
+        local val=$(echo "$2" | tr -d ' ')
+        content="${content//__$1__/$val}"
+        shift 2
+    done
     echo "$content" > "$out_file"
 }
 
 install_service() {
-    local type=$1; local svc_name=${META[$type,svc]} bin=${META[$type,bin]} dir=${META[$type,dir]} ext=${META[$type,ext]}
+    local type=$1
+    local svc_name=${META[$type,svc]} bin=${META[$type,bin]} dir=${META[$type,dir]} ext=${META[$type,ext]}
     local svc_file="/etc/systemd/system/${svc_name}@.service"
     [[ -f "$svc_file" ]] && return 0
     
@@ -123,9 +162,12 @@ EOF
     systemctl daemon-reload
 }
 
+# 通用服务控制器
 sys_ctl() {
     local action=$1 type=$2 id=$3
     local svcs=()
+    
+    # 解析依赖
     if [[ "${META[$type,is_chain]}" == "true" ]]; then
         for comp in ${META[$type,parts]}; do svcs+=("${META[$comp,svc]}@$id"); done
     else
@@ -139,7 +181,7 @@ sys_ctl() {
         status_color) 
             local all_active=true; local str=""
             for s in "${svcs[@]}"; do
-                if systemctl is-active --quiet "$s"; then str+="\033[32m[运行]\033[0m "; else str+="\033[33m[未运行]\033[0m "; all_active=false; fi
+                if systemctl is-active --quiet "$s"; then str+="\033[32m[运行]\033[0m "; else str+="\033[33m[停止]\033[0m "; all_active=false; fi
             done
             echo -e "$str" ;;
         log) journalctl -u "${svcs[0]}" -f ;;
@@ -176,7 +218,11 @@ gen_link() {
     local conf="${META[$meta_type,dir]}/${meta_type}_${id}.${META[$meta_type,ext]}"
     [[ ! -f "$conf" ]] && echo "N/A" && return
 
-    if [[ "$type" == "hy2" || "$type" == "hysteria2" ]]; then
+    # 映射串联类型到基础类型以生成链接
+    local link_type=$type
+    [[ "$type" == "chain_hy2" ]] && link_type="hy2"
+    
+    if [[ "$link_type" == "hy2" || "$link_type" == "hysteria2" ]]; then
         local pass=$(grep "password:" "$conf" | awk '{print $2}')
         local port=$(grep "listen:" "$conf" | awk -F: '{print $NF}')
         echo "hysteria2://${pass}@${ip}:${port}?insecure=1&sni=bing.com#${type}_${id}"
@@ -185,43 +231,60 @@ gen_link() {
         local port=$(jq -r '.inbounds[0].port' "$conf")
         local pbk=$(jq -r '.inbounds[0].streamSettings.realitySettings.publicKey' "$conf")
         echo "vless://${uuid}@${ip}:${port}?security=reality&sni=www.apple.com&fp=chrome&pbk=${pbk}&type=tcp&flow=xtls-rprx-vision#Reality_${id}"
+    elif [[ "$type" == "xray_mkcp" ]]; then
+        local uuid=$(jq -r '.inbounds[0].settings.clients[0].id' "$conf")
+        local port=$(jq -r '.inbounds[0].port' "$conf")
+        echo "vless://${uuid}@${ip}:${port}?security=none&type=kcp&headerType=wechat-video#mKCP_${id}"
+    elif [[ "$type" == "ss" ]]; then
+        local method=$(jq -r '.inbounds[0].settings.method' "$conf")
+        local pass=$(jq -r '.inbounds[0].settings.password' "$conf")
+        local port=$(jq -r '.inbounds[0].port' "$conf")
+        # base64 encode user:pass
+        local userpass=$(echo -n "${method}:${pass}" | base64 -w 0)
+        echo "ss://${userpass}@${ip}:${port}#SS_${id}"
+    elif [[ "$type" == "chain_hy2" ]]; then
+         echo "(组合：UDP2RAW -> 本地HY2，请查看配置文件)"
+    elif [[ "$type" == "chain_vless" ]]; then
+         echo "(组合：UDP2RAW -> 本地mKCP，请查看配置文件)"
+    elif [[ "$type" == "chain_ss3" ]]; then
+         echo "(组合：UDP2RAW -> KCPTUN -> 本地SS，请查看配置文件)"
     else
-        echo "(暂未支持自动生成此类型链接，请手动查看配置)"
+        echo "(请查看配置文件: $conf)"
     fi
 }
 
-# --- 5. 菜单逻辑 (Menus) ---
+# --- 5. 菜单系统 (Menus) ---
 
-# [Fix] 修复数组下标越界问题
 declare -A QUICK_MAP_TYPE QUICK_MAP_ID
+
 show_status_summary() {
-    QUICK_MAP_TYPE=(); QUICK_MAP_ID=() # Reset
+    QUICK_MAP_TYPE=(); QUICK_MAP_ID=() 
     echo "$(bold "--- 当前状态 (输入序号可直接管理) ---")"
     local idx=21
+    local has_instance=false
     
-    # 1. 扫描串联
-    for c in chain_hy2 chain_vless chain_ss3; do
-        local ids=$(get_existing_ids "$c")
+    # 定义扫描顺序
+    local scan_list="chain_hy2 chain_vless chain_ss3 hy2 xray_reality udp2raw kcptun"
+    
+    for t in $scan_list; do
+        local ids=$(get_existing_ids "$t")
+        [[ -z "$ids" ]] && continue
+        
+        local dname="${META[$t,name]}"
+        [[ "$t" == "hy2" ]] && dname="Hysteria2 (独立)"
+        [[ "$t" == "xray_reality" ]] && dname="VLESS+Reality"
+        
         for i in $ids; do
-            echo "$idx) ${META[$c,name]} [ID:$i] $(sys_ctl status_color "$c" "$i")"
-            QUICK_MAP_TYPE[$idx]="$c"; QUICK_MAP_ID[$idx]="$i"; ((idx++))
+            echo "$idx) ${dname} [ID:$i] $(sys_ctl status_color "$t" "$i")"
+            QUICK_MAP_TYPE[$idx]="$t"; QUICK_MAP_ID[$idx]="$i"
+            ((idx++)); has_instance=true
         done
     done
     
-    # 2. 扫描独立
-    for t in hy2 xray_reality udp2raw kcptun; do
-        local scan_key=$t; [[ "$t" == "xray_reality" ]] && scan_key="xray"
-        local ids=$(get_existing_ids "$scan_key")
-        for i in $ids; do
-            local name=${META[$scan_key,name]}; [[ "$t" == "xray_reality" ]] && name="VLESS+Reality"
-            echo "$idx) ${name} (独立) [ID:$i] $(sys_ctl status_color "$scan_key" "$i")"
-            QUICK_MAP_TYPE[$idx]="$t"; QUICK_MAP_ID[$idx]="$i"; ((idx++))
-        done
-    done
-    
-    if [[ $idx -eq 21 ]]; then yellow "当前没有已创建的实例。"; fi
+    if [[ "$has_instance" == false ]]; then yellow "当前没有已创建的实例。"; fi
 }
 
+# 类型管理菜单
 type_manager_menu() {
     local type=$1; local title=${META[$type,name]}
     while true; do
@@ -255,6 +318,7 @@ type_manager_menu() {
     done
 }
 
+# 独立实例菜单
 menu_instance() {
     local type=$1 id=$2; local meta=$type; [[ "$type" == *"xray"* ]] && meta="xray"
     local conf="${META[$meta,dir]}/${meta}_${id}.${META[$meta,ext]}"
@@ -266,19 +330,21 @@ menu_instance() {
         cyan "链接: $(gen_link "$type" "$id")"
         echo "----------------------------------"
         echo "1) 启动/重启  2) 停止  3) 实时日志"
-        echo "4) 编辑配置   5) 删除  0) 返回"
+        echo "4) 编辑配置   99) 删除实例"
+        echo "0) 返回"
         read -p "选择: " c
         case $c in
             1) sys_ctl restart "$meta" "$id" ;;
             2) sys_ctl stop "$meta" "$id" ;;
             3) sys_ctl log "$meta" "$id" ;;
             4) nano "$conf"; sys_ctl restart "$meta" "$id" ;;
-            5) sys_ctl stop "$meta" "$id"; sys_ctl disable "$meta" "$id"; rm -f "$conf"; green "已删除"; return ;;
+            99) sys_ctl stop "$meta" "$id"; sys_ctl disable "$meta" "$id"; rm -f "$conf"; green "已删除"; return ;;
             0) return ;;
         esac; read -p "按任意键..." -n1 -s
     done
 }
 
+# 串联实例菜单
 menu_chain() {
     local type=$1 id=$2; local parts=${META[$type,parts]}
     local main=$(echo $parts | awk '{print $1}')
@@ -291,14 +357,14 @@ menu_chain() {
         echo "----------------------------------"
         echo "1) 启动/重启串联  2) 停止串联"
         local i=3; for p in $parts; do echo "$i) 查看 ${META[$p,name]} 日志"; ((i++)); done
-        echo "$i) 删除串联      0) 返回"
+        echo "99) 删除串联      0) 返回"
         read -p "选择: " c
         local log_end=$((3 + $(echo $parts | wc -w)))
         if [[ $c -eq 1 ]]; then sys_ctl restart "$type" "$id"
         elif [[ $c -eq 2 ]]; then sys_ctl stop "$type" "$id"
         elif [[ $c -ge 3 && $c -lt $log_end ]]; then
              local idx=$((c-3)); local arr=($parts); sys_ctl log "${arr[$idx]}" "$id"
-        elif [[ $c -eq $log_end ]]; then
+        elif [[ $c -eq 99 ]]; then
              sys_ctl stop "$type" "$id"; sys_ctl disable "$type" "$id"
              for p in $parts; do rm -f "${META[$p,dir]}/${p}_${id}.${META[$p,ext]}"; done
              green "已删除"; return
@@ -317,7 +383,7 @@ create_instance() {
     
     case $type in
         hy2|hysteria2)
-            # [Fix] 使用 awk 替代 cut，更稳健
+            # [Fix] 使用 awk 避免 cut 报错
             local cinfo=$(get_cert_path "n")
             local crt=$(echo "$cinfo" | awk -F'|' '{print $1}')
             local key=$(echo "$cinfo" | awk -F'|' '{print $2}')
@@ -329,9 +395,20 @@ create_instance() {
             local short=$(openssl rand -hex 4)
             render_template TPL_XRAY_REALITY "${META[xray,dir]}/xray_${nid}.json" \
                 PORT "$port" UUID "$uuid" PK "$pk" SHORT "$short" ;;
+        xray_mkcp)
+            render_template TPL_XRAY_MKCP "${META[xray,dir]}/xray_${nid}.json" \
+                PORT "$port" UUID "$uuid" ;;
+        ss)
+            render_template TPL_SS "${META[xray,dir]}/xray_${nid}.json" \
+                PORT "$port" PASS "$pass" ;;
+        udp2raw)
+            render_template TPL_UDP2RAW "${META[udp2raw,dir]}/udp2raw_${nid}.conf" \
+                LISTEN "0.0.0.0:$port" TARGET "127.0.0.1:22" PASS "$pass" ;;
+        kcptun)
+            render_template TPL_KCPTUN "${META[kcptun,dir]}/kcptun_${nid}.json" \
+                LISTEN ":$port" TARGET "127.0.0.1:22" KEY "$pass" ;;
     esac
     
-    # [Fix] 增加延时确保服务启动
     sys_ctl enable "$meta" "$nid"
     sleep 2
     green "创建成功！状态: $(sys_ctl status_color "$meta" "$nid")"
@@ -354,8 +431,36 @@ create_chain() {
         render_template TPL_UDP2RAW "${META[udp2raw,dir]}/udp2raw_${nid}.conf" \
             LISTEN "0.0.0.0:$pout" TARGET "127.0.0.1:$pin" PASS "$pass"
         sys_ctl enable "chain_hy2" "$nid"
+    elif [[ "$type" == "chain_vless" ]]; then
+        # Xray (mKCP) -> UDP2RAW
+        render_template TPL_XRAY_MKCP "${META[xray,dir]}/xray_${nid}.json" \
+            PORT "$pin" UUID "$(gen_uuid)"
+        # 修改监听地址为本地
+        sed -i 's/"port": '"$pin"'/"port": '"$pin"', "listen": "127.0.0.1"/' "${META[xray,dir]}/xray_${nid}.json"
+        
+        render_template TPL_UDP2RAW "${META[udp2raw,dir]}/udp2raw_${nid}.conf" \
+            LISTEN "0.0.0.0:$pout" TARGET "127.0.0.1:$pin" PASS "$pass"
+        sys_ctl enable "chain_vless" "$nid"
+    elif [[ "$type" == "chain_ss3" ]]; then
+        # SS -> KCPTUN -> UDP2RAW
+        local p_ss=$(get_port)
+        local p_kcp=$pin
+        
+        # 1. SS (Local)
+        render_template TPL_SS "${META[xray,dir]}/xray_${nid}.json" \
+            PORT "$p_ss" PASS "$(gen_pass)"
+        sed -i 's/"port": '"$p_ss"'/"port": '"$p_ss"', "listen": "127.0.0.1"/' "${META[xray,dir]}/xray_${nid}.json"
+        
+        # 2. KCPTUN (Local)
+        render_template TPL_KCPTUN "${META[kcptun,dir]}/kcptun_${nid}.json" \
+            LISTEN "127.0.0.1:$p_kcp" TARGET "127.0.0.1:$p_ss" KEY "$(gen_pass)"
+            
+        # 3. UDP2RAW (Public)
+        render_template TPL_UDP2RAW "${META[udp2raw,dir]}/udp2raw_${nid}.conf" \
+            LISTEN "0.0.0.0:$pout" TARGET "127.0.0.1:$p_kcp" PASS "$pass"
+            
+        sys_ctl enable "chain_ss3" "$nid"
     fi
-    # [Fix] 增加延时
     sleep 2
     green "串联创建成功。状态: $(sys_ctl status_color "$type" "$nid")"
 }
@@ -364,25 +469,28 @@ create_chain() {
 
 view_all_configs() {
     clear; echo "=== 所有配置信息 ==="
-    for t in hy2 xray_reality chain_hy2 chain_vless; do
+    for t in hy2 xray_reality chain_hy2 chain_vless chain_ss3 udp2raw kcptun; do
         local ids=$(get_existing_ids "$t")
-        [[ -n "$ids" ]] && echo "--- ${META[$t,name]} ---"
-        for i in $ids; do echo "ID: $i"; gen_link "$t" "$i"; echo; done
+        [[ -z "$ids" ]] && continue
+        echo "-------------------------"
+        echo "${META[$t,name]}:"
+        for i in $ids; do
+            echo -n "ID $i: "
+            gen_link "$t" "$i"
+        done
     done
+    echo "-------------------------"
     read -p "按任意键返回..." -n1 -s
 }
 
 uninstall_all() {
     read -p "确认卸载所有服务并清除文件？[y/N]: " c
-    [[ "$c" != "y" ]] && return
+    [[ "$c" != "y" && "$c" != "Y" ]] && return
     green "正在卸载..."
-    # 停止所有已知服务
     systemctl stop ax-* 2>/dev/null
     systemctl disable ax-* 2>/dev/null
     rm -f /etc/systemd/system/ax-*.service
     systemctl daemon-reload
-    
-    # 清除文件
     rm -rf /etc/hysteria2 /etc/xray /etc/udp2raw /etc/kcptun /etc/ax-certs
     green "卸载完成。"
     sleep 2
@@ -422,11 +530,54 @@ read -r -d '' TPL_XRAY_REALITY <<'EOF'
 }
 EOF
 
+read -r -d '' TPL_XRAY_MKCP <<'EOF'
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": __PORT__, "protocol": "vless",
+    "settings": { "clients": [{ "id": "__UUID__" }], "decryption": "none" },
+    "streamSettings": {
+      "network": "kcp",
+      "kcpSettings": { "mtu": 1350, "tti": 20, "uplinkCapacity": 100, "downlinkCapacity": 100, "congestion": false, "readBufferSize": 2, "writeBufferSize": 2, "header": { "type": "wechat-video" } }
+    }
+  }],
+  "outbounds": [{ "protocol": "freedom" }]
+}
+EOF
+
+read -r -d '' TPL_SS <<'EOF'
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": __PORT__, "protocol": "shadowsocks",
+    "settings": { "method": "aes-256-gcm", "password": "__PASS__", "network": "tcp,udp" }
+  }],
+  "outbounds": [{ "protocol": "freedom" }]
+}
+EOF
+
+read -r -d '' TPL_KCPTUN <<'EOF'
+{
+  "listen": "__LISTEN__",
+  "target": "__TARGET__",
+  "key": "__KEY__",
+  "crypt": "aes",
+  "mode": "fast2",
+  "mtu": 1350,
+  "sndwnd": 1024,
+  "rcvwnd": 1024,
+  "datashard": 10,
+  "parityshard": 3,
+  "dscp": 46,
+  "nocomp": false
+}
+EOF
+
 read -r -d '' TPL_UDP2RAW <<'EOF'
 -s -l __LISTEN__ -r __TARGET__ -k __PASS__ --raw-mode faketcp -a
 EOF
 
-# --- 9. 主入口 ---
+# --- 9. 主入口 (Main) ---
 
 main_menu() {
     while true; do
@@ -464,7 +615,7 @@ main_menu() {
         echo "----------------------------------"
         read -p "请选择: " c
         
-        # [Fix] 修复数组越界报错
+        # 快速跳转校验
         if [[ "$c" =~ ^[0-9]+$ ]] && [[ -n "${QUICK_MAP_TYPE[$c]}" ]]; then
             local qt=${QUICK_MAP_TYPE[$c]} qid=${QUICK_MAP_ID[$c]}
             if [[ "${META[$qt,is_chain]}" == "true" ]]; then menu_chain "$qt" "$qid"
@@ -478,7 +629,9 @@ main_menu() {
             3) type_manager_menu "chain_ss3" ;;
             4) type_manager_menu "hy2" ;;
             5) type_manager_menu "xray_reality" ;;
-            # 6,7 复用 xray (简化版)
+            5) type_manager_menu "xray_reality" ;;
+            6) type_manager_menu "xray_mkcp" ;;
+            7) type_manager_menu "ss" ;;
             8) type_manager_menu "udp2raw" ;;
             9) type_manager_menu "kcptun" ;;
             10) view_all_configs ;;
@@ -493,6 +646,7 @@ main_menu() {
     done
 }
 
+# --- 初始化 ---
 check_root
 install_deps
 install_bin_generic "hy2"
