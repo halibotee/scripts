@@ -1624,15 +1624,6 @@ start_new_chain_instance_3() {
     view_chain_client_config_3 "$i"
 }
 
-    sync; log "启动串联服务...";
-    systemctl enable --now "${XRAY_SERVICE_NAME}@${chain_id}.service"
-    systemctl enable --now "kcptun@${chain_id}.service"
-    systemctl enable --now "udp2raw@${chain_id}.service"
-    
-    sleep 1; green "串联实例 ${chain_id} 已启动！"; echo
-    view_chain_client_config_3 "$i"
-}
-
 # [NEW] 管理一个已存在的 3 组件串联实例
 manage_chain_instance_3() {
     local id_num=$1
