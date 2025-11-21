@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="2.1.41"
+SCRIPT_VERSION="2.1.42"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -1286,6 +1286,7 @@ create_new_instance() {
             replacements["__PASSWORD__"]="$password"
             
             # 收集WARP配置
+            cyan "--- warp sockets 配置 ---"
             local warp_config=$(collect_warp_config "hysteria2")
             replacements["__OUTBOUNDS_AND_ACL__"]="$warp_config"
             
@@ -1764,6 +1765,7 @@ start_new_chain_instance_3() {
     local ss_password=$(openssl rand -base64 32)
     green "已自动生成 SS-2022 Base64 密钥: $ss_password"
     
+    cyan "--- warp sockets 配置 ---"
     local warp_config_block=$(collect_warp_config "xray")
     
     local ss_config="$XRAY_SHADOWSOCKS_TCP_UDP_TEMPLATE"
@@ -2100,6 +2102,8 @@ start_new_chain_instance() {
     if [[ "$chain_type" != "hy2" ]]; then
         service_type="xray"
     fi
+
+    cyan "--- warp sockets 配置 ---"
     local warp_config_block=$(collect_warp_config "$service_type")
     
     if [[ "$chain_type" == "hy2" ]]; then
