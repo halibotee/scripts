@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="2.1.4"
+SCRIPT_VERSION="2.1.41"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -61,6 +61,7 @@ DEFAULT_WARP_SOCKS_ADDR="127.0.0.1" # WARP SOCKS5 服务的默认监听地址
 DEFAULT_WARP_SOCKS_PORT="40000"     # WARP SOCKS5 服务的默认端口
 # WARP 分流规则 (JSON 格式)
 WARP_GEOSITE_LIST_JSON='"geosite:google","geosite:openai","geosite:perplexity"'
+WARP_GEOIP_LIST_JSON='"geoip:google"'
 # WARP 分流规则 (YAML 格式，用于 Hysteria2)
 WARP_GEOSITE_LIST_YAML='- warp(suffix:ip-api.com)
     - warp(geosite:google)
@@ -304,12 +305,14 @@ read -r -d '' XRAY_WARP_OUTBOUND_AND_ROUTING_BLOCK <<'EOM'
     "domainStrategy": "IPIfNonMatch",
     "rules": [
         { "type": "field", "outboundTag": "warp", "domain": [ __WARP_GEOSITE_LIST_JSON__ ] },
+        { "type": "field", "outboundTag": "warp", "ip": [ __WARP_GEOIP_LIST_JSON__ ] },
         { "type": "field", "outboundTag": "warp", "domain": [ "suffix:ip-api.com" ] },
         { "type": "field", "outboundTag": "block", "domain": [ "geosite:category-ads-all" ] }
     ]
 }
 EOM
 XRAY_WARP_OUTBOUND_AND_ROUTING_BLOCK="${XRAY_WARP_OUTBOUND_AND_ROUTING_BLOCK//__WARP_GEOSITE_LIST_JSON__/$WARP_GEOSITE_LIST_JSON}"
+XRAY_WARP_OUTBOUND_AND_ROUTING_BLOCK="${XRAY_WARP_OUTBOUND_AND_ROUTING_BLOCK//__WARP_GEOIP_LIST_JSON__/$WARP_GEOIP_LIST_JSON}"
 
 # -----------------------------------------------------------------------------
 # Xray 直连配置块 (JSON)
@@ -2010,19 +2013,6 @@ start_new_chain_instance() {
         fi
     fi
     
-    # 添加UDP2RAW串联实例的配置选项
-    cyan "--- UDP2RAW 配置 ---"
-    read -p "raw_mode [faketcp/udp/icmp] (默认 faketcp): " raw_mode
-    raw_mode=${raw_mode:-faketcp}
-    
-    read -p "cipher_mode [aes128cbc/xor] (默认 aes128cbc): " cipher_mode
-    cipher_mode=${cipher_mode:-aes128cbc}
-    
-    read -p "auth_mode [hmac_sha1/simple] (默认 hmac_sha1): " auth_mode
-    auth_mode=${auth_mode:-hmac_sha1}
-    
-    # 然后生成密码
-    local udp2raw_password=$(generate_strong_password); echo -n "已自动生成 UDP2RAW 密码: "; green "$udp2raw_password"
     
     local main_config="$main_conf_template"
     local main_conf_path=""
@@ -2091,6 +2081,20 @@ start_new_chain_instance() {
         
         main_conf_path="$main_conf_dir/xray_${chain_id}.json"
     fi
+
+    # 添加UDP2RAW串联实例的配置选项
+    cyan "--- UDP2RAW 配置 ---"
+    read -p "raw_mode [faketcp/udp/icmp] (默认 faketcp): " raw_mode
+    raw_mode=${raw_mode:-faketcp}
+    
+    read -p "cipher_mode [aes128cbc/xor] (默认 aes128cbc): " cipher_mode
+    cipher_mode=${cipher_mode:-aes128cbc}
+    
+    read -p "auth_mode [hmac_sha1/simple] (默认 hmac_sha1): " auth_mode
+    auth_mode=${auth_mode:-hmac_sha1}
+    
+    # 然后生成密码
+    local udp2raw_password=$(generate_strong_password); echo -n "已自动生成 UDP2RAW 密码: "; green "$udp2raw_password"
     
     local service_type="hysteria2"
     if [[ "$chain_type" != "hy2" ]]; then
