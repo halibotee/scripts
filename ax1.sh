@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="2.1.3"
+SCRIPT_VERSION="2.1.4"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -571,7 +571,6 @@ collect_kcptun_params() {
 # -----------------------------------------------------------------------------
 collect_warp_config() {
     local service_type=$1
-    cyan "--- WARP SOCKS5 选项 ---"
     read -p "是否启用 WARP SOCKS5 分流 (默认"否")？[y/N]: " enable_warp
     
     if [[ "$enable_warp" == "y" || "$enable_warp" == "Y" ]]; then
@@ -1455,7 +1454,6 @@ create_new_xray_instance() {
         replacements["__SS_METHOD__"]="$ss_method"
         local ss_password=$(handle_password_input "shadowsocks"); replacements["__SS_PASSWORD__"]="$ss_password"
     fi
-    cyan "--- WARP SOCKS5 选项 ---"
     read -p "是否启用 WARP SOCKS5 分流 (默认“否”)？[y/N]: " enable_warp
     if [[ "$enable_warp" == "y" || "$enable_warp" == "Y" ]]; then
         local warp_addr="$DEFAULT_WARP_SOCKS_ADDR" # [新] 自动使用默认地址
