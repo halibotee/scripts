@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="2.1.42"
+SCRIPT_VERSION="2.1.43"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -42,7 +42,7 @@ HY2_SNI="bing.com"                                # Hysteria2 自签名模式默
 HY2_CERT_PATH="/etc/ssl/private/${HY2_SNI}.crt"   # 默认自签名证书路径
 HY2_KEY_PATH="/etc/ssl/private/${HY2_SNI}.key"    # 默认自签名密钥路径
 HY2_MASQUERADE_URL="https://www.bing.com"         # 默认伪装流量的目标 URL
-HY2_CLIENT_INSECURE="0"                           # Hysteria2 客户端是否跳过证书验证 (1: 跳过, 0: 验证)
+HY2_CLIENT_INSECURE="1"                           # Hysteria2 客户端是否跳过证书验证 (1: 跳过, 0: 验证)
 
 # =============================================================================
 # 5. Xray VLESS 专属配置
@@ -1679,16 +1679,13 @@ view_chain_client_config_3() {
     local ss_port=$(echo "$CLIENT_SS_3_CHAIN_SS_TARGET" | cut -d: -f2)
     
     # [修改点] 统一命名格式为 Chain_ss_kcp_... +UDP2RAW
-    # [New] 提取 KCPTUN 和 UDP2RAW 参数并添加到 URL 参数
+    # [New] 提取 KCPTUN 参数并添加到 URL 参数
     local kcp_mode=$(jq -r '.mode' "$kcptun_conf_path")
     local kcp_crypt=$(jq -r '.crypt' "$kcptun_conf_path")
     local kcp_nocomp=$(jq -r '.nocomp' "$kcptun_conf_path")
-    local udp_raw_mode=$(grep -Po '(?<=--raw-mode )[^ ]+' "$udp2raw_conf_path")
-    local udp_cipher_mode=$(grep -Po '(?<=--cipher-mode )[^ ]+' "$udp2raw_conf_path")
-    local udp_auth_mode=$(grep -Po '(?<=--auth-mode )[^ ]+' "$udp2raw_conf_path")
 
     # SS 链接通常没有标准参数支持这些，但可以作为扩展参数添加
-    local sub_link="ss://${ss_user_info}@${ss_host}:${ss_port}/?kcp_mode=${kcp_mode}&kcp_crypt=${kcp_crypt}&kcp_nocomp=${kcp_nocomp}&udp_raw_mode=${udp_raw_mode}&udp_cipher_mode=${udp_cipher_mode}&udp_auth_mode=${udp_auth_mode}#Chain_ss_kcp_${ip}_${id}+UDP2RAW"
+    local sub_link="ss://${ss_user_info}@${ss_host}:${ss_port}/?kcp_mode=${kcp_mode}&kcp_crypt=${kcp_crypt}&kcp_nocomp=${kcp_nocomp}#Chain_ss_kcp_${ip}_${id}+UDP2RAW"
     green "$sub_link"; echo
     
     echo
@@ -1933,12 +1930,7 @@ view_chain_client_config() {
         fi
         
         # [修改点] 更改了节点备注格式：Chain_hy2_... +UDP2RAW
-        # [New] 提取 UDP2RAW 参数并添加到 URL 参数
-        local udp_raw_mode=$(grep -Po '(?<=--raw-mode )[^ ]+' "$udp2raw_conf")
-        local udp_cipher_mode=$(grep -Po '(?<=--cipher-mode )[^ ]+' "$udp2raw_conf")
-        local udp_auth_mode=$(grep -Po '(?<=--auth-mode )[^ ]+' "$udp2raw_conf")
-
-        sub_link="hysteria2://${hy2_password}@${client_udp2raw_host}:${client_udp2raw_port}?sni=${sni}&insecure=${insecure_flag}&udp_raw_mode=${udp_raw_mode}&udp_cipher_mode=${udp_cipher_mode}&udp_auth_mode=${udp_auth_mode}#Chain_hy2_${host_label}_${id}+UDP2RAW"
+        sub_link="hysteria2://${hy2_password}@${client_udp2raw_host}:${client_udp2raw_port}?sni=${sni}&insecure=${insecure_flag}#Chain_hy2_${host_label}_${id}+UDP2RAW"
     else # vless
         display_title="[VLESS_mKCP+UDP2RAW]"
         local uuid=$(jq -r '.inbounds[0].settings.clients[0].id' "$main_conf_path")
@@ -1947,12 +1939,7 @@ view_chain_client_config() {
         local congestion=$(jq -r '.inbounds[0].streamSettings.kcpSettings.congestion' "$main_conf_path")
         
         # [修改点] 更改了节点备注格式：Chain_vless_kcp_... +UDP2RAW
-        # [New] 提取 UDP2RAW 参数并添加到 URL 参数
-        local udp_raw_mode=$(grep -Po '(?<=--raw-mode )[^ ]+' "$udp2raw_conf")
-        local udp_cipher_mode=$(grep -Po '(?<=--cipher-mode )[^ ]+' "$udp2raw_conf")
-        local udp_auth_mode=$(grep -Po '(?<=--auth-mode )[^ ]+' "$udp2raw_conf")
-        
-        sub_link="vless://${uuid}@${client_udp2raw_host}:${client_udp2raw_port}?type=kcp&security=none&headerType=${header_type}&seed=${seed}&congestion=${congestion}&udp_raw_mode=${udp_raw_mode}&udp_cipher_mode=${udp_cipher_mode}&udp_auth_mode=${udp_auth_mode}#Chain_vless_kcp_${host_label}_${id}+UDP2RAW"
+        sub_link="vless://${uuid}@${client_udp2raw_host}:${client_udp2raw_port}?type=kcp&security=none&headerType=${header_type}&seed=${seed}&congestion=${congestion}#Chain_vless_kcp_${host_label}_${id}+UDP2RAW"
     fi
 
     cyan "--- ${title} 串联实例 ${id} 客户端配置 ---"; echo
