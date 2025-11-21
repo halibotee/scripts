@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="2.1.43"
+SCRIPT_VERSION="1.1.0"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -779,7 +779,7 @@ ax_get_certificate() {
                 return 1
                 ;;
         esac
-        issue_cmd="$ACME_SH_INSTALL_DIR --issue -d $domain $dns_api_cmd -k ec-256"
+        issue_cmd="$ACME_SH_INSTALL_DIR --issue -d $domain $dns_api_cmd -k ec-256 --force"
     
     else
         red "无效的模式选择。"
