@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="2.1.2"
+SCRIPT_VERSION="2.2.1"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -523,15 +523,49 @@ handle_password_input() {
 # 收集 UDP2RAW 参数
 # 返回格式: raw_mode|cipher_mode|auth_mode
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 收集 UDP2RAW 参数
+# 返回格式: raw_mode|cipher_mode|auth_mode
+# -----------------------------------------------------------------------------
 collect_udp2raw_params() {
-    read -p "raw_mode [faketcp/udp/icmp] (默认 faketcp): " raw_mode >&2
-    raw_mode=${raw_mode:-faketcp}
+    echo "UDP2RAW 运行模式 (raw_mode):"
+    echo "1) faketcp (默认, 推荐)"
+    echo "2) udp"
+    echo "3) icmp"
+    read -p "请选择 (默认 1): " raw_choice
+    local raw_mode="faketcp"
+    case "$raw_choice" in
+        1) raw_mode="faketcp" ;;
+        2) raw_mode="udp" ;;
+        3) raw_mode="icmp" ;;
+        *) raw_mode="faketcp" ;;
+    esac
     
-    read -p "cipher_mode [aes128cbc/xor/none] (默认 aes128cbc): " cipher_mode >&2
-    cipher_mode=${cipher_mode:-aes128cbc}
+    echo "UDP2RAW 加密模式 (cipher_mode):"
+    echo "1) aes128cbc (默认, 推荐)"
+    echo "2) xor"
+    echo "3) none"
+    read -p "请选择 (默认 1): " cipher_choice
+    local cipher_mode="aes128cbc"
+    case "$cipher_choice" in
+        1) cipher_mode="aes128cbc" ;;
+        2) cipher_mode="xor" ;;
+        3) cipher_mode="none" ;;
+        *) cipher_mode="aes128cbc" ;;
+    esac
     
-    read -p "auth_mode [hmac_sha1/simple/md5] (默认 hmac_sha1): " auth_mode >&2
-    auth_mode=${auth_mode:-hmac_sha1}
+    echo "UDP2RAW 认证模式 (auth_mode):"
+    echo "1) hmac_sha1 (默认, 推荐)"
+    echo "2) simple"
+    echo "3) md5"
+    read -p "请选择 (默认 1): " auth_choice
+    local auth_mode="hmac_sha1"
+    case "$auth_choice" in
+        1) auth_mode="hmac_sha1" ;;
+        2) auth_mode="simple" ;;
+        3) auth_mode="md5" ;;
+        *) auth_mode="hmac_sha1" ;;
+    esac
     
     echo "$raw_mode|$cipher_mode|$auth_mode"
 }
@@ -541,12 +575,53 @@ collect_udp2raw_params() {
 # 返回格式: mode|crypt|tcp_enabled|nocomp
 # -----------------------------------------------------------------------------
 collect_kcptun_params() {
-
-    read -p "mode [fast/fast2/fast3/normal/manual] (默认 $KCPTUN_DEFAULT_MODE): " mode >&2
-    mode=${mode:-$KCPTUN_DEFAULT_MODE}
+    echo "KCPTUN 加速模式 (mode):"
+    echo "1) fast3 (默认, 推荐)"
+    echo "2) fast2"
+    echo "3) fast"
+    echo "4) normal"
+    echo "5) manual"
+    read -p "请选择 (默认 1): " mode_choice
+    local mode="$KCPTUN_DEFAULT_MODE"
+    case "$mode_choice" in
+        1) mode="fast3" ;;
+        2) mode="fast2" ;;
+        3) mode="fast" ;;
+        4) mode="normal" ;;
+        5) mode="manual" ;;
+        *) mode="$KCPTUN_DEFAULT_MODE" ;;
+    esac
     
-    read -p "crypt [aes-128/aes-192/aes-256] (默认 aes-128): " crypt >&2
-    crypt=${crypt:-aes-128}
+    echo "KCPTUN 加密方式 (crypt):"
+    echo "1) aes-128 (默认, 推荐)"
+    echo "2) aes-192"
+    echo "3) aes-256"
+    echo "4) salsa20"
+    echo "5) blowfish"
+    echo "6) twofish"
+    echo "7) cast5"
+    echo "8) 3des"
+    echo "9) tea"
+    echo "10) xtea"
+    echo "11) xor"
+    echo "12) none"
+    read -p "请选择 (默认 1): " crypt_choice
+    local crypt="aes-128"
+    case "$crypt_choice" in
+        1) crypt="aes-128" ;;
+        2) crypt="aes-192" ;;
+        3) crypt="aes-256" ;;
+        4) crypt="salsa20" ;;
+        5) crypt="blowfish" ;;
+        6) crypt="twofish" ;;
+        7) crypt="cast5" ;;
+        8) crypt="3des" ;;
+        9) crypt="tea" ;;
+        10) crypt="xtea" ;;
+        11) crypt="xor" ;;
+        12) crypt="none" ;;
+        *) crypt="aes-128" ;;
+    esac
     
     read -p "tcp [true/false] (默认 false): " tcp_enabled >&2
     tcp_enabled=${tcp_enabled:-false}
@@ -915,65 +990,235 @@ download_xray_binary(){
 # 确保所有 Systemd 服务模板文件都已创建
 # -----------------------------------------------------------------------------
 ensure_template_files() {
-    # KCPTUN Template
-    cat > "$KCPTUN_TEMPLATE_FILE" <<E_O_F
+    # -------------------------------------------------------------------------
+    # 独立实例服务模板
+    # -------------------------------------------------------------------------
+    
+    # Hysteria2 (Standalone) -> ax-hy2@.service
+    cat > "/etc/systemd/system/ax-hy2@.service" <<E_O_F
 [Unit]
-Description=KCPTUN Instance Server (Instance %i)
+Description=Hysteria2 Server Instance (ax-hy2@%i)
 After=network.target
+
+[Service]
+Type=simple
+ExecStart=$HY2_INSTALL_DIR/hysteria server -c $HY2_INSTALL_DIR/hy2_%i.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+E_O_F
+
+    # VLESS+Reality (Standalone) -> ax-vlessReality@.service
+    cat > "/etc/systemd/system/ax-vlessReality@.service" <<E_O_F
+[Unit]
+Description=Xray VLESS+Reality Instance (ax-vlessReality@%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$XRAY_INSTALL_DIR/xray run -c $XRAY_INSTALL_DIR/vlessReality_%i.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+E_O_F
+
+    # VLESS+mKCP (Standalone) -> ax-vlesskcp@.service
+    cat > "/etc/systemd/system/ax-vlesskcp@.service" <<E_O_F
+[Unit]
+Description=Xray VLESS+mKCP Instance (ax-vlesskcp@%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$XRAY_INSTALL_DIR/xray run -c $XRAY_INSTALL_DIR/vlesskcp_%i.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+E_O_F
+
+    # Shadowsocks (Standalone) -> ax-ss@.service
+    cat > "/etc/systemd/system/ax-ss@.service" <<E_O_F
+[Unit]
+Description=Xray Shadowsocks Instance (ax-ss@%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$XRAY_INSTALL_DIR/xray run -c $XRAY_INSTALL_DIR/ss_%i.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+E_O_F
+
+    # UDP2RAW (Standalone) -> ax-udp2raw@.service
+    cat > "/etc/systemd/system/ax-udp2raw@.service" <<E_O_F
+[Unit]
+Description=UDP2RAW Instance (ax-udp2raw@%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$UDP2RAW_INSTALL_DIR/udp2raw -c $UDP2RAW_INSTALL_DIR/udp2raw_%i.conf
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+E_O_F
+
+    # KCPTUN (Standalone) -> ax-kcptun@.service
+    cat > "/etc/systemd/system/ax-kcptun@.service" <<E_O_F
+[Unit]
+Description=KCPTUN Instance (ax-kcptun@%i)
+After=network.target
+
 [Service]
 Type=simple
 ExecStart=$KCP_INSTALL_DIR/kcptun_server -c $KCP_INSTALL_DIR/kcptun_%i.json
 Restart=always
 RestartSec=3
+LimitNOFILE=65535
+
 [Install]
 WantedBy=multi-user.target
 E_O_F
 
-    # UDP2RAW Template
-    cat > "$UDP2RAW_TEMPLATE_FILE" <<E_O_F
+    # -------------------------------------------------------------------------
+    # 串联实例服务模板 (2组件)
+    # -------------------------------------------------------------------------
+
+    # Hysteria2 (Chain Component) -> ax-hy2-udp@.service
+    cat > "/etc/systemd/system/ax-hy2-udp@.service" <<E_O_F
 [Unit]
-Description=UDP2RAW Instance Server (Instance %i)
+Description=Hysteria2 Chain Component (ax-hy2-udp@%i)
 After=network.target
+
 [Service]
 Type=simple
-ExecStart=$UDP2RAW_INSTALL_DIR/udp2raw --conf-file $UDP2RAW_INSTALL_DIR/udp2raw_%i.conf
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+ExecStart=$HY2_INSTALL_DIR/hysteria server -c $HY2_INSTALL_DIR/hy2-udp_%i.yaml
 Restart=always
 RestartSec=3
+LimitNOFILE=65535
+
 [Install]
 WantedBy=multi-user.target
 E_O_F
 
-    # Hysteria2 Template
-    generate_self_signed_cert
-    cat > "$HY2_TEMPLATE_FILE" <<E_O_F
+    # UDP2RAW (For Hy2 Chain) -> ax-udp-hy2@.service
+    cat > "/etc/systemd/system/ax-udp-hy2@.service" <<E_O_F
 [Unit]
-Description=Hysteria2 Service (Instance %i)
+Description=UDP2RAW for Hysteria2 Chain (ax-udp-hy2@%i)
 After=network.target
+
 [Service]
 Type=simple
-ExecStart=$HY2_INSTALL_DIR/hysteria -c $HY2_INSTALL_DIR/hy2_%i.yaml server
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+ExecStart=$UDP2RAW_INSTALL_DIR/udp2raw -c $UDP2RAW_INSTALL_DIR/udp-hy2_%i.conf
 Restart=always
 RestartSec=3
+LimitNOFILE=65535
+
 [Install]
 WantedBy=multi-user.target
 E_O_F
 
-    # Xray Template
-    cat > "$XRAY_TEMPLATE_FILE" <<E_O_F
+    # VLESS+mKCP (Chain Component) -> ax-vlesskcp-udp@.service
+    cat > "/etc/systemd/system/ax-vlesskcp-udp@.service" <<E_O_F
 [Unit]
-Description=Xray Service (Instance %i)
+Description=Xray VLESS+mKCP Chain Component (ax-vlesskcp-udp@%i)
 After=network.target
+
 [Service]
 Type=simple
-ExecStart=$XRAY_INSTALL_DIR/xray -c $XRAY_INSTALL_DIR/xray_%i.json
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+ExecStart=$XRAY_INSTALL_DIR/xray run -c $XRAY_INSTALL_DIR/vlesskcp-udp_%i.json
 Restart=always
 RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+E_O_F
+
+    # UDP2RAW (For VLESS Chain) -> ax-udp-vlesskcp@.service
+    cat > "/etc/systemd/system/ax-udp-vlesskcp@.service" <<E_O_F
+[Unit]
+Description=UDP2RAW for VLESS Chain (ax-udp-vlesskcp@%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$UDP2RAW_INSTALL_DIR/udp2raw -c $UDP2RAW_INSTALL_DIR/udp-vlesskcp_%i.conf
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+E_O_F
+
+    # -------------------------------------------------------------------------
+    # 串联实例服务模板 (3组件)
+    # -------------------------------------------------------------------------
+
+    # Shadowsocks (Chain Component) -> ax-ss-kcp-udp@.service
+    cat > "/etc/systemd/system/ax-ss-kcp-udp@.service" <<E_O_F
+[Unit]
+Description=Xray Shadowsocks Chain Component (ax-ss-kcp-udp@%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$XRAY_INSTALL_DIR/xray run -c $XRAY_INSTALL_DIR/ss-kcp-udp_%i.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+E_O_F
+
+    # KCPTUN (Chain Component) -> ax-kcp-ss@.service
+    cat > "/etc/systemd/system/ax-kcp-ss@.service" <<E_O_F
+[Unit]
+Description=KCPTUN for SS Chain (ax-kcp-ss@%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$KCP_INSTALL_DIR/kcptun_server -c $KCP_INSTALL_DIR/kcp-ss_%i.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+E_O_F
+
+    # UDP2RAW (For SS+KCP Chain) -> ax-udp-ss@.service
+    cat > "/etc/systemd/system/ax-udp-ss@.service" <<E_O_F
+[Unit]
+Description=UDP2RAW for SS+KCP Chain (ax-udp-ss@%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$UDP2RAW_INSTALL_DIR/udp2raw -c $UDP2RAW_INSTALL_DIR/udp-ss_%i.conf
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
 [Install]
 WantedBy=multi-user.target
 E_O_F
@@ -1033,11 +1278,25 @@ get_chain_status_tuple() {
     local chain_type=$1 chain_id=$2
     local service1_name="" service2_name=""
     if [[ "$chain_type" == "hy2" ]]; then
-        service1_name="ax-hysteria2@${chain_id}.service"
-        service2_name="ax-udp2raw@${chain_id}.service"
+        if [[ "$chain_id" =~ ^c[0-9]+$ ]]; then
+            # Old
+            service1_name="ax-hysteria2@${chain_id}.service"
+            service2_name="ax-udp2raw@${chain_id}.service"
+        else
+            # New
+            service1_name="ax-hy2-udp@${chain_id}.service"
+            service2_name="ax-udp-hy2@${chain_id}.service"
+        fi
     else # vless
-        service1_name="ax-xray@${chain_id}.service"
-        service2_name="ax-udp2raw@${chain_id}.service"
+        if [[ "$chain_id" =~ ^vc[0-9]+$ ]]; then
+            # Old
+            service1_name="ax-xray@${chain_id}.service"
+            service2_name="ax-udp2raw@${chain_id}.service"
+        else
+            # New
+            service1_name="ax-vlesskcp-udp@${chain_id}.service"
+            service2_name="ax-udp-vlesskcp@${chain_id}.service"
+        fi
     fi
     
     local s1_active=false s2_active=false status_color="yellow"
@@ -1051,11 +1310,24 @@ get_chain_status_tuple() {
 # -----------------------------------------------------------------------------
 # 获取 3 组件串联实例的组合状态 (颜色, 状态1, 状态2, 状态3)
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 获取 3 组件串联实例的组合状态 (颜色, 状态1, 状态2, 状态3)
+# -----------------------------------------------------------------------------
 get_3_chain_status_tuple() {
-    local chain_id=$1 # e.g., s3c1
-    local service1_name="ax-xray@${chain_id}.service" # SS
-    local service2_name="ax-kcptun@${chain_id}.service"        # KCPTUN
-    local service3_name="ax-udp2raw@${chain_id}.service"        # UDP2RAW
+    local chain_id=$1 
+    local service1_name="" service2_name="" service3_name=""
+    
+    if [[ "$chain_id" =~ ^s3c[0-9]+$ ]]; then
+        # Old format
+        service1_name="ax-xray@${chain_id}.service"
+        service2_name="ax-kcptun@${chain_id}.service"
+        service3_name="ax-udp2raw@${chain_id}.service"
+    else
+        # New format
+        service1_name="ax-ss-kcp-udp@${chain_id}.service"
+        service2_name="ax-kcp-ss@${chain_id}.service"
+        service3_name="ax-udp-ss@${chain_id}.service"
+    fi
     
     local s1_active=false s2_active=false s3_active=false status_color="yellow"
     if systemctl is-active --quiet "$service1_name"; then s1_active=true; fi
@@ -1067,7 +1339,146 @@ get_3_chain_status_tuple() {
     echo "$status_color $(get_service_status_string "$service1_name") $(get_service_status_string "$service2_name") $(get_service_status_string "$service3_name")"
 }
 
+# ... (skip display_instance_status_line for now, will update later) ...
 
+# -----------------------------------------------------------------------------
+# 管理一个已存在的 2 组件串联实例
+# -----------------------------------------------------------------------------
+manage_chain_instance() {
+    local chain_type=$1 id=$2
+    local manage_id=$id
+    local service1_full="" service2_full=""
+    local main_conf_path="" udp2raw_conf=""
+    local title=""
+    
+    if [[ "$chain_type" == "hy2" ]]; then
+        title="Hysteria2+UDP"
+        if [[ "$manage_id" =~ ^c[0-9]+$ ]]; then
+            # Old
+            service1_full="ax-hysteria2@${manage_id}.service"
+            service2_full="ax-udp2raw@${manage_id}.service"
+            main_conf_path="$HY2_INSTALL_DIR/hy2_${manage_id}.yaml"
+            udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${manage_id}.conf"
+        else
+            # New
+            service1_full="ax-hy2-udp@${manage_id}.service"
+            service2_full="ax-udp-hy2@${manage_id}.service"
+            main_conf_path="$HY2_INSTALL_DIR/hy2-udp_${manage_id}.yaml"
+            udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp-hy2_${manage_id}.conf"
+        fi
+    else # vless
+        title="VLESS_mKCP+UDP"
+        if [[ "$manage_id" =~ ^vc[0-9]+$ ]]; then
+            # Old
+            service1_full="ax-xray@${manage_id}.service"
+            service2_full="ax-udp2raw@${manage_id}.service"
+            main_conf_path="$XRAY_INSTALL_DIR/xray_${manage_id}.json"
+            udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${manage_id}.conf"
+        else
+            # New
+            service1_full="ax-vlesskcp-udp@${manage_id}.service"
+            service2_full="ax-udp-vlesskcp@${manage_id}.service"
+            main_conf_path="$XRAY_INSTALL_DIR/vlesskcp-udp_${manage_id}.json"
+            udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp-vlesskcp_${manage_id}.conf"
+        fi
+    fi
+    
+    while true; do
+        clear; echo "=================================="; echo "   管理 ${title} $(dim "${manage_id}")"; echo "=================================="
+        read -r color s1_status s2_status <<< "$(get_chain_status_tuple "$chain_type" "$manage_id")"
+        local udp2raw_info=$(get_listen_info_from_conf "$udp2raw_conf")
+        local warp_status=$(get_warp_status_from_conf "$main_conf_path")
+        
+        $color "状态: ${title%%+*} [${s1_status}] + UDP2RAW [${s2_status}] $(dim "$udp2raw_info") ($warp_status)"
+
+        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置指南"; echo "4) 查看主程序日志"; echo "5) 查看 UDP2RAW 日志"; echo "6) 编辑主程序配置"; echo "7) 编辑 UDP2RAW 配置"; echo "99) 彻底删除此串联"; echo "0) 返回"
+        read -p "请选择: " manage_choice
+        case $manage_choice in
+            1) log "重启串联..."; systemctl restart "$service1_full" "$service2_full";;
+            2) log "停止串联..."; systemctl stop "$service1_full" "$service2_full";;
+            3) view_chain_client_config "$chain_type" "$manage_id"; read -p $'\n按任意键返回...' -n1 -s;;
+            4) log "正在实时跟踪主程序日志... (按 Ctrl+C 仅退出日志)"; local ct=$(trap -p SIGINT); trap ':' SIGINT; journalctl -u "$service1_full" -f; eval "$ct";;
+            5) log "正在实时跟踪 UDP2RAW 日志... (按 Ctrl+C 仅退出日志)"; local ct=$(trap -p SIGINT); trap ':' SIGINT; journalctl -u "$service2_full" -f; eval "$ct";;
+            6) nano "$main_conf_path"; systemctl restart "$service1_full";;
+            7) nano "$udp2raw_conf"; systemctl restart "$service2_full";;
+            99) read -p "确认删除串联实例 ${manage_id}？(默认“否”) [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
+                log "删除串联..."; 
+                systemctl stop "$service1_full" "$service2_full"; 
+                systemctl disable "$service1_full" "$service2_full" >/dev/null 2>&1; 
+                rm -f "$main_conf_path" "$udp2raw_conf"; 
+                systemctl daemon-reload; green "已删除。"; break; 
+                fi;;
+            0) break;; *) red "无效输入";;
+        esac
+        [[ "$manage_choice" == "1" || "$manage_choice" == "2" || "$manage_choice" == "6" || "$manage_choice" == "7" ]] && read -p $'\n按任意键返回...' -n1 -s
+    done
+}
+
+
+# -----------------------------------------------------------------------------
+# [NEW] 管理一个已存在的 3 组件串联实例
+# -----------------------------------------------------------------------------
+manage_chain_instance_3() {
+    local id_num=$1
+    local manage_id=$id_num
+    
+    local service1_full="" service2_full="" service3_full=""
+    local conf1_path="" conf2_path="" conf3_path=""
+    
+    if [[ "$manage_id" =~ ^s3c[0-9]+$ ]]; then
+        # Old format
+        service1_full="ax-xray@${manage_id}.service"
+        service2_full="ax-kcptun@${manage_id}.service"
+        service3_full="ax-udp2raw@${manage_id}.service"
+        conf1_path="$XRAY_INSTALL_DIR/xray_${manage_id}.json"
+        conf2_path="$KCP_INSTALL_DIR/kcptun_${manage_id}.json"
+        conf3_path="$UDP2RAW_INSTALL_DIR/udp2raw_${manage_id}.conf"
+    else
+        # New format
+        service1_full="ax-ss-kcp-udp@${manage_id}.service"
+        service2_full="ax-kcp-ss@${manage_id}.service"
+        service3_full="ax-udp-ss@${manage_id}.service"
+        conf1_path="$XRAY_INSTALL_DIR/ss-kcp-udp_${manage_id}.json"
+        conf2_path="$KCP_INSTALL_DIR/kcp-ss_${manage_id}.json"
+        conf3_path="$UDP2RAW_INSTALL_DIR/udp-ss_${manage_id}.conf"
+    fi
+    
+    while true; do
+        clear; echo "=================================="; echo "   管理 SS+KCP+UDP $(dim "${manage_id}")"; echo "=================================="
+        read -r color s1_status s2_status s3_status <<< "$(get_3_chain_status_tuple "$manage_id")"
+        local udp2raw_info=$(get_listen_info_from_conf "$conf3_path")
+        
+        $color "状态: SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] $(dim "$udp2raw_info")"
+
+        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置指南"; echo "4) 查看 SS (Xray) 日志"; echo "5) 查看 KCPTUN 日志"; echo "6) 查看 UDP2RAW 日志"; echo "7) 编辑 SS (Xray) 配置文件"; echo "8) 编辑 KCPTUN 配置文件"; echo "9) 编辑 UDP2RAW 配置文件"; echo "99) 彻底删除此串联"; echo "0) 返回"
+        read -p "请选择: " manage_choice
+        case $manage_choice in
+            1) log "重启串联..."; systemctl restart "$service1_full" "$service2_full" "$service3_full";;
+            2) log "停止串联..."; systemctl stop "$service1_full" "$service2_full" "$service3_full";;
+            3) view_chain_client_config_3 "$manage_id"; read -p $'\n按任意键返回...' -n1 -s;;
+            4) log "正在实时跟踪 SS (Xray) 日志... (按 Ctrl+C 仅退出日志)"; local ct=$(trap -p SIGINT); trap ':' SIGINT; journalctl -u "$service1_full" -f; eval "$ct";;
+            5) log "正在实时跟踪 KCPTUN 日志... (按 Ctrl+C 仅退出日志)"; local ct=$(trap -p SIGINT); trap ':' SIGINT; journalctl -u "$service2_full" -f; eval "$ct";;
+            6) log "正在实时跟踪 UDP2RAW 日志... (按 Ctrl+C 仅退出日志)"; local ct=$(trap -p SIGINT); trap ':' SIGINT; journalctl -u "$service3_full" -f; eval "$ct";;
+            7) nano "$conf1_path"; systemctl restart "$service1_full";;
+            8) nano "$conf2_path"; systemctl restart "$service2_full";;
+            9) nano "$conf3_path"; systemctl restart "$service3_full";;
+            99) read -p "确认删除串联实例 ${manage_id}？(默认“否”) [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
+                log "删除串联..."; 
+                systemctl stop "$service1_full" "$service2_full" "$service3_full"; 
+                systemctl disable "$service1_full" "$service2_full" "$service3_full" >/dev/null 2>&1; 
+                rm -f "$conf1_path" "$conf2_path" "$conf3_path"; 
+                systemctl daemon-reload; green "已删除。"; break; 
+                fi;;
+            0) break;; *) red "无效输入";;
+        esac
+        [[ "$manage_choice" == "1" || "$manage_choice" == "2" || "$manage_choice" == "7" || "$manage_choice" == "8" || "$manage_choice" == "9" ]] && read -p $'\n按任意键返回...' -n1 -s
+    done
+}
+
+
+# -----------------------------------------------------------------------------
+# 显示单个实例的状态行 (用于主菜单)
+# -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 # 显示单个实例的状态行 (用于主菜单)
 # -----------------------------------------------------------------------------
@@ -1075,47 +1486,114 @@ display_instance_status_line() {
     local type=$1 id=$2 prefix=$3; local full_id="$id"; local line
     case "$type" in
         "hy2_chain")
-            full_id="c${id}"
-            read -r color hy2_status udp_status <<< "$(get_chain_status_tuple "hy2" "$full_id")"
-            local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
-            local warp_status=$(get_warp_status_from_conf "$HY2_INSTALL_DIR/hy2_${full_id}.yaml")
-            line="$($color "${prefix}Hysteria2 [${hy2_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
+            if [[ ! "$id" =~ ^c[0-9]+$ ]]; then
+                # New ID
+                full_id="$id"
+                local udp_conf="$UDP2RAW_INSTALL_DIR/udp-hy2_${full_id}.conf"
+                local hy2_conf="$HY2_INSTALL_DIR/hy2-udp_${full_id}.yaml"
+                read -r color hy2_status udp_status <<< "$(get_chain_status_tuple "hy2" "$full_id")"
+                local udp_info=$(get_listen_info_from_conf "$udp_conf")
+                local warp_status=$(get_warp_status_from_conf "$hy2_conf")
+                line="$($color "${prefix}Hysteria2 [${hy2_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
+            else
+                # Old ID
+                full_id="$id"
+                read -r color hy2_status udp_status <<< "$(get_chain_status_tuple "hy2" "$full_id")"
+                local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
+                local warp_status=$(get_warp_status_from_conf "$HY2_INSTALL_DIR/hy2_${full_id}.yaml")
+                line="$($color "${prefix}Hysteria2 [${hy2_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
+            fi
             ;;
         "vless_chain")
-            full_id="vc${id}"
-            read -r color xray_status udp_status <<< "$(get_chain_status_tuple "vless" "$full_id")"
-            local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
-            local warp_status=$(get_warp_status_from_conf "$XRAY_INSTALL_DIR/xray_${full_id}.json")
-            line="$($color "${prefix}VLESS_mKCP [${xray_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
+            if [[ ! "$id" =~ ^vc[0-9]+$ ]]; then
+                # New ID
+                full_id="$id"
+                local udp_conf="$UDP2RAW_INSTALL_DIR/udp-vlesskcp_${full_id}.conf"
+                local xray_conf="$XRAY_INSTALL_DIR/vlesskcp-udp_${full_id}.json"
+                read -r color xray_status udp_status <<< "$(get_chain_status_tuple "vless" "$full_id")"
+                local udp_info=$(get_listen_info_from_conf "$udp_conf")
+                local warp_status=$(get_warp_status_from_conf "$xray_conf")
+                line="$($color "${prefix}VLESS_mKCP [${xray_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
+            else
+                # Old ID
+                full_id="$id"
+                read -r color xray_status udp_status <<< "$(get_chain_status_tuple "vless" "$full_id")"
+                local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
+                local warp_status=$(get_warp_status_from_conf "$XRAY_INSTALL_DIR/xray_${full_id}.json")
+                line="$($color "${prefix}VLESS_mKCP [${xray_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
+            fi
             ;;
         "ss_3_chain_chain")
-            full_id="s3c${id}"
-            read -r color s1_status s2_status s3_status <<< "$(get_3_chain_status_tuple "$full_id")"
-            local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
-            local warp_status=$(get_warp_status_from_conf "$XRAY_INSTALL_DIR/xray_${full_id}.json")
-            line="$($color "${prefix}SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] ${udp_info} (${warp_status})")"
+            if [[ ! "$id" =~ ^s3c[0-9]+$ ]]; then
+                # New ID
+                full_id="$id"
+                local udp_conf="$UDP2RAW_INSTALL_DIR/udp-ss_${full_id}.conf"
+                local xray_conf="$XRAY_INSTALL_DIR/ss-kcp-udp_${full_id}.json"
+                read -r color s1_status s2_status s3_status <<< "$(get_3_chain_status_tuple "$full_id")"
+                local udp_info=$(get_listen_info_from_conf "$udp_conf")
+                local warp_status=$(get_warp_status_from_conf "$xray_conf")
+                line="$($color "${prefix}SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] ${udp_info} (${warp_status})")"
+            else
+                # Old ID
+                full_id="$id"
+                read -r color s1_status s2_status s3_status <<< "$(get_3_chain_status_tuple "$full_id")"
+                local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
+                local warp_status=$(get_warp_status_from_conf "$XRAY_INSTALL_DIR/xray_${full_id}.json")
+                line="$($color "${prefix}SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] ${udp_info} (${warp_status})")"
+            fi
             ;;
         "hysteria2"|"udp2raw"|"kcptun"|"xray_reality"|"xray_mkcp"|"xray_ss")
-            local conf_file service_prefix title; local color_func="yellow"
+            local conf_file service_prefix title; local color_func
             case "$type" in
-                hysteria2) conf_file="$HY2_INSTALL_DIR/hy2_${id}.yaml"; service_prefix="ax-hysteria2"; title="Hysteria2";;
-                udp2raw) conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"; service_prefix="ax-udp2raw"; title="UDP2RAW";;
-                kcptun) conf_file="$KCP_INSTALL_DIR/kcptun_${id}.json"; service_prefix="ax-kcptun"; title="KCPTUN";;
-                xray_reality) conf_file="$XRAY_INSTALL_DIR/xray_${id}.json"; service_prefix="ax-xray"; title="VLESS+Reality";;
-                xray_mkcp) conf_file="$XRAY_INSTALL_DIR/xray_${id}.json"; service_prefix="ax-xray"; title="VLESS+mKCP";;
-                xray_ss) conf_file="$XRAY_INSTALL_DIR/xray_${id}.json"; service_prefix="ax-xray"; title="Shadowsocks";;
+                hysteria2) 
+                    conf_file="$HY2_INSTALL_DIR/hy2_${id}.yaml"; 
+                    if systemctl list-unit-files | grep -q "ax-hy2@${id}.service"; then service_prefix="ax-hy2"; else service_prefix="ax-hysteria2"; fi
+                    title="Hysteria2";;
+                udp2raw) 
+                    conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"; 
+                    service_prefix="ax-udp2raw"; 
+                    title="UDP2RAW";;
+                kcptun) 
+                    conf_file="$KCP_INSTALL_DIR/kcptun_${id}.json"; 
+                    service_prefix="ax-kcptun"; 
+                    title="KCPTUN";;
+                xray_reality) 
+                    if [[ -f "$XRAY_INSTALL_DIR/vlessReality_${id}.json" ]]; then
+                        conf_file="$XRAY_INSTALL_DIR/vlessReality_${id}.json"
+                        service_prefix="ax-vlessReality"
+                    else
+                        conf_file="$XRAY_INSTALL_DIR/xray_${id}.json"
+                        service_prefix="ax-xray"
+                    fi
+                    title="VLESS+Reality";;
+                xray_mkcp) 
+                    if [[ -f "$XRAY_INSTALL_DIR/vlesskcp_${id}.json" ]]; then
+                        conf_file="$XRAY_INSTALL_DIR/vlesskcp_${id}.json"
+                        service_prefix="ax-vlesskcp"
+                    else
+                        conf_file="$XRAY_INSTALL_DIR/xray_${id}.json"
+                        service_prefix="ax-xray"
+                    fi
+                    title="VLESS+mKCP";;
+                xray_ss) 
+                    if [[ -f "$XRAY_INSTALL_DIR/ss_${id}.json" ]]; then
+                        conf_file="$XRAY_INSTALL_DIR/ss_${id}.json"
+                        service_prefix="ax-ss"
+                    else
+                        conf_file="$XRAY_INSTALL_DIR/xray_${id}.json"
+                        service_prefix="ax-xray"
+                    fi
+                    title="Shadowsocks";;
             esac
-            local status_info=$(get_listen_info_from_conf "$conf_file")
-            local status_str=$(get_service_status_string "${service_prefix}@${id}.service")
-            local extra_info=""
-            if [[ "$type" == "hysteria2" || "$type" == "xray_reality" || "$type" == "xray_mkcp" || "$type" == "xray_ss" ]]; then
-                extra_info=" ($(get_warp_status_from_conf "$conf_file"))"
-            fi
-            if [[ "$status_str" == "运行中" ]]; then color_func="cyan"; fi
-            line="$($color_func "${prefix}${title} [${status_str}] ${status_info}${extra_info}")"
+            
+            local status=$(get_service_status_string "${service_prefix}@${id}.service")
+            if [[ "$status" == "运行中" ]]; then color_func="green"; else color_func="red"; fi
+            local listen_info=$(get_listen_info_from_conf "$conf_file")
+            local warp_status=$(get_warp_status_from_conf "$conf_file")
+            line="$($color_func "${prefix}${title} [${status}] ${listen_info} (${warp_status})")"
             ;;
     esac
-    echo -e "$line"
+    echo "$line"
 }
 
 # -----------------------------------------------------------------------------
@@ -1136,23 +1614,39 @@ get_standalone_instances() {
     
     case "$type_lowercase" in
         "hysteria2") dir="$HY2_INSTALL_DIR"; pattern="hy2_*.yaml";;
-        "xray_reality") dir="$XRAY_INSTALL_DIR"; pattern="xray_*.json";;
-        "xray_mkcp") dir="$XRAY_INSTALL_DIR"; pattern="xray_*.json";;
-        "xray_ss") dir="$XRAY_INSTALL_DIR"; pattern="xray_*.json";;
+        "xray_reality") dir="$XRAY_INSTALL_DIR"; pattern="vlessReality_*.json";;
+        "xray_mkcp") dir="$XRAY_INSTALL_DIR"; pattern="vlesskcp_*.json";;
+        "xray_ss") dir="$XRAY_INSTALL_DIR"; pattern="ss_*.json";;
         "udp2raw") dir="$UDP2RAW_INSTALL_DIR"; pattern="udp2raw_*.conf";;
         "kcptun") dir="$KCP_INSTALL_DIR"; pattern="kcptun_*.json";;
     esac
 
     local all_instances=$(get_instances "$dir" "$pattern")
     for i in $all_instances; do
-        if [[ "$type_lowercase" == "xray_reality" ]]; then
-            grep -q '"security": "reality"' "$dir/xray_${i}.json" 2>/dev/null && standalone_instances+=($i)
-        elif [[ "$type_lowercase" == "xray_mkcp" ]]; then
-            grep -q '"network": "kcp"' "$dir/xray_${i}.json" 2>/dev/null && [[ ! "$i" =~ ^(vc|s3c)[0-9]+$ ]] && standalone_instances+=($i)
-        elif [[ "$type_lowercase" == "xray_ss" ]]; then
-            grep -q '"protocol": "shadowsocks"' "$dir/xray_${i}.json" 2>/dev/null && [[ ! "$i" =~ ^s3c[0-9]+$ ]] && standalone_instances+=($i)
-        elif [[ ! "$i" =~ ^(c|vc|s3c)[0-9]+$ ]]; then
+        # 过滤掉串联实例 (hy2-udp, udp-hy2, vlesskcp-udp, udp-vlesskcp, ss-kcp-udp, kcp-ss, udp-ss)
+        # 新的命名规范下，独立实例文件名不包含连字符 (hy2_1.yaml)，串联实例包含 (hy2-udp_1.yaml)
+        # 但为了兼容旧的 id (如 c1, vc1)，我们需要更精确的过滤
+        
+        if [[ "$type_lowercase" == "hysteria2" ]]; then
+            # 排除 hy2-udp_*.yaml
+            if [[ "$i" != *"-"* && ! "$i" =~ ^c[0-9]+$ ]]; then standalone_instances+=($i); fi
+        elif [[ "$type_lowercase" == "xray_reality" ]]; then
+            # vlessReality_*.json 都是独立的
             standalone_instances+=($i)
+        elif [[ "$type_lowercase" == "xray_mkcp" ]]; then
+            # vlesskcp_*.json 都是独立的 (串联的是 vlesskcp-udp_*.json)
+            standalone_instances+=($i)
+        elif [[ "$type_lowercase" == "xray_ss" ]]; then
+            # ss_*.json 都是独立的 (串联的是 ss-kcp-udp_*.json)
+            standalone_instances+=($i)
+        elif [[ "$type_lowercase" == "udp2raw" ]]; then
+            # udp2raw_*.conf (独立) vs udp-hy2_*.conf, udp-vlesskcp_*.conf, udp-ss_*.conf (串联)
+            # 注意：旧的 udp2raw_c1.conf 也是串联的
+            if [[ ! "$i" =~ ^(c|vc|s3c)[0-9]+$ ]]; then standalone_instances+=($i); fi
+        elif [[ "$type_lowercase" == "kcptun" ]]; then
+             # kcptun_*.json (独立) vs kcp-ss_*.json (串联)
+             # 旧的 kcptun_s3c1.json 是串联的
+             if [[ ! "$i" =~ ^s3c[0-9]+$ ]]; then standalone_instances+=($i); fi
         fi
     done
     echo "${standalone_instances[@]}"
@@ -1211,7 +1705,9 @@ manage_instance_menu() {
 # 创建一个新的独立实例 (Hysteria2, UDP2RAW, KCPTUN)
 # -----------------------------------------------------------------------------
 create_new_instance() {
-    local type=$1; local next_id; local INSTALL_DIR SERVICE_PREFIX FILE_EXT TITLE CONFIG_TEMPLATE SYSTEMD_SERVICE_NAME
+    local type=$1
+    local TITLE INSTALL_DIR SERVICE_PREFIX SYSTEMD_SERVICE_NAME FILE_EXT CONFIG_TEMPLATE
+    local next_id
     declare -A replacements
 
     case "$type" in
@@ -1219,34 +1715,29 @@ create_new_instance() {
             TITLE="Hysteria2"
             INSTALL_DIR="$HY2_INSTALL_DIR"
             SERVICE_PREFIX="hy2"
-            SYSTEMD_SERVICE_NAME="ax-hysteria2"
+            SYSTEMD_SERVICE_NAME="ax-hy2"
             FILE_EXT="yaml"
             CONFIG_TEMPLATE="$HYSTERIA2_CONFIG_YAML_TEMPLATE"
-
-            log "启动一个新的 ${TITLE} 实例..."; next_id=$(find_next_available_id "$type")
-            green "新实例将被创建为: ax-${SYSTEMD_SERVICE_NAME}@${next_id}.service"
-
-            read -p "请输入监听端口 (留空则随机生成): " listen_port; if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已为您随机选择端口: $listen_port"; fi
-            replacements["__LISTEN__"]=":${listen_port}"
-            read -p "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth
-            ignore_client_bandwidth=${ignore_client_bandwidth:-true}
-            if [[ "$ignore_client_bandwidth" != "false" ]]; then
-                ignore_client_bandwidth="true"
-            fi
-            replacements["__IGNORE_CLIENT_BANDWIDTH__"]="$ignore_client_bandwidth"
-
+            
+            log "启动一个新的 ${TITLE} 实例..."
+            next_id=$(find_next_available_id "$type")
+            green "新实例将被创建为: ${SYSTEMD_SERVICE_NAME}@${next_id}.service"
+            
+            read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input
+            listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
+            read -p "请输入监听端口 (留空则随机生成): " listen_port
+            if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已为您随机选择端口: $listen_port"; fi
+            replacements["__LISTEN__"]="${listen_addr}:${listen_port}"
+            
             cyan "--- ACME证书 配置 ---"
             read -p "是否使用 ACME证书? (否则将使用自签名证书) [Y/n] (默认“Y”): " use_acme
-            use_acme=${use_acme:-y} # Default to yes
+            use_acme=${use_acme:-y}
             
             local cert_path="" key_path="" sni="" masquerade_url=""
             
             if [[ "$use_acme" == "y" || "$use_acme" == "Y" ]]; then
                 read -p "请输入您的域名 (DNS 必须指向本机): " domain_name
-                if [[ -z "$domain_name" ]]; then
-                    red "域名不能为空！已取消创建。"
-                    return 1
-                fi
+                if [[ -z "$domain_name" ]]; then red "域名不能为空！已取消创建。"; return 1; fi
 
                 # 尝试申请证书，如果失败直接退出
                 if ! ax_get_certificate "$domain_name"; then
@@ -1288,14 +1779,28 @@ create_new_instance() {
             
             replacements["__UDP_SNIFF_CONFIG__"]=""
             ;;
-        udp2raw) TITLE="UDP2RAW"; INSTALL_DIR="$UDP2RAW_INSTALL_DIR"; SERVICE_PREFIX="udp2raw"; SYSTEMD_SERVICE_NAME="ax-udp2raw"; FILE_EXT="conf"; CONFIG_TEMPLATE="$UDP2RAW_CONFIG_TEMPLATE" 
-            log "启动一个新的 ${TITLE} 实例..."; next_id=$(find_next_available_id "$type")
-            green "新实例将被创建为: ax-${SYSTEMD_SERVICE_NAME}@${next_id}.service"
-            read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input; listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
-            read -p "请输入监听端口 (留空则随机生成): " listen_port; if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已为您随机选择端口: $listen_port"; fi
+        udp2raw) 
+            TITLE="UDP2RAW"
+            INSTALL_DIR="$UDP2RAW_INSTALL_DIR"
+            SERVICE_PREFIX="udp2raw"
+            SYSTEMD_SERVICE_NAME="ax-udp2raw"
+            FILE_EXT="conf"
+            CONFIG_TEMPLATE="$UDP2RAW_CONFIG_TEMPLATE" 
+            
+            log "启动一个新的 ${TITLE} 实例..."
+            next_id=$(find_next_available_id "$type")
+            green "新实例将被创建为: ${SYSTEMD_SERVICE_NAME}@${next_id}.service"
+            
+            read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input
+            listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
+            read -p "请输入监听端口 (留空则随机生成): " listen_port
+            if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已为您随机选择端口: $listen_port"; fi
             replacements["__LISTEN_ADDR__"]="${listen_addr}:${listen_port}"
-            read -p "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host; target_host=${target_host:-$DEFAULT_TARGET_ADDR}
-            read -p "请输入目标端口 (留空则随机生成): " target_port; if [[ -z "$target_port" ]]; then target_port=$(find_available_port); green "已为您随机选择目标端口: $target_port"; fi
+            
+            read -p "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host
+            target_host=${target_host:-$DEFAULT_TARGET_ADDR}
+            read -p "请输入目标端口 (留空则随机生成): " target_port
+            if [[ -z "$target_port" ]]; then target_port=$(find_available_port); green "已为您随机选择目标端口: $target_port"; fi
             replacements["__TARGET_ADDR__"]="${target_host}:${target_port}"
             
             # 收集UDP2RAW配置参数
@@ -1309,14 +1814,28 @@ create_new_instance() {
             local password=$(handle_password_input "$type"); replacements["__PASSWORD__"]="$password"
             ;;
             
-        kcptun) TITLE="KCPTUN"; INSTALL_DIR="$KCP_INSTALL_DIR"; SERVICE_PREFIX="kcptun"; SYSTEMD_SERVICE_NAME="ax-kcptun"; FILE_EXT="json"; CONFIG_TEMPLATE="$KCPTUN_CONFIG_JSON_TEMPLATE" 
-            log "启动一个新的 ${TITLE} 实例..."; next_id=$(find_next_available_id "$type")
-            green "新实例将被创建为: ax-${SYSTEMD_SERVICE_NAME}@${next_id}.service"
-            read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input; listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
-            read -p "请输入监听端口 (留空则随机生成): " listen_port; if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已为您随机选择端口: $listen_port"; fi
+        kcptun) 
+            TITLE="KCPTUN"
+            INSTALL_DIR="$KCP_INSTALL_DIR"
+            SERVICE_PREFIX="kcptun"
+            SYSTEMD_SERVICE_NAME="ax-kcptun"
+            FILE_EXT="json"
+            CONFIG_TEMPLATE="$KCPTUN_CONFIG_JSON_TEMPLATE" 
+            
+            log "启动一个新的 ${TITLE} 实例..."
+            next_id=$(find_next_available_id "$type")
+            green "新实例将被创建为: ${SYSTEMD_SERVICE_NAME}@${next_id}.service"
+            
+            read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input
+            listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
+            read -p "请输入监听端口 (留空则随机生成): " listen_port
+            if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已为您随机选择端口: $listen_port"; fi
             replacements["__LISTEN__"]="${listen_addr}:${listen_port}"
-            read -p "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host; target_host=${target_host:-$DEFAULT_TARGET_ADDR}
-            read -p "请输入目标端口 (留空则随机生成): " target_port; if [[ -z "$target_port" ]]; then target_port=$(find_available_port); green "已为您随机选择目标端口: $target_port"; fi
+            
+            read -p "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host
+            target_host=${target_host:-$DEFAULT_TARGET_ADDR}
+            read -p "请输入目标端口 (留空则随机生成): " target_port
+            if [[ -z "$target_port" ]]; then target_port=$(find_available_port); green "已为您随机选择目标端口: $target_port"; fi
             replacements["__TARGET__"]="${target_host}:${target_port}"
             
             # 收集KCPTUN配置参数
@@ -1334,13 +1853,28 @@ create_new_instance() {
         *) red "内部错误: 无效的实例类型 '$type'"; return 1 ;;
     esac
 
-    log "生成配置文件..."; local temp_config="$CONFIG_TEMPLATE"; local conf_path="${INSTALL_DIR}/${SERVICE_PREFIX}_${next_id}.${FILE_EXT}"
+    log "生成配置文件..."
+    local temp_config="$CONFIG_TEMPLATE"
+    local conf_path="${INSTALL_DIR}/${SERVICE_PREFIX}_${next_id}.${FILE_EXT}"
     for placeholder in "${!replacements[@]}"; do temp_config="${temp_config//${placeholder}/${replacements[${placeholder}]}}"; done
     echo "$temp_config" > "$conf_path"
 
-    sync; log "启动服务..."; systemctl enable --now "${SYSTEMD_SERVICE_NAME}@${next_id}.service"; sleep 1; green "实例 ${next_id} 已启动！"; echo
+    sync; log "启动服务..."
+    systemctl enable --now "${SYSTEMD_SERVICE_NAME}@${next_id}.service"
+    sleep 1
+    green "实例 ${next_id} 已启动！"
+    echo
     case "$type" in
-        hysteria2) local sub_link=""; local retries=5; for ((i=1; i<=retries; i++)); do sub_link=$(generate_hy2_subscription_link $next_id); if [[ "$sub_link" != "N/A" ]]; then break; fi; sleep 0.5; done; cyan "订阅链接: $sub_link";;
+        hysteria2) 
+            local sub_link=""
+            local retries=5
+            for ((i=1; i<=retries; i++)); do 
+                sub_link=$(generate_hy2_subscription_link $next_id)
+                if [[ "$sub_link" != "N/A" ]]; then break; fi
+                sleep 0.5
+            done
+            cyan "订阅链接: $sub_link"
+            ;;
         udp2raw) view_udp2raw_client_config "$next_id" ;;
         kcptun) view_kcptun_client_config "$next_id" ;;
     esac
@@ -1356,12 +1890,16 @@ create_new_xray_instance() {
     declare -A replacements
     local temp_config=""
     local title=""
+    local service_name=""
+    local config_file_prefix=""
 
     if [[ "$type" == "xray_reality" ]]; then
         title="VLESS+Reality"
+        service_name="ax-vlessReality"
+        config_file_prefix="vlessReality"
         temp_config="$XRAY_VLESS_REALITY_TEMPLATE"
         log "启动一个新的 ${title} 实例..."
-        green "新实例将被创建为: ax-xray@${next_id}.service"
+        green "新实例将被创建为: ${service_name}@${next_id}.service"
         
         read -p "请输入监听端口 (留空则随机): " listen_port; if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已随机选择端口: $listen_port"; fi
         replacements["__LISTEN_PORT__"]="$listen_port"
@@ -1399,9 +1937,11 @@ create_new_xray_instance() {
     
     elif [[ "$type" == "xray_mkcp" ]]; then
         title="VLESS+mKCP"
+        service_name="ax-vlesskcp"
+        config_file_prefix="vlesskcp"
         temp_config="$XRAY_VLESS_MKCP_TEMPLATE"
         log "启动一个新的 ${title} 实例..."
-        green "新实例将被创建为: ax-xray@${next_id}.service"
+        green "新实例将被创建为: ${service_name}@${next_id}.service"
         
         read -p "请输入监听 IP (默认: $DEFAULT_LISTEN_ADDR): " listen_addr; listen_addr=${listen_addr:-$DEFAULT_LISTEN_ADDR}; replacements["__LISTEN_ADDR__"]="$listen_addr"
         read -p "请输入监听端口 (留空则随机): " listen_port; if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已随机选择端口: $listen_port"; fi
@@ -1414,16 +1954,16 @@ create_new_xray_instance() {
         if [[ "$mkcp_congestion" != "false" ]]; then
             mkcp_congestion="true"
         fi
-        
-        if [[ "$mkcp_congestion" == "true" ]]; then
-            # 在模板中添加congestion字段
-            temp_config=$(echo "$temp_config" | sed 's/"seed": "__MKCP_SEED__"/"seed": "__MKCP_SEED__", "congestion": true/')
-        fi
+        # 替换 congestion 参数
+        temp_config="${temp_config//\"congestion\": true/\"congestion\": ${mkcp_congestion}}"
+
     elif [[ "$type" == "xray_ss" ]]; then
         title="Shadowsocks"
+        service_name="ax-ss"
+        config_file_prefix="ss"
         temp_config="$XRAY_SHADOWSOCKS_TCP_UDP_TEMPLATE"
         log "启动一个新的 ${title} 实例..."
-        green "新实例将被创建为: ax-xray@${next_id}.service"
+        green "新实例将被创建为: ${service_name}@${next_id}.service"
 
         read -p "请输入监听 IP (默认: $DEFAULT_LISTEN_ADDR): " listen_addr; listen_addr=${listen_addr:-$DEFAULT_LISTEN_ADDR}; replacements["__LISTEN_ADDR__"]="$listen_addr"
         read -p "请输入监听端口 (留空则随机): " listen_port; if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已随机选择端口: $listen_port"; fi
@@ -1438,10 +1978,8 @@ create_new_xray_instance() {
         echo "5) aes-128-gcm"
         echo "6) chacha20-poly1305"
         read -p "请选择加密方式 (默认 1): " ss_method_choice
-        ss_method_choice=${ss_method_choice:-1}
-        
-        local ss_method=""
-        case $ss_method_choice in
+        local ss_method="2022-blake3-aes-256-gcm"
+        case "$ss_method_choice" in
             1) ss_method="2022-blake3-aes-256-gcm" ;;
             2) ss_method="2022-blake3-aes-128-gcm" ;;
             3) ss_method="2022-blake3-chacha20-poly1305" ;;
@@ -1450,9 +1988,12 @@ create_new_xray_instance() {
             6) ss_method="chacha20-poly1305" ;;
             *) ss_method="2022-blake3-aes-256-gcm" ;;
         esac
-        
         replacements["__SS_METHOD__"]="$ss_method"
-        local ss_password=$(handle_password_input "shadowsocks"); replacements["__SS_PASSWORD__"]="$ss_password"
+        
+        local password=$(handle_password_input "xray_ss"); replacements["__SS_PASSWORD__"]="$password"
+    else
+        red "未知的 Xray 实例类型: $type"
+        return 1
     fi
 
     read -p "是否启用 WARP SOCKS5 分流 (默认“否”)？[y/N]: " enable_warp
@@ -1623,10 +2164,13 @@ view_kcptun_client_config(){
 # 获取 3 组件串联实例ID列表 (ss_3_chain)
 # -----------------------------------------------------------------------------
 get_chain_instances_3() {
-    local instances1=$(ls -1 "$XRAY_INSTALL_DIR"/xray_s3c*.json 2>/dev/null | sed -E 's/.*_s3c([0-9]+).*/\1/')
-    local instances2=$(ls -1 "$KCP_INSTALL_DIR"/kcptun_s3c*.json 2>/dev/null | sed -E 's/.*_s3c([0-9]+).*/\1/')
-    local instances3=$(ls -1 "$UDP2RAW_INSTALL_DIR"/udp2raw_s3c*.conf 2>/dev/null | sed -E 's/.*_s3c([0-9]+).*/\1/')
-    echo "$instances1 $instances2 $instances3" | tr ' ' '\n' | sort -un
+    # Old pattern: s3c*
+    local old_instances=$(ls -1 "$XRAY_INSTALL_DIR"/xray_s3c*.json 2>/dev/null | sed -E 's/.*_s3c([0-9]+).*/s3c\1/')
+    
+    # New pattern: ss-kcp-udp_*
+    local new_instances=$(ls -1 "$XRAY_INSTALL_DIR"/ss-kcp-udp_*.json 2>/dev/null | sed -E 's/.*_([0-9]+).json/\1/')
+    
+    echo "$old_instances $new_instances" | tr ' ' '\n' | sort -V | uniq
 }
 
 # -----------------------------------------------------------------------------
@@ -1697,13 +2241,17 @@ view_chain_client_config_3() {
 # -----------------------------------------------------------------------------
 # 启动一个新的 3 组件串联实例 (SS+KCP+UDP)
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 启动一个新的 3 组件串联实例 (SS+KCP+UDP)
+# -----------------------------------------------------------------------------
 start_new_chain_instance_3() {
     local i=1
-    while true; do if [[ ! -f "$XRAY_INSTALL_DIR/xray_s3c${i}.json" ]]; then break; fi; i=$((i + 1)); done
+    # 检查 SS 组件的配置文件是否存在
+    while true; do if [[ ! -f "$XRAY_INSTALL_DIR/ss-kcp-udp_${i}.json" ]]; then break; fi; i=$((i + 1)); done
     
-    local chain_id="s3c${i}"
+    local chain_id="${i}"
     log "启动一个新的 SS+KCP+UDP 串联实例..."
-    green "新串联实例将被创建为: ${chain_id} (ax-xray@${chain_id} + ax-kcptun@${chain_id} + ax-udp2raw@${chain_id})"
+    green "新串联实例将被创建为: ID=${chain_id} (ax-ss-kcp-udp@${chain_id} + ax-kcp-ss@${chain_id} + ax-udp-ss@${chain_id})"
     
     read -p "请输入UDP2RAW监听端口 (远程客户端->UDP2RAW) (留空则随机): " udp2raw_listen_port
     if [[ -z "$udp2raw_listen_port" ]]; then 
@@ -1728,10 +2276,8 @@ start_new_chain_instance_3() {
     echo "5) aes-128-gcm"
     echo "6) chacha20-poly1305"
     read -p "请选择加密方式 (默认 1): " ss_method_choice
-    ss_method_choice=${ss_method_choice:-1}
-    
-    local ss_method=""
-    case $ss_method_choice in
+    local ss_method="2022-blake3-aes-256-gcm"
+    case "$ss_method_choice" in
         1) ss_method="2022-blake3-aes-256-gcm" ;;
         2) ss_method="2022-blake3-aes-128-gcm" ;;
         3) ss_method="2022-blake3-chacha20-poly1305" ;;
@@ -1770,7 +2316,7 @@ start_new_chain_instance_3() {
     ss_config=${ss_config/__SS_METHOD__/$ss_method}
     ss_config=${ss_config/__SS_PASSWORD__/$ss_password}
     ss_config=${ss_config/__OUTBOUNDS_AND_ROUTING__/$warp_config_block}
-    local ss_conf_path="$XRAY_INSTALL_DIR/xray_${chain_id}.json"
+    local ss_conf_path="$XRAY_INSTALL_DIR/ss-kcp-udp_${chain_id}.json"
     
     local kcp_config="$KCPTUN_CONFIG_JSON_TEMPLATE"
     kcp_config=${kcp_config/__LISTEN__/127.0.0.1:${kcptun_listen_port}}
@@ -1780,7 +2326,7 @@ start_new_chain_instance_3() {
     kcp_config=${kcp_config/__CRYPT__/$kcp_crypt}
     kcp_config=${kcp_config/__TCP__/$kcp_tcp}
     kcp_config=${kcp_config/__NOCOMP__/$kcp_nocomp}
-    local kcp_conf_path="$KCP_INSTALL_DIR/kcptun_${chain_id}.json"
+    local kcp_conf_path="$KCP_INSTALL_DIR/kcp-ss_${chain_id}.json"
     
     local udp_config="${UDP2RAW_CONFIG_TEMPLATE}"
     udp_config="${udp_config//__LISTEN_ADDR__/0.0.0.0:${udp2raw_listen_port}}"
@@ -1789,7 +2335,7 @@ start_new_chain_instance_3() {
     udp_config="${udp_config//__RAW_MODE__/${udp_raw_mode}}"
     udp_config="${udp_config//__CIPHER_MODE__/${udp_cipher_mode}}"
     udp_config="${udp_config//__AUTH_MODE__/${udp_auth_mode}}"
-    local udp_conf_path="$UDP2RAW_INSTALL_DIR/udp2raw_${chain_id}.conf"
+    local udp_conf_path="$UDP2RAW_INSTALL_DIR/udp-ss_${chain_id}.conf"
     
     # 写入所有配置
     log "生成配置文件..."
@@ -1798,12 +2344,12 @@ start_new_chain_instance_3() {
     echo "$udp_config" > "$udp_conf_path"
     
     sync; log "启动串联服务...";
-    systemctl enable --now "ax-xray@${chain_id}.service"
-    systemctl enable --now "ax-kcptun@${chain_id}.service"
-    systemctl enable --now "ax-udp2raw@${chain_id}.service"
+    systemctl enable --now "ax-ss-kcp-udp@${chain_id}.service"
+    systemctl enable --now "ax-kcp-ss@${chain_id}.service"
+    systemctl enable --now "ax-udp-ss@${chain_id}.service"
     
     sleep 1; green "串联实例 ${chain_id} 已启动！"; echo
-    view_chain_client_config_3 "$i"
+    view_chain_client_config_3 "$chain_id"
 }
 
 # -----------------------------------------------------------------------------
@@ -1863,30 +2409,61 @@ manage_chain_instance_3() {
 # -----------------------------------------------------------------------------
 get_chain_instances() {
     local chain_type=$1
-    local instances1="" instances2=""
+    local old_instances=""
+    local new_instances=""
+    
     if [[ "$chain_type" == "hy2" ]]; then
-        instances1=$(ls -1 "$HY2_INSTALL_DIR"/hy2_c*.yaml 2>/dev/null | sed -E 's/.*_c([0-9]+).*/\1/')
-        instances2=$(ls -1 "$UDP2RAW_INSTALL_DIR"/udp2raw_c*.conf 2>/dev/null | sed -E 's/.*_c([0-9]+).*/\1/')
+        # Old: hy2_c*.yaml -> c*
+        old_instances=$(ls -1 "$HY2_INSTALL_DIR"/hy2_c*.yaml 2>/dev/null | sed -E 's/.*_(c[0-9]+).yaml/\1/')
+        # New: hy2-udp_*.yaml -> *
+        new_instances=$(ls -1 "$HY2_INSTALL_DIR"/hy2-udp_*.yaml 2>/dev/null | sed -E 's/.*_([0-9]+).yaml/\1/')
     else # vless
-        instances1=$(ls -1 "$XRAY_INSTALL_DIR"/xray_vc*.json 2>/dev/null | sed -E 's/.*_vc([0-9]+).*/\1/')
-        instances2=$(ls -1 "$UDP2RAW_INSTALL_DIR"/udp2raw_vc*.conf 2>/dev/null | sed -E 's/.*_vc([0-9]+).*/\1/')
+        # Old: xray_vc*.json -> vc*
+        old_instances=$(ls -1 "$XRAY_INSTALL_DIR"/xray_vc*.json 2>/dev/null | sed -E 's/.*_(vc[0-9]+).json/\1/')
+        # New: vlesskcp-udp_*.json -> *
+        new_instances=$(ls -1 "$XRAY_INSTALL_DIR"/vlesskcp-udp_*.json 2>/dev/null | sed -E 's/.*_([0-9]+).json/\1/')
     fi
-    echo "$instances1 $instances2" | tr ' ' '\n' | sort -un
+    echo "$old_instances $new_instances" | tr ' ' '\n' | sort -V | uniq
 }
 
 # -----------------------------------------------------------------------------
 # 查看 2 组件串联实例的客户端配置
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 查看 2 组件串联实例的客户端配置
+# -----------------------------------------------------------------------------
 view_chain_client_config() {
     local chain_type=$1 id_num=$2
-    local id_prefix="" main_conf_path="" client_listen_addr="" title=""
+    local manage_id=$id_num
+    local main_conf_path="" client_listen_addr="" title="" udp2raw_conf=""
+    
     if [[ "$chain_type" == "hy2" ]]; then
-        id_prefix="c"; title="Hysteria2"; main_conf_path="$HY2_INSTALL_DIR/hy2_c${id_num}.yaml"; client_listen_addr="$CLIENT_UDP2RAW_LISTEN_ADDR"
+        title="Hysteria2"
+        client_listen_addr="$CLIENT_UDP2RAW_LISTEN_ADDR"
+        if [[ "$manage_id" =~ ^c[0-9]+$ ]]; then
+            # Old
+            main_conf_path="$HY2_INSTALL_DIR/hy2_${manage_id}.yaml"
+            udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${manage_id}.conf"
+        else
+            # New
+            main_conf_path="$HY2_INSTALL_DIR/hy2-udp_${manage_id}.yaml"
+            udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp-hy2_${manage_id}.conf"
+        fi
     else
-        id_prefix="vc"; title="VLESS_mKCP"; main_conf_path="$XRAY_INSTALL_DIR/xray_vc${id_num}.json"; client_listen_addr="$CLIENT_VLESS_UDP2RAW_LISTEN_ADDR"
+        title="VLESS_mKCP"
+        client_listen_addr="$CLIENT_VLESS_UDP2RAW_LISTEN_ADDR"
+        if [[ "$manage_id" =~ ^vc[0-9]+$ ]]; then
+            # Old
+            main_conf_path="$XRAY_INSTALL_DIR/xray_${manage_id}.json"
+            udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${manage_id}.conf"
+        else
+            # New
+            main_conf_path="$XRAY_INSTALL_DIR/vlesskcp-udp_${manage_id}.json"
+            udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp-vlesskcp_${manage_id}.conf"
+        fi
     fi
-    local id="${id_prefix}${id_num}"
-    local udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"
+    
+    local id="${manage_id}"
     if [[ ! -f "$main_conf_path" || ! -f "$udp2raw_conf" ]]; then red "串联实例 ${id} 的配置文件不完整。"; return; fi
     
     local ip=$(get_public_ip)
@@ -1970,21 +2547,36 @@ view_chain_client_config() {
 start_new_chain_instance() {
     local chain_type=$1
     local i=1 id_prefix="" title="" main_conf_dir="" main_conf_template=""
+    local service1_name="" service2_name=""
+    local main_conf_prefix="" udp_conf_prefix=""
+
     if [[ "$chain_type" == "hy2" ]]; then
-        id_prefix="c"; title="Hysteria2+UDP"; main_conf_dir="$HY2_INSTALL_DIR"; main_conf_template="$HYSTERIA2_CONFIG_YAML_TEMPLATE"
-        while true; do if [[ ! -f "$main_conf_dir/hy2_c${i}.yaml" ]]; then break; fi; i=$((i + 1)); done
-    else # vless
-        id_prefix="vc"; title="VLESS_mKCP+UDP"; main_conf_dir="$XRAY_INSTALL_DIR"; main_conf_template="$XRAY_VLESS_MKCP_TEMPLATE"
-        while true; do if [[ ! -f "$main_conf_dir/xray_vc${i}.json" ]]; then break; fi; i=$((i + 1)); done
+        # Hysteria2+UDP2RAW
+        title="Hysteria2+UDP"
+        main_conf_dir="$HY2_INSTALL_DIR"
+        main_conf_template="$HYSTERIA2_CONFIG_YAML_TEMPLATE"
+        service1_name="ax-hy2-udp"
+        service2_name="ax-udp-hy2"
+        main_conf_prefix="hy2-udp"
+        udp_conf_prefix="udp-hy2"
+        
+        while true; do if [[ ! -f "$main_conf_dir/${main_conf_prefix}_${i}.yaml" ]]; then break; fi; i=$((i + 1)); done
+    else 
+        # VLESS+mKCP+UDP2RAW
+        title="VLESS_mKCP+UDP"
+        main_conf_dir="$XRAY_INSTALL_DIR"
+        main_conf_template="$XRAY_VLESS_MKCP_TEMPLATE"
+        service1_name="ax-vlesskcp-udp"
+        service2_name="ax-udp-vlesskcp"
+        main_conf_prefix="vlesskcp-udp"
+        udp_conf_prefix="udp-vlesskcp"
+        
+        while true; do if [[ ! -f "$main_conf_dir/${main_conf_prefix}_${i}.json" ]]; then break; fi; i=$((i + 1)); done
     fi
     
-    local chain_id="${id_prefix}${i}"
+    local chain_id="${i}"
     log "启动一个新的 ${title} 串联实例..."
-    if [[ "$chain_type" == "hy2" ]]; then
-        green "新串联实例将被创建为: ${chain_id} (ax-hysteria2@${chain_id} + ax-udp2raw@${chain_id})"
-    else
-        green "新串联实例将被创建为: ${chain_id} (ax-xray@${chain_id} + ax-udp2raw@${chain_id})"
-    fi
+    green "新串联实例将被创建为: ID=${chain_id} (${service1_name}@${chain_id} + ${service2_name}@${chain_id})"
     
     # 先进行参数配置
     read -p "请输入对外端口 (留空则随机生成): " udp2raw_listen_port
@@ -2013,14 +2605,8 @@ start_new_chain_instance() {
     
     # 添加UDP2RAW串联实例的配置选项
     cyan "--- UDP2RAW 配置 ---"
-    read -p "raw_mode [faketcp/udp/icmp] (默认 faketcp): " raw_mode
-    raw_mode=${raw_mode:-faketcp}
-    
-    read -p "cipher_mode [aes128cbc/xor] (默认 aes128cbc): " cipher_mode
-    cipher_mode=${cipher_mode:-aes128cbc}
-    
-    read -p "auth_mode [hmac_sha1/simple] (默认 hmac_sha1): " auth_mode
-    auth_mode=${auth_mode:-hmac_sha1}
+    local udp_params=$(collect_udp2raw_params)
+    IFS='|' read -r raw_mode cipher_mode auth_mode <<< "$udp_params"
     
     # 然后生成密码
     local udp2raw_password=$(generate_strong_password); echo -n "已自动生成 UDP2RAW 密码: "; green "$udp2raw_password"
@@ -2073,61 +2659,53 @@ start_new_chain_instance() {
         main_config="${main_config//__KEY_PATH__/${key_path}}"
         main_config="${main_config//__PASSWORD__/${hy2_password}}"
         main_config="${main_config//__MASQUERADE_URL__/${masquerade_url}}"
-        main_config="${main_config/__UDP_SNIFF_CONFIG__/udpPorts: all}"
-        main_conf_path="$main_conf_dir/hy2_${chain_id}.yaml"
+        main_config="${main_config//__IGNORE_CLIENT_BANDWIDTH__/${ignore_client_bandwidth}}"
         
-        main_config="${main_config/__IGNORE_CLIENT_BANDWIDTH__/$ignore_client_bandwidth}"
-       
+        # 收集WARP配置
+        local warp_config=$(collect_warp_config "hysteria2")
+        main_config="${main_config//__OUTBOUNDS_AND_ACL__/${warp_config}}"
+        main_config="${main_config//__UDP_SNIFF_CONFIG__/}" # 串联模式不需要 sniffing
+        
+        main_conf_path="$HY2_INSTALL_DIR/${main_conf_prefix}_${chain_id}.yaml"
+        
     else # vless
-        local uuid=$(generate_strong_password); echo -n "已自动生成 VLESS UUID: "; green "$uuid"
-        local mkcp_seed=$(generate_strong_password); echo -n "已自动生成 mKCP Seed: "; green "$mkcp_seed"
-        main_config=${main_config/__LISTEN_ADDR__/127.0.0.1}
-        main_config=${main_config/__LISTEN_PORT__/$internal_listen_port}
-        main_config=${main_config/__UUID__/$uuid}
-        main_config=${main_config/__MKCP_SEED__/$mkcp_seed}
+        local uuid=$(generate_strong_password); local replacements["__UUID__"]="$uuid"
+        local mkcp_seed=$(handle_password_input "xray_mkcp"); local replacements["__MKCP_SEED__"]="$mkcp_seed"
         
-        if [[ "$mkcp_congestion" == "true" ]]; then
-            main_config=$(echo "$main_config" | sed 's/"seed": "__MKCP_SEED__"/"seed": "__MKCP_SEED__", "congestion": true/')
-        fi
+        main_config="${main_config//__LISTEN_ADDR__/127.0.0.1}"
+        main_config="${main_config//__LISTEN_PORT__/${internal_listen_port}}"
+        main_config="${main_config//__UUID__/${uuid}}"
+        main_config="${main_config//__MKCP_SEED__/${mkcp_seed}}"
+        main_config="${main_config//\"congestion\": true/\"congestion\": ${mkcp_congestion}}"
         
-        main_conf_path="$main_conf_dir/xray_${chain_id}.json"
+        # 收集WARP配置
+        local warp_config=$(collect_warp_config "xray")
+        main_config="${main_config//__OUTBOUNDS_AND_ROUTING__/${warp_config}}"
+        
+        main_conf_path="$XRAY_INSTALL_DIR/${main_conf_prefix}_${chain_id}.json"
     fi
     
-    local service_type="hysteria2"
-    if [[ "$chain_type" != "hy2" ]]; then
-        service_type="xray"
-    fi
-    local warp_config_block=$(collect_warp_config "$service_type")
+    local udp_config="${UDP2RAW_CONFIG_TEMPLATE}"
+    udp_config="${udp_config//__LISTEN_ADDR__/0.0.0.0:${udp2raw_listen_port}}"
+    udp_config="${udp_config//__TARGET_ADDR__/127.0.0.1:${internal_listen_port}}"
+    udp_config="${udp_config//__PASSWORD__/${udp2raw_password}}"
+    udp_config="${udp_config//__RAW_MODE__/${raw_mode}}"
+    udp_config="${udp_config//__CIPHER_MODE__/${cipher_mode}}"
+    udp_config="${udp_config//__AUTH_MODE__/${auth_mode}}"
     
-    if [[ "$chain_type" == "hy2" ]]; then
-        main_config=${main_config/__OUTBOUNDS_AND_ACL__/$warp_config_block}
-    else # vless
-        main_config=${main_config/__OUTBOUNDS_AND_ROUTING__/$warp_config_block}
-    fi
+    local udp_conf_path="$UDP2RAW_INSTALL_DIR/${udp_conf_prefix}_${chain_id}.conf"
     
+    # 写入所有配置
+    log "生成配置文件..."
     echo "$main_config" > "$main_conf_path"
-    
-    log "生成 UDP2RAW 配置文件: udp2raw_${chain_id}.conf..."; local temp_udp_config="${UDP2RAW_CONFIG_TEMPLATE}"
-    temp_udp_config="${temp_udp_config//__LISTEN_ADDR__/0.0.0.0:${udp2raw_listen_port}}"
-    temp_udp_config="${temp_udp_config//__TARGET_ADDR__/127.0.0.1:${internal_listen_port}}"
-    temp_udp_config="${temp_udp_config//__PASSWORD__/${udp2raw_password}}"
-    temp_udp_config="${temp_udp_config//__RAW_MODE__/${raw_mode}}"
-    temp_udp_config="${temp_udp_config//__CIPHER_MODE__/${cipher_mode}}"
-    temp_udp_config="${temp_udp_config//__AUTH_MODE__/${auth_mode}}"
-    
-    local udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${chain_id}.conf"
-    echo "$temp_udp_config" > "$udp2raw_conf"
+    echo "$udp_config" > "$udp_conf_path"
     
     sync; log "启动串联服务...";
-    if [[ "$chain_type" == "hy2" ]]; then
-        systemctl enable --now "ax-hysteria2@${chain_id}.service"
-    else # vless
-        systemctl enable --now "ax-xray@${chain_id}.service"
-    fi
-    systemctl enable --now "ax-udp2raw@${chain_id}.service"
+    systemctl enable --now "${service1_name}@${chain_id}.service"
+    systemctl enable --now "${service2_name}@${chain_id}.service"
     
     sleep 1; green "串联实例 ${chain_id} 已启动！"; echo
-    view_chain_client_config "$chain_type" "$i"
+    view_chain_client_config "$chain_type" "$chain_id"
 }
 
 # -----------------------------------------------------------------------------
@@ -2318,13 +2896,51 @@ main_manager_loop() {
                 local manage_id; read -p "请输入您想管理的实例ID [$(echo "${INSTANCES[@]}")]: " manage_id; local is_valid=false; for id in "${INSTANCES[@]}"; do if [[ "$id" == "$manage_id" ]]; then is_valid=true; break; fi; done
                 if [[ "$is_valid" == true ]]; then
                     local conf_path
+                    local service_name
+                    
                     case $type in
-                        hysteria2) conf_path="$dir/hy2_${manage_id}.yaml";;
-                        udp2raw) conf_path="$dir/udp2raw_${manage_id}.conf";;
-                        kcptun) conf_path="$dir/kcptun_${manage_id}.json";;
-                        xray_reality|xray_mkcp|xray_ss) conf_path="$dir/xray_${manage_id}.json";;
+                        hysteria2) 
+                            conf_path="$dir/hy2_${manage_id}.yaml"
+                            if systemctl list-unit-files | grep -q "ax-hy2@${manage_id}.service"; then service_name="ax-hy2@${manage_id}.service"; else service_name="ax-hysteria2@${manage_id}.service"; fi
+                            ;;
+                        udp2raw) 
+                            conf_path="$dir/udp2raw_${manage_id}.conf"
+                            service_name="ax-udp2raw@${manage_id}.service"
+                            ;;
+                        kcptun) 
+                            conf_path="$dir/kcptun_${manage_id}.json"
+                            service_name="ax-kcptun@${manage_id}.service"
+                            ;;
+                        xray_reality) 
+                            if [[ -f "$dir/vlessReality_${manage_id}.json" ]]; then
+                                conf_path="$dir/vlessReality_${manage_id}.json"
+                                service_name="ax-vlessReality@${manage_id}.service"
+                            else
+                                conf_path="$dir/xray_${manage_id}.json"
+                                service_name="ax-xray@${manage_id}.service"
+                            fi
+                            ;;
+                        xray_mkcp) 
+                            if [[ -f "$dir/vlesskcp_${manage_id}.json" ]]; then
+                                conf_path="$dir/vlesskcp_${manage_id}.json"
+                                service_name="ax-vlesskcp@${manage_id}.service"
+                            else
+                                conf_path="$dir/xray_${manage_id}.json"
+                                service_name="ax-xray@${manage_id}.service"
+                            fi
+                            ;;
+                        xray_ss) 
+                            if [[ -f "$dir/ss_${manage_id}.json" ]]; then
+                                conf_path="$dir/ss_${manage_id}.json"
+                                service_name="ax-ss@${manage_id}.service"
+                            else
+                                conf_path="$dir/xray_${manage_id}.json"
+                                service_name="ax-xray@${manage_id}.service"
+                            fi
+                            ;;
                     esac
-                    manage_instance_menu "$type_lowercase" "$manage_id" "${service_prefix}@${manage_id}" "$conf_path"
+                    
+                    manage_instance_menu "$type_lowercase" "$manage_id" "$service_name" "$conf_path"
                 else red "无效的实例ID！"; sleep 2; fi;;
             3)
                 if [[ ${#INSTANCES[@]} -eq 0 ]]; then yellow "当前没有实例可供查看。"; sleep 2; continue; fi
