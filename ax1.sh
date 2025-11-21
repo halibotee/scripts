@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -2496,9 +2496,55 @@ uninstall_all() {
         log "步骤 3: 执行彻底清理..."
         rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$HY2_INSTALL_DIR" "$XRAY_INSTALL_DIR" "$AX_CERT_DIR"
         green "程序和配置文件目录已删除。"
+        
         log "步骤 4: 删除生成的证书..."
         rm -f /etc/ssl/private/bing.com.crt /etc/ssl/private/bing.com.key
         green "自签名证书已删除。"
+        
+        # 清理 ACME.sh 证书客户端
+        if [ -d "/root/.acme.sh" ]; then
+            log "步骤 5: 清理 ACME.sh 证书客户端..."
+            
+            # 先尝试使用 acme.sh 的官方卸载命令 (会自动清理 cron 任务)
+            if [ -f "/root/.acme.sh/acme.sh" ]; then
+                yellow "正在卸载 ACME.sh 客户端并清理 cron 任务..."
+                /root/.acme.sh/acme.sh --uninstall > /dev/null 2>&1 || true
+            fi
+            
+            # 删除整个 acme.sh 目录 (包含所有证书和配置)
+            rm -rf /root/.acme.sh
+            green "ACME.sh 客户端、证书和 cron 任务已删除。"
+        else
+            yellow "未检测到 ACME.sh 客户端，跳过清理。"
+        fi
+        
+        # 清理 WARP-Socks5
+        if command -v warp-cli &> /dev/null || [ -f /etc/apt/sources.list.d/cloudflare-client.list ]; then
+            log "步骤 5.1: 清理 WARP-Socks5 客户端..."
+            
+            # 断开并删除 WARP 配置
+            if command -v warp-cli &> /dev/null; then
+                yellow "正在断开 WARP 连接并删除配置..."
+                warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
+                warp-cli --accept-tos disable-always-on > /dev/null 2>&1 || true
+                warp-cli --accept-tos delete > /dev/null 2>&1 || true
+            fi
+            
+            # 卸载 cloudflare-warp 包
+            if command -v yum &> /dev/null; then
+                yellow "正在卸载 cloudflare-warp (CentOS)..."
+                yum autoremove cloudflare-warp -y > /dev/null 2>&1 || true
+            elif command -v apt &> /dev/null; then
+                yellow "正在卸载 cloudflare-warp (Debian/Ubuntu)..."
+                apt purge cloudflare-warp -y > /dev/null 2>&1 || true
+                rm -f /etc/apt/sources.list.d/cloudflare-client.list
+                rm -f /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+            fi
+            
+            green "WARP-Socks5 客户端已删除。"
+        else
+            yellow "未检测到 WARP-Socks5 客户端，跳过清理。"
+        fi
     else
         log "步骤 3: 执行软卸载 (仅删除二进制文件和 dat 文件)..."
         rm -f "$KCP_INSTALL_DIR/kcptun_server" "$UDP2RAW_INSTALL_DIR/udp2raw"
@@ -2506,15 +2552,33 @@ uninstall_all() {
         rm -f "$XRAY_INSTALL_DIR/xray" "$XRAY_INSTALL_DIR/geoip.dat" "$XRAY_INSTALL_DIR/geosite.dat"
         green "程序文件已删除。"
     fi
-    log "步骤 5: 清理残留的二进制文件..."
+    log "步骤 6: 清理残留的二进制文件..."
     rm -f /usr/local/bin/hysteria
     green "残留二进制文件已清理。"
-    log "步骤 6: 清理临时文件..."
+    log "步骤 7: 清理临时文件..."
     rm -f /tmp/kcptun.tar.gz /tmp/udp2raw.tar.gz /tmp/xray.zip
-    log "步骤 7: 重载 systemd 并清理状态..."
+    log "步骤 8: 重载 systemd 并清理状态..."
     systemctl daemon-reload; systemctl reset-failed
     green "Systemd 已重载并清理。"
-    echo; green "==== 卸载完成！ ===="; yellow "提示：依赖包 (如 curl, openssl, jq) 未被卸载。"; yellow "提示：请手动删除此脚本文件。"; sleep 3
+    
+    echo; green "==== 卸载完成！ ===="
+    yellow "提示：依赖包 (如 curl, openssl, jq) 未被卸载。"
+    yellow "提示：请手动删除此脚本文件。"
+    
+    # 检查是否还有 acme.sh 残留
+    if [[ "$nuke_choice" != "y" && "$nuke_choice" != "Y" ]] && [ -d "/root/.acme.sh" ]; then
+        yellow "提示：检测到 ACME.sh 证书客户端仍存在，您可运行以下命令手动卸载："
+        cyan "      /root/.acme.sh/acme.sh --uninstall && rm -rf /root/.acme.sh"
+    fi
+    
+    # 检查是否还有 WARP 残留
+    if [[ "$nuke_choice" != "y" && "$nuke_choice" != "Y" ]] && command -v warp-cli &> /dev/null; then
+        yellow "提示：检测到 WARP-Socks5 客户端仍存在，您可通过以下方式卸载："
+        cyan "      方法1: 运行主菜单 14) 安装warp-Socks5 -> 选择 3) 卸载"
+        cyan "      方法2: 运行 ./warp-socket5.sh 并选择卸载选项"
+    fi
+    
+    sleep 3
     return 0
 }
 
