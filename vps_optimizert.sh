@@ -10,7 +10,7 @@ if [ "${1:-}" = "-y" ] || [ "${1:-}" = "--yes" ]; then
     FORCE_YES=1
 fi
 
-SCRIPT_VERSION="1.3.3"
+SCRIPT_VERSION="1.3.4"
 BACKUP_DIR="/etc/vps_optimizert_backup"
 LOG_FILE="/var/log/vps_optimizert.log"
 ACTION_LOG="${BACKUP_DIR}/actions.log"
@@ -22,27 +22,8 @@ declare -ga PKG_CMD_CHECK
 declare -ga PKG_CMD_UPDATE
 
 FN_TRIM_SERVICES_LIST=(
-"unattended-upgrades.service"
-"motd-news.service"
-"man-db.timer"
-"sysstat.service"
-"whoopsie.service"
-"apport.service"
-"snapd.service"
-"snapd.socket"
-"avahi-daemon.service"
 "bluetooth.service"
-"cups.service"
-"cups-browsed.service"
 "ModemManager.service"
-"ssh-askpass.service"
-"e2scrub_reap.timer"
-"packagekit.service"
-"thermald.service"
-"qemu-guest-agent.service"
-"atop.service"
-"atopacctd.service"
-"rc-local.service"
 )
 
 FN_NETWORK_SERVICES_LIST=(
