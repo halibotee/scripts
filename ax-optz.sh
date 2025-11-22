@@ -884,7 +884,7 @@ for svc in "${detected_svcs[@]}"; do
 # Extreme Performance Tuning
 Nice=-19
 CPUSchedulingPolicy=fifo
-CPUSchedulingPriority=10
+CPUSchedulingPriority=20
 LimitNOFILE=1000000
 LimitNPROC=1000000
 EOF
