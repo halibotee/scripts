@@ -904,6 +904,228 @@ fn_log "成功" "网络服务优化成功 (${detected_svcs_str})。"
 return 0
 }
 
+fn_tune_network_interface() {
+    fn_log "信息" "正在优化网络接口队列长度..."
+    local default_iface
+    default_iface=$(ip route | grep default | awk '{print $5}' | head -n1)
+    
+    if [ -z "$default_iface" ]; then
+        fn_log "警告" "无法检测到默认网络接口，跳过接口优化。"
+        return 2
+    fi
+    
+    fn_log "信息" "检测到默认接口: $default_iface"
+    
+    if ip link set dev "$default_iface" txqueuelen 10000; then
+        fn_log "成功" "已设置 $default_iface txqueuelen = 10000"
+    else
+        fn_log "警告" "设置 $default_iface txqueuelen 失败。"
+    fi
+    
+    if command -v ethtool > /dev/null 2>&1; then
+        ethtool -K "$default_iface" gso off gro off > /dev/null 2>&1 || true
+        fn_log "信息" "尝试禁用 GSO/GRO (ethtool)。"
+    fi
+    
+    return 0
+}
+
+fn_set_system_limits() {
+    fn_log "信息" "设置系统级资源限制 (limits.conf)..."
+    local limits_file="/etc/security/limits.conf"
+    
+    if grep -q "vps_optimizert" "$limits_file"; then
+        fn_log "信息" "limits.conf 已包含优化配置，跳过。"
+        return 2
+    fi
+    
+    cp "$limits_file" "${limits_file}.bak" 2>/dev/null || true
+    
+    cat >> "$limits_file" <<'EOF'
+
+# Added by vps_optimizert
+* soft nofile 1000000
+* hard nofile 1000000
+* soft nproc 1000000
+* hard nproc 1000000
+root soft nofile 1000000
+root hard nofile 1000000
+root soft nproc 1000000
+root hard nproc 1000000
+EOF
+    fn_log_action "MODIFY_FILE" "$limits_file"
+    fn_log "成功" "已更新 /etc/security/limits.conf"
+    return 0
+}
+
+fn_optimize_auto() {
+    local result
+    
+    if fn_check_if_optimized; then
+        echo "-----------------------------------------------------"
+        echo "[错误] 检测到系统已被优化。"
+        echo "操作日志: $ACTION_LOG (已包含内容)"
+        echo ""
+        echo "为防止覆盖现有配置和日志，操作已停止。"
+        echo " * 如果您想重新优化，请先运行 [选项 2] 撤销优化。"
+        echo "-----------------------------------------------------"
+        fn_log "错误" "检测到已优化，fn_optimize_auto 已停止。"
+        return 1
+    fi
+
+    echo "======================================================="
+    echo "  VPS 激进优化脚本 v${SCRIPT_VERSION}"
+    echo "  开始执行系统优化..."
+    echo "======================================================="
+    echo ""
+
+    echo "[任务 1]: 创建备份文件..."
+    result=0
+    fn_backup_state || result=$?
+    if [ $result -ne 0 ]; then
+        echo "[失败] 备份文件创建失败，退出优化。"
+        fn_log "错误" "fn_backup_state 失败，退出。"
+        return 1
+    fi
+    echo "[完成] 备份文件创建成功: $BACKUP_DIR"
+    echo ""
+    
+    echo "[任务 2]: 检查包管理器源..."
+    result=0
+    fn_fix_apt_sources_if_needed || result=$?
+    if [ $result -ne 0 ]; then
+        echo "[失败] 包管理器源检查失败。请检查日志。"
+        fn_log "错误" "fn_fix_apt_sources_if_needed 失败。"
+    else
+        echo "[完成] 包管理器源检查通过。"
+    fi
+    echo ""
+
+    echo "[任务 3]: 网络优化参数配置（交互式）..."
+    result=0
+    fn_setup_aggressive_network || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] 激进网络配置已创建。"
+    else
+        echo "[警告] 网络配置创建失败。"
+    fi
+    echo ""
+
+    echo "[任务 4]: IPv6 状态检测（交互式）..."
+    result=0
+    fn_handle_ipv6 || result=$?
+    echo "[完成] IPv6 处理完成。"
+    echo ""
+
+    echo "[任务 5]: 检查 SELinux 状态..."
+    result=0
+    fn_handle_selinux || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] SELinux 检查完成 (已操作)。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] SELinux 状态良好或未检测到。"
+    fi
+    echo ""
+    
+    echo "[任务 6]: 配置 Journald (日志)..."
+    result=0
+    fn_setup_journald_volatile || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] Journald 已配置为内存模式。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
+    fi
+    echo ""
+
+    echo "[任务 7]: 应用网络配置到系统..."
+    sysctl --system > /dev/null 2>&1 || fn_log "警告" "sysctl --system 出现警告"
+    echo "[完成] 系统网络配置已应用。"
+    fn_log "信息" "sysctl --system 已执行。"
+    echo ""
+
+    echo "[任务 8]: 优化网络接口..."
+    result=0
+    fn_tune_network_interface || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] 网络接口队列已优化。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 无法检测接口或已优化。"
+    fi
+    echo ""
+
+    echo "[任务 9]: 自动开启BBR+FQ..."
+    result=0
+    fn_enable_bbr_fq || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] BBR+FQ 加速已启用。"
+    else
+        echo "[警告] BBR+FQ 启用可能不完整。"
+    fi
+    echo ""
+
+    echo "[任务 10]: 设置系统资源限制..."
+    result=0
+    fn_set_system_limits || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] 系统资源限制 (limits.conf) 已更新。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 已存在配置，跳过。"
+    fi
+    echo ""
+
+    echo "[任务 11]: 配置 ZRAM..."
+    result=0
+    fn_setup_zram_adaptive || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] ZRAM 配置成功。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
+    else
+        echo "[警告] ZRAM 配置失败，已启用 swapfile 回退。"
+    fi
+    echo ""
+
+    echo "[任务 12]: 配置 Fail2ban..."
+    result=0
+    fn_setup_fail2ban || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] Fail2ban 配置成功。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 检测到已优化，跳过。"
+    else
+        echo "[警告] Fail2ban 配置失败。请检查日志。"
+    fi
+    echo ""
+
+    echo "[任务 13]: 优化网络代理服务..."
+    result=0
+    fn_prioritize_network_services_auto || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] 网络代理服务优化完成。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 未检测到服务或服务均已配置。"
+    fi
+    echo ""
+    
+    echo "[任务 14]: 精简系统服务..."
+    result=0
+    fn_trim_services_auto || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] 系统服务精简完成。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 未检测到需要新屏蔽的服务。"
+    fi
+    echo ""
+    
+    echo "======================================================="
+    echo "  系统优化完成！"
+    echo "  请重启系统以完全生效所有优化。"
+    echo "======================================================="
+    fn_log "成功" "系统优化完成。请重启系统以完全生效。"
+    fn_show_status_report "noclear"
+}
+
+
 fn_restore_all() {
     echo "[任务] 开始执行撤销优化..."
     fn_log "警告" "开始执行撤销优化... 将从 $ACTION_LOG 恢复。"
