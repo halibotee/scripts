@@ -21,13 +21,97 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- [修改] 版本号定义 ---
-SCRIPT_VERSION="1.0.1 from halibotee"
+SCRIPT_VERSION="1.0.2-safe from halibotee"
 # --- [新增] 日志文件定义 ---
 FULL_LOG_FILE="/var/log/cfwarp_socks5.log"
 ERROR_LOG_FILE="/var/log/cfwarp_socks5.error.log"
 LOG_LIMIT_BYTES=1048576 # 1MB
 
+# --- [新增] SSH 保护变量 ---
+SSH_CLIENT_IP=""
+SSH_PORT="22"
+SSH_GATEWAY=""
+ORIG_DEFAULT_ROUTE=""
+
 [[ $EUID -ne 0 ]] && yellow "请以root模式运行脚本" && exit
+
+# --- [新增] SSH 路由保护函数 ---
+protect_ssh_route() {
+    yellow "正在检测并保护 SSH 连接路由..."
+    
+    # 检测当前 SSH 客户端 IP
+    if [[ -n "$SSH_CLIENT" ]]; then
+        SSH_CLIENT_IP=$(echo $SSH_CLIENT | awk '{print $1}')
+        yellow "检测到 SSH 客户端 IP: $SSH_CLIENT_IP"
+    elif [[ -n "$SSH_CONNECTION" ]]; then
+        SSH_CLIENT_IP=$(echo $SSH_CONNECTION | awk '{print $1}')
+        yellow "检测到 SSH 连接 IP: $SSH_CLIENT_IP"
+    else
+        yellow "未检测到 SSH 连接环境变量，尝试从 netstat 获取..."
+        SSH_CLIENT_IP=$(netstat -tn 2>/dev/null | grep ':22 ' | grep ESTABLISHED | head -1 | awk '{print $5}' | cut -d: -f1)
+        [[ -n "$SSH_CLIENT_IP" ]] && yellow "从 netstat 检测到: $SSH_CLIENT_IP"
+    fi
+    
+    # 获取默认网关
+    SSH_GATEWAY=$(ip route | grep default | head -1 | awk '{print $3}')
+    ORIG_DEFAULT_ROUTE=$(ip route | grep default | head -1)
+    
+    if [[ -n "$SSH_CLIENT_IP" && -n "$SSH_GATEWAY" ]]; then
+        # 添加静态路由保护 SSH 客户端 IP
+        if ! ip route show | grep -q "$SSH_CLIENT_IP"; then
+            ip route add $SSH_CLIENT_IP via $SSH_GATEWAY 2>/dev/null
+            if [[ $? -eq 0 ]]; then
+                green "✓ 已添加 SSH 路由保护: $SSH_CLIENT_IP -> $SSH_GATEWAY"
+            else
+                yellow "! 添加路由保护失败（可能已存在或权限不足）"
+            fi
+        else
+            green "✓ SSH 路由保护已存在"
+        fi
+    else
+        yellow "⚠ 未能完全检测到 SSH 路由信息，跳过路由保护"
+        yellow "  建议：在 screen/tmux 会话中运行此脚本"
+    fi
+}
+
+# --- [新增] 恢复 SSH 路由函数 ---
+restore_ssh_route() {
+    if [[ -n "$SSH_CLIENT_IP" && -n "$SSH_GATEWAY" ]]; then
+        # 保留保护路由，不删除
+        green "SSH 路由保护保持激活状态"
+    fi
+}
+
+# --- [新增] 系统资源检查函数 ---
+check_system_resources() {
+    yellow "正在检查系统资源..."
+    
+    # 检查可用内存（单位：MB）
+    local free_mem=$(free -m 2>/dev/null | awk 'NR==2{print $7}')
+    if [[ -z "$free_mem" ]]; then
+        # 兼容旧版 free 命令
+        free_mem=$(free -m 2>/dev/null | awk 'NR==2{print $4}')
+    fi
+    
+    if [[ -n "$free_mem" ]]; then
+        if [[ $free_mem -lt 100 ]]; then
+            red "⚠ 警告: 可用内存仅 ${free_mem}MB，低于建议值 100MB"
+            yellow "  这可能导致安装过程中系统卡顿或假死机"
+            readp "  是否继续安装？[y/N]: " continue_install
+            [[ ! "$continue_install" =~ ^[Yy]$ ]] && yellow "已取消安装" && return 1
+        else
+            green "✓ 可用内存: ${free_mem}MB (充足)"
+        fi
+    fi
+    
+    # 检查磁盘空间
+    local free_disk=$(df -m / | awk 'NR==2{print $4}')
+    if [[ -n "$free_disk" && $free_disk -lt 200 ]]; then
+        yellow "⚠ 警告: 根目录可用空间仅 ${free_disk}MB"
+    fi
+    
+    return 0
+}
 
 if [[ -f /etc/redhat-release ]]; then
 release="Centos"
@@ -257,6 +341,9 @@ fi
 }
 
 install_socks5(){
+    # 0. 系统资源检查
+    check_system_resources || return 1
+    
     # 1. 检查状态
     yellow "正在检查 Cloudflare WARP Socks5 (warp-cli) 状态..."
     if [[ $(systemctl is-active warp-svc) = active ]] && [[ $(warp-cli --accept-tos status 2>/dev/null) =~ 'Connected' ]]; then
@@ -274,7 +361,11 @@ install_socks5(){
     [[ ! ${vsid} =~ 10|11|12|13 ]] && yellow "当前系统版本号：Debian $vsid \nSocks5-WARP仅支持 Debian 10/11/12/13系统 " && return 1
     fi
 
+    # 2.5. SSH 路由保护
+    protect_ssh_route
+
     # 3. 冲突检查
+    yellow "正在检查服务冲突..."
     systemctl stop wg-quick@wgcf >/dev/null 2>&1
     kill -15 $(pgrep warp-go) >/dev/null 2>&1 && sleep 2
     
@@ -290,40 +381,75 @@ install_socks5(){
 
     # 4. 开始安装
     yellow "正在执行一键安装/启动 Socks5-WARP..."
+    yellow "⚠ 提示: 如果您通过 SSH 连接，建议在 screen/tmux 会话中运行"
+    
     if [[ $release = Centos ]]; then 
-    yum -y install epel-release && yum -y install net-tools
+    yellow "正在安装依赖 (epel-release, net-tools)..."
+    timeout 120 yum -y install epel-release && timeout 120 yum -y install net-tools || {
+        red "依赖安装超时或失败"
+        return 1
+    }
     curl -fsSl https://pkg.cloudflareclient.com/cloudflare-warp-ascii.repo | tee /etc/yum.repos.d/cloudflare-warp.repo
-    yum update
-    yum -y install cloudflare-warp
+    yellow "正在更新软件源 (添加超时保护)..."
+    timeout 180 yum update --exclude=kernel* || yellow "! yum update 超时，继续安装"
+    yellow "正在安装 cloudflare-warp..."
+    timeout 300 yum -y install cloudflare-warp || {
+        red "cloudflare-warp 安装失败或超时"
+        return 1
+    }
     fi
     if [[ $release = Debian ]]; then
-    [[ ! $(type -P gpg) ]] && apt update && apt install gnupg -y
-    [[ ! $(apt list 2>/dev/null | grep apt-transport-https | grep installed) ]] && apt update && apt install apt-transport-https -y
+    [[ ! $(type -P gpg) ]] && timeout 120 apt update && timeout 120 apt install gnupg -y
+    [[ ! $(apt list 2>/dev/null | grep apt-transport-https | grep installed) ]] && timeout 120 apt update && timeout 120 apt install apt-transport-https -y
     fi
     if [[ $release != Centos ]]; then 
-    apt install net-tools -y
+    yellow "正在安装依赖..."
+    timeout 120 apt install net-tools -y || yellow "! net-tools 安装超时"
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-    # --- [修改] 自动同意 [Y/n] ---
-    sudo apt-get update && sudo apt-get install -y cloudflare-warp
+    # --- [修改] 添加超时和防止升级内核 ---
+    yellow "正在更新软件源 (添加超时保护)..."
+    timeout 180 sudo apt-get update || yellow "! apt update 超时，继续安装"
+    yellow "正在安装 cloudflare-warp (不升级系统包)..."
+    timeout 300 sudo apt-get install -y --no-upgrade cloudflare-warp || {
+        red "cloudflare-warp 安装失败或超时"
+        restore_ssh_route
+        return 1
+    }
     fi
     
     # 5. 配置
     warpip
     yellow "正在自动注册新账户 (--accept-tos)..."
     warp-cli --accept-tos registration new
-    warp-cli mode proxy 
+    
+    # 强制设置为仅代理模式，防止修改全局路由
+    yellow "正在配置为纯代理模式 (不修改系统路由)..."
+    warp-cli mode proxy
     warp-cli proxy port 40000
+    
+    # --- [新增] 验证模式设置 ---
+    local current_mode=$(warp-cli --accept-tos settings 2>/dev/null | grep 'Mode' | awk '{print $NF}')
+    if [[ "$current_mode" != "Proxy" ]]; then
+        yellow "! 警告: WARP 模式未正确设置为 Proxy，当前为: $current_mode"
+        yellow "  尝试再次设置..."
+        warp-cli mode proxy
+        sleep 2
+    fi
+    
+    yellow "正在连接 WARP (仅启用 SOCKS5 代理)..."
     warp-cli --accept-tos connect
     
-    yellow "正在等待连接稳定 (5 秒)..."
-    sleep 5
+    yellow "正在等待连接稳定 (8 秒)..."
+    sleep 8
     
     # 6. 确认
     if [[ $(systemctl is-active warp-svc) = active ]] && [[ $(warp-cli --accept-tos status 2>/dev/null) =~ 'Connected' ]]; then
-        green "Socks5-WARP 已成功启动。"
+        green "✓ Socks5-WARP 已成功启动 (仅代理模式)"
+        green "✓ SSH 连接应该未受影响"
     else
-        red "Socks5-WARP 安装或启动失败。请检查日志。"
+        red "✗ Socks5-WARP 安装或启动失败。请检查日志。"
+        restore_ssh_route
     fi
 }
 
@@ -464,7 +590,7 @@ script_main_wrapper() {
     main_menu
 }
 
-# --- [修改] 脚本主入口 (用于双日志捕获) ---
-# 1. 所有 stderr (错误) 都被 'tee' 捕获到 ERROR_LOG_FILE (追加)
-# 2. stdout (标准输出) 和 stderr (错误) 都被 |& (管道) 合并，并 'tee' 捕获到 FULL_LOG_FILE (追加)
-script_main_wrapper 2> >(tee -a "$ERROR_LOG_FILE") |& tee -a "$FULL_LOG_FILE"
+# --- [修改] 脚本主入口 (简化为安全的单层日志) ---
+# 将 stdout 和 stderr 合并后写入完整日志
+# 避免复杂的进程替换可能导致的管道阻塞问题
+script_main_wrapper 2>&1 | tee -a "$FULL_LOG_FILE"
