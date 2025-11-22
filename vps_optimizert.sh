@@ -394,34 +394,71 @@ fn_log "成功" "journald 已配置为 volatile 模式。"
 return 0
 }
 
-fn_setup_sysctl_lowmem() {
+fn_setup_sysctl_extreme() {
 local skipped=false
 local conf_file="/etc/sysctl.d/99-vps_optimizert.conf"
 if [ -f "$conf_file" ]; then
     fn_log "信息" "sysctl 配置文件 $conf_file 已存在，跳过写入。"
     skipped=true
 else
-    fn_log "信息" "应用 sysctl 低内存网络调优 (包含 BBR+FQ)..."
+    fn_log "信息" "应用 sysctl 极限网络调优 (高性能/高并发，开启BBR+FQ，优化UDP)..."
     cat > "$conf_file" <<'EOF'
-vm.swappiness = 10
-vm.vfs_cache_pressure = 100
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.core.netdev_max_backlog = 2500
-net.core.somaxconn = 1024
-net.ipv4.tcp_rmem = 4096 87380 16777216
-net.ipv4.tcp_wmem = 4096 65536 16777216
-net.ipv4.tcp_max_syn_backlog = 1024
-net.ipv4.tcp_fin_timeout = 15
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
+# Extreme Network Optimization for VPS
+# -----------------------------------------------------------------------------
+# File System Limits
+fs.file-max = 1000000
+fs.inotify.max_user_instances = 8192
+
+# Core Network Buffers (Aggressive)
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.core.rmem_default = 67108864
+net.core.wmem_default = 67108864
+net.core.optmem_max = 65536
+net.core.netdev_max_backlog = 250000
+net.core.somaxconn = 65535
+
+# TCP Tuning
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 30
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 6
+net.ipv4.ip_local_port_range = 10000 65000
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_max_tw_buckets = 5000
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+
+# Advanced TCP
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_ecn_fallback = 1
+net.ipv4.tcp_frto = 0
+
+# UDP Tuning (Critical for Hysteria2/QUIC)
+net.ipv4.udp_rmem_min = 8192
+net.ipv4.udp_wmem_min = 8192
+
+# Congestion Control
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
-net.ipv4.tcp_ecn = 1
-net.ipv4.tcp_frto = 1
+
+# Virtual Memory (Prefer RAM)
+vm.swappiness = 1
+vm.vfs_cache_pressure = 50
+
+# IPv6 (Disable by default for stability/leak prevention)
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
 EOF
     fn_log_action "CREATE_FILE" "$conf_file"
-    fn_log "成功" "sysctl 配置文件 $conf_file 已创建。"
+    fn_log "成功" "sysctl 极限优化配置文件 $conf_file 已创建。"
 fi
 
 sysctl --system >/dev/null 2>/dev/null || fn_log "警告" "sysctl 应用时出现警告。"
@@ -651,14 +688,18 @@ for svc in "${detected_svcs[@]}"; do
         continue
     fi
     
-    fn_log "调试" "为 $svc 设置 Nice=-15, CPUQuota=70%。"
+    fn_log "调试" "为 $svc 设置 RealTime 调度, Nice=-19, Limits."
     
     local svc_conf_dir="/etc/systemd/system/${svc}.service.d"
     mkdir -p "$svc_conf_dir"
     cat > "$conf_file" <<EOF
 [Service]
-Nice=-15
-#CPUQuota=70%
+# Extreme Performance Tuning
+Nice=-19
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=10
+LimitNOFILE=1000000
+LimitNPROC=1000000
 EOF
     fn_log_action "CREATE_FILE" "$conf_file"
     changes_made=1
@@ -1002,6 +1043,62 @@ fn_show_status_report() {
     echo "======================================================"
 }
 
+fn_tune_network_interface() {
+    fn_log "信息" "正在优化网络接口队列长度..."
+    local default_iface
+    default_iface=$(ip route | grep default | awk '{print $5}' | head -n1)
+    
+    if [ -z "$default_iface" ]; then
+        fn_log "警告" "无法检测到默认网络接口，跳过接口优化。"
+        return 2
+    fi
+    
+    fn_log "信息" "检测到默认接口: $default_iface"
+    
+    # Set txqueuelen
+    if ip link set dev "$default_iface" txqueuelen 10000; then
+        fn_log "成功" "已设置 $default_iface txqueuelen = 10000"
+    else
+        fn_log "警告" "设置 $default_iface txqueuelen 失败。"
+    fi
+    
+    # Optional: Disable offloading if ethtool exists (often helps with virtualization latency)
+    if command -v ethtool >/dev/null 2>&1; then
+        ethtool -K "$default_iface" gso off gro off >/dev/null 2>&1 || true
+        fn_log "信息" "尝试禁用 GSO/GRO (ethtool)。"
+    fi
+    
+    return 0
+}
+
+fn_set_system_limits() {
+    fn_log "信息" "设置系统级资源限制 (limits.conf)..."
+    local limits_file="/etc/security/limits.conf"
+    
+    if grep -q "vps_optimizert" "$limits_file"; then
+        fn_log "信息" "limits.conf 已包含优化配置，跳过。"
+        return 2
+    fi
+    
+    cp "$limits_file" "${BACKUP_DIR}/limits.conf.bak" 2>/dev/null || true
+    
+    cat >> "$limits_file" <<EOF
+
+# Added by vps_optimizert
+* soft nofile 1000000
+* hard nofile 1000000
+* soft nproc 1000000
+* hard nproc 1000000
+root soft nofile 1000000
+root hard nofile 1000000
+root soft nproc 1000000
+root hard nproc 1000000
+EOF
+    fn_log_action "MODIFY_FILE" "$limits_file"
+    fn_log "成功" "已更新 /etc/security/limits.conf"
+    return 0
+}
+
 fn_optimize_auto() {
     local result
     
@@ -1059,13 +1156,33 @@ fn_optimize_auto() {
     fi
     echo "--------------"
 
-    echo "[任务 5 ] ：应用 sysctl 网络调优..."
+    echo "[任务 5 ] ：应用 sysctl 极限网络调优..."
     result=0
-    fn_setup_sysctl_lowmem || result=$?
+    fn_setup_sysctl_extreme || result=$?
     if [ $result -eq 0 ]; then
-        echo "[完成] sysctl (BBR+FQ) 配置文件已创建并应用。"
+        echo "[完成] sysctl (BBR+FQ+UDP) 极限配置文件已创建并应用。"
     elif [ $result -eq 2 ]; then
         echo "[跳过] 检测到已优化，跳过。"
+    fi
+    echo "--------------"
+
+    echo "[任务 5.1 ] ：优化网络接口..."
+    result=0
+    fn_tune_network_interface || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] 网络接口队列已优化。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 无法检测接口或已优化。"
+    fi
+    echo "--------------"
+
+    echo "[任务 5.2 ] ：设置系统资源限制..."
+    result=0
+    fn_set_system_limits || result=$?
+    if [ $result -eq 0 ]; then
+        echo "[完成] 系统资源限制 (limits.conf) 已更新。"
+    elif [ $result -eq 2 ]; then
+        echo "[跳过] 已存在配置，跳过。"
     fi
     echo "--------------"
 
