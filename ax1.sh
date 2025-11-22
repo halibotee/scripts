@@ -489,6 +489,23 @@ download_with_retry(){
 }
 
 # -----------------------------------------------------------------------------
+# 确保 ax-acme.sh 脚本存在
+# -----------------------------------------------------------------------------
+ensure_ax_acme_sh() {
+    if [ ! -f "ax-acme.sh" ]; then
+        log "未检测到 ax-acme.sh，正在下载..."
+        download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/ax-acme.sh" "ax-acme.sh"
+        if [ $? -ne 0 ]; then
+            red "ax-acme.sh 下载失败，无法申请证书。"
+            return 1
+        fi
+        chmod +x ax-acme.sh
+        green "ax-acme.sh 下载完成。"
+    fi
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # 查找一个未被占用的随机端口 (范围: RANDOM_PORT_MIN - RANDOM_PORT_MAX)
 # -----------------------------------------------------------------------------
 find_available_port() {
@@ -1151,6 +1168,12 @@ create_new_instance() {
                 fi
 
                 # 尝试申请证书，如果失败直接退出
+                # 确保 ax-acme.sh 存在
+                if ! ensure_ax_acme_sh; then
+                    red "无法获取 ax-acme.sh，已取消创建实例。"
+                    return 1
+                fi
+                
                 if ! bash ax-acme.sh -n "$domain_name"; then
                     red "ACME 证书申请流程失败，已取消创建实例。"
                     return 1
@@ -1922,6 +1945,12 @@ start_new_chain_instance() {
             fi
 
             # 尝试申请证书，如果失败直接退出
+            # 确保 ax-acme.sh 存在
+            if ! ensure_ax_acme_sh; then
+                red "无法获取 ax-acme.sh，已取消创建实例。"
+                return 1
+            fi
+
             if ! bash ax-acme.sh -n "$domain_name"; then
                 red "ACME 证书申请流程失败，已取消创建实例。"
                 return 1
