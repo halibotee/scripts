@@ -51,9 +51,14 @@ FN_NETWORK_SERVICES_LIST=(
 "hysteria"
 "udp2raw"
 "kcptun"
-"ax_xray@*"
+"ax-xray@*"
+"ax-hysteria2@*"
+"ax-udp2raw@*"
+"ax-kcptun@*"
+"xray@*"
 "hysteria2@*"
 "udp2raw@*"
+"kcptun@*"
 )
 
 mkdir -p "$BACKUP_DIR"
