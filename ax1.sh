@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.1.5"
+SCRIPT_VERSION="1.1.6"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -2434,6 +2434,28 @@ install_warp_yg() {
 }
 
 # -----------------------------------------------------------------------------
+# [NEW] 安装 ax-acme 脚本 (菜单 15)
+# -----------------------------------------------------------------------------
+install_acme_tool() {
+    echo "----------------------------------------------------------------"
+    log "即将开始下载并运行 ax-acme.sh 脚本..."
+    
+    # 运行用户提供的命令
+    wget --no-check-certificate -O ax-acme.sh "https://raw.githubusercontent.com/halibotee/scripts/main/ax-acme.sh" && chmod +x ax-acme.sh && ./ax-acme.sh
+    
+    if [ ! -f "ax-acme.sh" ]; then
+         echo "----------------------------------------------------------------"
+         red "错误：下载 ax-acme.sh 失败或脚本未正确执行。"
+         log "即将返回主菜单..."
+         return 1 # 返回错误状态
+    fi
+    
+    echo "----------------------------------------------------------------"
+    green "ax-acme.sh 脚本 执行完毕。"
+    log "即将返回主菜单..."
+}
+
+# -----------------------------------------------------------------------------
 # 卸载所有 (REFACTORED: 修复软卸载路径)
 # -----------------------------------------------------------------------------
 uninstall_all() {
@@ -2651,8 +2673,9 @@ main_menu(){
         echo " 11) 重启全部服务"
         echo " 12) 检查更新程序" 
         cyan "--- 工具管理 ---"
-        echo " 13) 优化VPS系统"
-        echo " 14) 安装warp-Socks5"
+        echo " 13) VPS系统优化"
+        echo " 14) 配置warp分流"
+        echo " 15) acme证书管理"
         echo "----------------------------------"   
         echo " 99) 卸载"
         echo "----------------------------------"   
@@ -2668,7 +2691,7 @@ main_menu(){
         local num_items=${#QUICK_MANAGE_MAP_ID[@]}; local max_index=$((20 + num_items))
         echo "----------------------------------"
         # [MODIFIED] 更改提示符范围
-        local prompt="请选择 [0-14, 99"; if [[ $num_items -gt 0 ]]; then prompt+=", 21-${max_index}]"; else prompt+="]"; fi
+        local prompt="请选择 [0-15, 99"; if [[ $num_items -gt 0 ]]; then prompt+=", 21-${max_index}]"; else prompt+="]"; fi
         read -p "$prompt： " choice
         
         if [[ -n "${QUICK_MANAGE_MAP_ID[$choice]}" ]]; then
@@ -2702,6 +2725,7 @@ main_menu(){
             12) check_for_updates; read -p "按任意键继续..." -n1 -s ;;
             13) clear; install_sys_opt; read -p $'\n按任意键返回...' -n1 -s ;;
             14) clear; install_warp_yg; read -p $'\n按任意键返回...' -n1 -s ;;
+            15) clear; install_acme_tool; read -p $'\n按任意键返回...' -n1 -s ;;
             99) uninstall_all; if [[ $? -eq 0 ]]; then exit 0; fi ;;
             0) trap - SIGINT; exit 0 ;; 
             *) red "无效选择!"; sleep 1 ;;
