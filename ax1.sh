@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.1.32"
+SCRIPT_VERSION="1.1.4"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -709,184 +709,7 @@ find_next_available_id() {
     done
 }
 
-# =============================================================================
-# 12. ACME 证书管理函数
-# =============================================================================
 
-# -----------------------------------------------------------------------------
-# 安装 acme.sh 客户端
-# -----------------------------------------------------------------------------
-install_acme_sh_client() {
-    if [ -f "$ACME_SH_INSTALL_DIR" ]; then
-        return 0 # 已安装
-    fi
-    log "正在安装 acme.sh 证书客户端..."
-    
-    local Aemail
-    read -p "请输入注册 ACME 所需的邮箱 (回车自动生成): " Aemail
-    if [ -z "$Aemail" ]; then
-        local auto_email=$(date +%s%N | md5sum | cut -c 1-8)
-        Aemail="$auto_email@gmail.com"
-        yellow "已为您自动生成邮箱: $Aemail"
-    fi
-
-    # 使用 get.acme.sh 官方安装
-    curl https://get.acme.sh | sh -s email=$Aemail
-    if [ ! -f "$ACME_SH_INSTALL_DIR" ]; then
-        red "acme.sh 客户端安装失败！"
-        return 1
-    fi
-    
-    "$ACME_SH_INSTALL_DIR" --upgrade --auto-upgrade
-    "$ACME_SH_INSTALL_DIR" --set-default-ca --server letsencrypt
-    green "acme.sh 客户端安装完成。"
-}
-
-# -----------------------------------------------------------------------------
-# 检查 80 端口并释放 (用于 ACME Standalone 模式)
-# -----------------------------------------------------------------------------
-release_80_port() {
-    log "正在检查 80 端口占用..."
-    local pid=$(lsof -t -i:80)
-    if [ -n "$pid" ]; then
-        yellow "警告: 80 端口被进程 $pid 占用。"
-        read -p "是否尝试强行释放 80 端口? [Y/n] (默认“Y”): " kill_confirm
-        kill_confirm=${kill_confirm:-y} # Default to yes if empty
-        if [[ "$kill_confirm" == "y" || "$kill_confirm" == "Y" ]]; then
-            log "正在强行释放 80 端口..."
-            kill -9 $pid
-            sleep 2
-            if lsof -t -i:80 >/dev/null; then
-                red "80 端口释放失败！"
-                return 1
-            else
-                green "80 端口已释放。"
-            fi
-        else
-            red "80 端口被占用，ACME Standalone 模式无法继续。"
-            return 1
-        fi
-    fi
-    return 0
-}
-
-# -----------------------------------------------------------------------------
-# 核心函数：获取或续订证书
-# 支持 80 端口模式和 DNS API 模式
-# -----------------------------------------------------------------------------
-ax_get_certificate() {
-    local domain=$1
-    local cert_dir="$AX_CERT_DIR/$domain"
-    
-    # 1. 检查证书是否已存在且有效
-    if [ -f "$cert_dir/fullchain.cer" ]; then
-        log "证书 $domain 已存在于 $cert_dir"
-        return 0
-    fi
-    
-    # 2. 确保 acme.sh 客户端已安装
-    install_acme_sh_client || return 1
-    
-    # 3. 检查 DNS 解析 (确保域名解析到本机)
-    log "正在验证 $domain 的 DNS 解析..."
-    local v4=$(curl -s4m2 $PUBLIC_IP_SERVICE_1 || curl -s4m2 $PUBLIC_IP_SERVICE_2)
-    local v6=$(curl -s6m2 $PUBLIC_IP_SERVICE_1 || curl -s6m2 $PUBLIC_IP_SERVICE_2)
-    local domainIP=$(dig @8.8.8.8 +time=2 +short "$domain" 2>/dev/null | grep -m1 '^[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+$')
-    
-    if [[ -z "$domainIP" && -n "$v6" ]]; then
-        domainIP=$(dig @2001:4860:4860::8888 +time=2 aaaa +short "$domain" 2>/dev/null | grep -m1 ':')
-    fi
-    
-    if [[ -z "$domainIP" ]]; then
-        red "错误: 无法解析 $domain 的 IP 地址。"
-        return 1
-    fi
-    
-    if [[ "$domainIP" != "$v4" && "$domainIP" != "$v6" ]]; then
-        red "错误: $domain 解析的 IP ($domainIP) 与本机 IP ($v4 / $v6) 不匹配！"
-        yellow "请确保 DNS 记录已正确设置，且 CDN (小黄云) 已关闭。"
-        return 1
-    fi
-    green "DNS 验证通过: $domain -> $domainIP"
-
-    # 4. 选择 ACME 模式
-    read -p "选择 ACME 验证模式: [1] 80 端口 (Standalone) [2] DNS API (推荐): " acme_mode
-    local issue_cmd=""
-
-    if [ "$acme_mode" == "1" ]; then
-        # 80 端口模式
-        release_80_port || return 1
-        local listen_opt=""
-        if [[ "$domainIP" == "$v6" ]]; then
-            listen_opt="--listen-v6"
-        fi
-        issue_cmd="$ACME_SH_INSTALL_DIR --issue -d $domain --standalone -k ec-256 $listen_opt"
-    
-    elif [ "$acme_mode" == "2" ]; then
-        # DNS API 模式
-        read -p "选择 DNS 服务商: [1] Cloudflare [2] DNSPod [3] Aliyun: " dns_provider
-        local dns_api_cmd=""
-        yellow "警告: API 密钥将保存在 acme.sh 配置中 (~/.acme.sh/account.conf)"
-        
-        case $dns_provider in
-            1) # Cloudflare
-                read -s -p "请输入 Cloudflare Global API Key: " GAK; echo
-                export CF_Key="$GAK"
-                read -p "请输入 Cloudflare 注册邮箱: " CFemail
-                export CF_Email="$CFemail"
-                dns_api_cmd="--dns dns_cf"
-                ;;
-            2) # DNSPod
-                read -s -p "请输入 DNSPod DP_Id: " DPID; echo
-                export DP_Id="$DPID"
-                read -s -p "请输入 DNSPod DP_Key: " DPKEY; echo
-                export DP_Key="$DPKEY"
-                dns_api_cmd="--dns dns_dp"
-                ;;
-            3) # Aliyun
-                read -s -p "请输入 Aliyun Ali_Key: " ALKEY; echo
-                export Ali_Key="$ALKEY"
-                read -s -p "请输入 Aliyun Ali_Secret: " ALSER; echo
-                export Ali_Secret="$ALSER"
-                dns_api_cmd="--dns dns_ali"
-                ;;
-            *)
-                red "无效的服务商选择。"
-                return 1
-                ;;
-        esac
-        issue_cmd="$ACME_SH_INSTALL_DIR --issue -d $domain $dns_api_cmd -k ec-256 --force"
-    
-    else
-        red "无效的模式选择。"
-        return 1
-    fi
-
-    # 5. 执行申请
-    log "正在执行 ACME 证书申请，请稍候..."
-    eval $issue_cmd
-    if [ $? -ne 0 ]; then
-        red "ACME 证书申请失败！"
-        return 1
-    fi
-    
-    # 6. 安装证书到 ax 目录
-    log "正在安装证书到 $cert_dir ..."
-    mkdir -p "$cert_dir"
-    "$ACME_SH_INSTALL_DIR" --install-cert -d "$domain" --ecc \
-        --fullchain-file "$cert_dir/fullchain.cer" \
-        --key-file "$cert_dir/private.key"
-        
-    if [ -f "$cert_dir/fullchain.cer" ]; then
-        green "证书 $domain 已成功安装到 $cert_dir"
-        # 确保 cron 任务已设置
-        "$ACME_SH_INSTALL_DIR" --cron -f >/dev/null 2>&1
-        return 0
-    else
-        red "证书安装失败！"
-        return 1
-    fi
-}
 
 # =============================================================================
 # 13. 核心程序下载与安装函数
@@ -1328,7 +1151,7 @@ create_new_instance() {
                 fi
 
                 # 尝试申请证书，如果失败直接退出
-                if ! ax_get_certificate "$domain_name"; then
+                if ! bash ax-acme.sh -n "$domain_name"; then
                     red "ACME 证书申请流程失败，已取消创建实例。"
                     return 1
                 fi
@@ -2099,7 +1922,7 @@ start_new_chain_instance() {
             fi
 
             # 尝试申请证书，如果失败直接退出
-            if ! ax_get_certificate "$domain_name"; then
+            if ! bash ax-acme.sh -n "$domain_name"; then
                 red "ACME 证书申请流程失败，已取消创建实例。"
                 return 1
             fi
