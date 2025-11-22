@@ -409,7 +409,7 @@ install_dependencies_and_programs(){
     if [ ${#packages_to_install[@]} -gt 0 ]; then
         echo ""
         yellow "开始下载安装 系统依赖组件..."
-        echo "
+        echo ""
         
         # 逐个显示要安装的包
         for pkg in "${packages_to_install[@]}"; do
