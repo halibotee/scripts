@@ -2506,7 +2506,43 @@ restart_all_services(){ log "正在重启所有正在运行的实例..."; system
 # -----------------------------------------------------------------------------
 # 检查并更新所有核心程序
 # -----------------------------------------------------------------------------
-check_for_updates(){ log "检查更新..."; download_kcp_udp_binaries; download_hysteria2_binary; download_xray_binary; log "所有程序已更新到最新版本，重启所有服务以应用..."; restart_all_services; sleep 2;}
+check_for_updates(){
+    log "检查更新..."
+    
+    # 记录更新前的版本
+    local kcp_before=$(cat "$KCP_INSTALL_DIR/version.txt" 2>/dev/null)
+    local udp_before=$(cat "$UDP2RAW_INSTALL_DIR/version.txt" 2>/dev/null)
+    local hy2_before=$(cat "$HY2_INSTALL_DIR/version.txt" 2>/dev/null)
+    local xray_before=$(cat "$XRAY_INSTALL_DIR/version.txt" 2>/dev/null)
+    
+    # 执行更新检查与下载
+    download_kcp_udp_binaries
+    download_hysteria2_binary
+    download_xray_binary
+    
+    # 检查是否有任何更新
+    local kcp_after=$(cat "$KCP_INSTALL_DIR/version.txt" 2>/dev/null)
+    local udp_after=$(cat "$UDP2RAW_INSTALL_DIR/version.txt" 2>/dev/null)
+    local hy2_after=$(cat "$HY2_INSTALL_DIR/version.txt" 2>/dev/null)
+    local xray_after=$(cat "$XRAY_INSTALL_DIR/version.txt" 2>/dev/null)
+    
+    local has_updates=false
+    if [[ "$kcp_before" != "$kcp_after" ]] || [[ "$udp_before" != "$udp_after" ]] || \
+       [[ "$hy2_before" != "$hy2_after" ]] || [[ "$xray_before" != "$xray_after" ]]; then
+        has_updates=true
+    fi
+    
+    # 只有在有更新时才执行后续操作
+    if [[ "$has_updates" == true ]]; then
+        log "所有程序已更新到最新版本，重启所有服务以应用..."
+        restart_all_services
+        sleep 2
+    else
+        echo ""
+        green "所有程序均已是最新版本，无需更新。"
+        echo ""
+    fi
+}
 
 # -----------------------------------------------------------------------------
 # [NEW] 安装 VPS 一键优化脚本
