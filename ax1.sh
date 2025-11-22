@@ -975,15 +975,15 @@ download_xray_binary(){
         download_with_retry "$xray_url" /tmp/xray.zip || { red "Xray-core 下载失败。"; return 1; }
         unzip -o /tmp/xray.zip -d "$XRAY_INSTALL_DIR" xray geoip.dat geosite.dat && \
         echo "$xray_latest" > "$XRAY_INSTALL_DIR/version.txt" && chmod +x "$XRAY_INSTALL_DIR/xray" || { red "Xray-core 解压失败。"; return 1; }
+        
+        # 复制 geo dat 文件到 Hysteria2 目录 (供 Hysteria2 使用)
+        log "正在复制 geoip.dat / geosite.dat 到 Hysteria2 目录..."
+        cp -n "$XRAY_INSTALL_DIR/geoip.dat" "$HY2_INSTALL_DIR/" 2>/dev/null
+        cp -n "$XRAY_INSTALL_DIR/geosite.dat" "$HY2_INSTALL_DIR/" 2>/dev/null
+        chmod 644 "$HY2_INSTALL_DIR/geoip.dat" "$HY2_INSTALL_DIR/geosite.dat" 2>/dev/null
     else
         green "Xray-core 已是最新版本 ($xray_latest)"
     fi
-    
-    # 复制 geo dat 文件到 Hysteria2 目录 (供 Hysteria2 使用)
-    log "正在复制 geoip.dat / geosite.dat 到 Hysteria2 目录..."
-    cp -n "$XRAY_INSTALL_DIR/geoip.dat" "$HY2_INSTALL_DIR/" 2>/dev/null
-    cp -n "$XRAY_INSTALL_DIR/geosite.dat" "$HY2_INSTALL_DIR/" 2>/dev/null
-    chmod 644 "$HY2_INSTALL_DIR/geoip.dat" "$HY2_INSTALL_DIR/geosite.dat" 2>/dev/null
 }
 
 # =============================================================================
