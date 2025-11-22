@@ -22,7 +22,7 @@ readtp(){ read -t5 -n26 -p "$(yellow "$1")" $2;}
 readp(){ read -p "$(yellow "$1")" $2;}
 
 # --- 版本号定义 ---
-SCRIPT_VERSION="1.0.2-safe from halibotee"
+SCRIPT_VERSION="1.0.3-safe from halibotee"
 
 # --- 日志文件定义 ---
 FULL_LOG_FILE="/var/log/cfwarp_socks5.log"
