@@ -366,34 +366,49 @@ get_public_ip() {
 # 安装脚本所需的核心系统依赖
 # -----------------------------------------------------------------------------
 install_dependencies(){
+    log "正在检查系统依赖包..."
+    
     local packages_to_install=()
+    local missing_count=0
+    
     # 检查并添加缺失的依赖包
-    ! command -v curl &>/dev/null && packages_to_install+=("curl")
-    ! command -v wget &>/dev/null && packages_to_install+=("wget")
-    ! command -v tar &>/dev/null && packages_to_install+=("tar")
-    ! command -v unzip &>/dev/null && packages_to_install+=("unzip")
-    ! command -v nano &>/dev/null && packages_to_install+=("nano")
-    ! command -v iptables &>/dev/null && packages_to_install+=("iptables")
-    ! command -v uuidgen &>/dev/null && packages_to_install+=("uuid-runtime")
-    ! command -v openssl &>/dev/null && packages_to_install+=("openssl")
-    ! command -v jq &>/dev/null && packages_to_install+=("jq")
-    ! command -v socat &>/dev/null && packages_to_install+=("socat") # ACME 申请证书 (80端口模式) 需要
+    ! command -v curl &>/dev/null && packages_to_install+=("curl") && ((missing_count++))
+    ! command -v wget &>/dev/null && packages_to_install+=("wget") && ((missing_count++))
+    ! command -v tar &>/dev/null && packages_to_install+=("tar") && ((missing_count++))
+    ! command -v unzip &>/dev/null && packages_to_install+=("unzip") && ((missing_count++))
+    ! command -v nano &>/dev/null && packages_to_install+=("nano") && ((missing_count++))
+    ! command -v iptables &>/dev/null && packages_to_install+=("iptables") && ((missing_count++))
+    ! command -v uuidgen &>/dev/null && packages_to_install+=("uuid-runtime") && ((missing_count++))
+    ! command -v openssl &>/dev/null && packages_to_install+=("openssl") && ((missing_count++))
+    ! command -v jq &>/dev/null && packages_to_install+=("jq") && ((missing_count++))
+    ! command -v socat &>/dev/null && packages_to_install+=("socat") && ((missing_count++)) # ACME 申请证书 (80端口模式) 需要
 
     # ACME DNS 模式依赖 (dig 命令)
     if ! command -v dig &>/dev/null; then
         if command -v apt-get &>/dev/null; then
             packages_to_install+=("dnsutils")
+            ((missing_count++))
         elif command -v yum &>/dev/null || command -v dnf &>/dev/null; then
             packages_to_install+=("bind-utils")
+            ((missing_count++))
         fi
     fi
 
     # 执行安装
     if [ ${#packages_to_install[@]} -gt 0 ]; then
-        log "更新软件包列表并安装核心依赖: ${packages_to_install[*]}..."
-        (apt-get update && apt-get install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
-        (yum install -y epel-release && yum install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
-        (dnf install -y "${packages_to_install[@]}") >/dev/null 2>&1
+        yellow "检测到 $missing_count 个缺失的依赖包: ${packages_to_install[*]}"
+        log "正在自动安装缺失的依赖包，请稍候..."
+        
+        if (apt-get update && apt-get install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
+           (yum install -y epel-release && yum install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
+           (dnf install -y "${packages_to_install[@]}") >/dev/null 2>&1; then
+            green "✓ 依赖包安装完成！"
+        else
+            red "✗ 部分依赖包安装失败，脚本可能无法正常运行。"
+            yellow "请手动安装: ${packages_to_install[*]}"
+        fi
+    else
+        green "✓ 所有依赖包已安装。"
     fi
 }
 
