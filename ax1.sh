@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.1.31"
+SCRIPT_VERSION="1.1.32"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -2541,21 +2541,21 @@ check_for_updates(){
 # -----------------------------------------------------------------------------
 install_sys_opt() {
     echo "----------------------------------------------------------------"
-    log "即将开始下载并运行 VPS 一键优化脚本 (vps_optimizert.sh) ..."
+    log "即将开始下载并运行 ax-optz.sh) ..."
     
     # 运行用户提供的命令
-    wget --no-check-certificate -O vps_optimizert.sh "https://raw.githubusercontent.com/halibotee/scripts/main/vps_optimizert.sh" && chmod +x vps_optimizert.sh && ./vps_optimizert.sh
+    wget --no-check-certificate -O ax-optz.sh "https://raw.githubusercontent.com/halibotee/scripts/main/ax-optz.sh" && chmod +x ax-optz.sh && ./ax-optz.sh
     
     # 检查脚本是否成功下载（作为执行后的一个简单反馈）
-    if [ ! -f "vps_optimizert.sh" ]; then
+    if [ ! -f "ax-optz.sh" ]; then
          echo "----------------------------------------------------------------"
-         red "错误：下载 vps_optimizert.sh 失败或脚本未正确执行。"
+         red "错误：下载 ax-optz.sh 失败或脚本未正确执行。"
          log "即将返回主菜单..."
          return 1 # 返回错误状态
     fi
 
     echo "----------------------------------------------------------------"
-    green "VPS 一键优化脚本 (vps_optimizert.sh) 执行完毕。"
+    green "VPS 一键优化脚本 (ax-optz.sh) 执行完毕。"
     log "即将返回主菜单..."
 }
 
@@ -2564,20 +2564,20 @@ install_sys_opt() {
 # -----------------------------------------------------------------------------
 install_warp_yg() {
     echo "----------------------------------------------------------------"
-    log "即将开始下载并运行 warp-socket5.sh 脚本..."
+    log "即将开始下载并运行 ax-warp.sh 脚本..."
     
     # 运行用户提供的命令
-    wget --no-check-certificate -O warp-socket5.sh "https://raw.githubusercontent.com/halibotee/scripts/main/warp-socket5.sh" && chmod +x warp-socket5.sh && ./warp-socket5.sh
+    wget --no-check-certificate -O ax-warp.sh "https://raw.githubusercontent.com/halibotee/scripts/main/ax-warp.sh" && chmod +x ax-warp.sh && ./ax-warp.sh
     
-    if [ ! -f "warp-socket5.sh" ]; then
+    if [ ! -f "ax-warp.sh" ]; then
          echo "----------------------------------------------------------------"
-         red "错误：下载 warp-socket5.sh 失败或脚本未正确执行。"
+         red "错误：下载 ax-warp.sh 失败或脚本未正确执行。"
          log "即将返回主菜单..."
          return 1 # 返回错误状态
     fi
     
     echo "----------------------------------------------------------------"
-    green "warp-socket5.sh 脚本 执行完毕。"
+    green "ax-warp.sh 脚本 执行完毕。"
     log "即将返回主菜单..."
 }
 
@@ -2591,7 +2591,7 @@ uninstall_all() {
         return 1
     fi
     
-    read -p "是否要执行彻底清理（删除所有配置文件和证书）？(默认“否”) [y/N]: " nuke_choice
+    read -p "是否要执行彻底清理（删除所有配置文件，保留证书）？(默认“否”) [y/N]: " nuke_choice
     log "开始卸载流程..."
     log "步骤 1: 停止并禁用所有相关服务..."
     systemctl stop "ax-kcptun@*.service" "ax-udp2raw@*.service" "ax-xray@*.service" "ax-hysteria2@*.service" "hysteria-server@*.service" 2>/dev/null
@@ -2606,33 +2606,12 @@ uninstall_all() {
     green "Systemd 服务文件已删除。"
     if [[ "$nuke_choice" == "y" || "$nuke_choice" == "Y" ]]; then
         log "步骤 3: 执行彻底清理..."
-        rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$HY2_INSTALL_DIR" "$XRAY_INSTALL_DIR" "$AX_CERT_DIR"
-        green "程序和配置文件目录已删除。"
-        
-        log "步骤 4: 删除生成的证书..."
-        rm -f /etc/ssl/private/bing.com.crt /etc/ssl/private/bing.com.key
-        green "自签名证书已删除。"
-        
-        # 清理 ACME.sh 证书客户端
-        if [ -d "/root/.acme.sh" ]; then
-            log "步骤 5: 清理 ACME.sh 证书客户端..."
-            
-            # 先尝试使用 acme.sh 的官方卸载命令 (会自动清理 cron 任务)
-            if [ -f "/root/.acme.sh/acme.sh" ]; then
-                yellow "正在卸载 ACME.sh 客户端并清理 cron 任务..."
-                /root/.acme.sh/acme.sh --uninstall > /dev/null 2>&1 || true
-            fi
-            
-            # 删除整个 acme.sh 目录 (包含所有证书和配置)
-            rm -rf /root/.acme.sh
-            green "ACME.sh 客户端、证书和 cron 任务已删除。"
-        else
-            yellow "未检测到 ACME.sh 客户端，跳过清理。"
-        fi
+        rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$HY2_INSTALL_DIR" "$XRAY_INSTALL_DIR"
+        green "程序和配置文件目录已删除 (证书已保留)。"
         
         # 清理 WARP-Socks5
         if command -v warp-cli &> /dev/null || [ -f /etc/apt/sources.list.d/cloudflare-client.list ]; then
-            log "步骤 5.1: 清理 WARP-Socks5 客户端..."
+            log "步骤 4: 清理 WARP-Socks5 客户端..."
             
             # 断开并删除 WARP 配置
             if command -v warp-cli &> /dev/null; then
@@ -2664,12 +2643,12 @@ uninstall_all() {
         rm -f "$XRAY_INSTALL_DIR/xray" "$XRAY_INSTALL_DIR/geoip.dat" "$XRAY_INSTALL_DIR/geosite.dat"
         green "程序文件已删除。"
     fi
-    log "步骤 6: 清理残留的二进制文件..."
+    log "步骤 5: 清理残留的二进制文件..."
     rm -f /usr/local/bin/hysteria
     green "残留二进制文件已清理。"
-    log "步骤 7: 清理临时文件..."
+    log "步骤 6: 清理临时文件..."
     rm -f /tmp/kcptun.tar.gz /tmp/udp2raw.tar.gz /tmp/xray.zip
-    log "步骤 8: 重载 systemd 并清理状态..."
+    log "步骤 7: 重载 systemd 并清理状态..."
     systemctl daemon-reload; systemctl reset-failed
     green "Systemd 已重载并清理。"
     
@@ -2678,7 +2657,7 @@ uninstall_all() {
     yellow "提示：请手动删除此脚本文件。"
     
     # 检查是否还有 acme.sh 残留
-    if [[ "$nuke_choice" != "y" && "$nuke_choice" != "Y" ]] && [ -d "/root/.acme.sh" ]; then
+    if [ -d "/root/.acme.sh" ]; then
         yellow "提示：检测到 ACME.sh 证书客户端仍存在，您可运行以下命令手动卸载："
         cyan "      /root/.acme.sh/acme.sh --uninstall && rm -rf /root/.acme.sh"
     fi
