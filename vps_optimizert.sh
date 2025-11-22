@@ -1080,7 +1080,8 @@ fn_set_system_limits() {
         return 2
     fi
     
-    cp "$limits_file" "${BACKUP_DIR}/limits.conf.bak" 2>/dev/null || true
+    # 备份到文件同级目录 (保持与恢复逻辑一致)
+    cp "$limits_file" "${limits_file}.bak" 2>/dev/null || true
     
     cat >> "$limits_file" <<EOF
 
