@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.3"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -363,53 +363,122 @@ get_public_ip() {
 }
 
 # -----------------------------------------------------------------------------
-# 安装脚本所需的核心系统依赖
+# 统一检测与安装系统依赖和核心程序
 # -----------------------------------------------------------------------------
-install_dependencies(){
-    log "正在检查系统依赖包..."
+install_dependencies_and_programs(){
+    echo ""
+    cyan "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log "正在检测 系统依赖组件与核心程序..."
+    cyan "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
     
+    # ========== 第一阶段：检测系统依赖组件 ==========
     local packages_to_install=()
-    local missing_count=0
+    local missing_deps=()
     
-    # 检查并添加缺失的依赖包
-    ! command -v curl &>/dev/null && packages_to_install+=("curl") && ((missing_count++))
-    ! command -v wget &>/dev/null && packages_to_install+=("wget") && ((missing_count++))
-    ! command -v tar &>/dev/null && packages_to_install+=("tar") && ((missing_count++))
-    ! command -v unzip &>/dev/null && packages_to_install+=("unzip") && ((missing_count++))
-    ! command -v nano &>/dev/null && packages_to_install+=("nano") && ((missing_count++))
-    ! command -v iptables &>/dev/null && packages_to_install+=("iptables") && ((missing_count++))
-    ! command -v uuidgen &>/dev/null && packages_to_install+=("uuid-runtime") && ((missing_count++))
-    ! command -v openssl &>/dev/null && packages_to_install+=("openssl") && ((missing_count++))
-    ! command -v jq &>/dev/null && packages_to_install+=("jq") && ((missing_count++))
-    ! command -v socat &>/dev/null && packages_to_install+=("socat") && ((missing_count++)) # ACME 申请证书 (80端口模式) 需要
-
-    # ACME DNS 模式依赖 (dig 命令)
+    # 定义需要检查的依赖列表
+    declare -A dep_map=(
+        ["curl"]="curl"
+        ["wget"]="wget"
+        ["tar"]="tar"
+        ["unzip"]="unzip"
+        ["jq"]="jq"
+        ["openssl"]="openssl"
+        ["uuidgen"]="uuid-runtime"
+        ["nano"]="nano"
+        ["iptables"]="iptables"
+        ["socat"]="socat"
+    )
+    
+    # 检查 dig 命令 (DNS 工具)
     if ! command -v dig &>/dev/null; then
         if command -v apt-get &>/dev/null; then
-            packages_to_install+=("dnsutils")
-            ((missing_count++))
+            dep_map["dig"]="dnsutils"
         elif command -v yum &>/dev/null || command -v dnf &>/dev/null; then
-            packages_to_install+=("bind-utils")
-            ((missing_count++))
+            dep_map["dig"]="bind-utils"
         fi
     fi
-
-    # 执行安装
+    
+    # 检测缺失的依赖
+    for cmd in "${!dep_map[@]}"; do
+        if ! command -v "$cmd" &>/dev/null; then
+            packages_to_install+=("${dep_map[$cmd]}")
+            missing_deps+=("$cmd")
+        fi
+    done
+    
+    # ========== 第二阶段：安装系统依赖组件 ==========
     if [ ${#packages_to_install[@]} -gt 0 ]; then
-        yellow "检测到 $missing_count 个缺失的依赖包: ${packages_to_install[*]}"
-        log "正在自动安装缺失的依赖包，请稍候..."
+        echo ""
+        yellow "┌────────────────────────────────────────────────────────┐"
+        yellow "│ 开始下载安装 系统依赖组件                              │"
+        yellow "└────────────────────────────────────────────────────────┘"
+        echo ""
         
+        # 逐个显示要安装的包
+        for pkg in "${packages_to_install[@]}"; do
+            cyan "  » 安装 $pkg"
+        done
+        echo ""
+        
+        # 执行实际安装
         if (apt-get update && apt-get install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
            (yum install -y epel-release && yum install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
            (dnf install -y "${packages_to_install[@]}") >/dev/null 2>&1; then
-            green "✓ 依赖包安装完成！"
+            green "✓ 系统依赖组件安装完成！"
         else
-            red "✗ 部分依赖包安装失败，脚本可能无法正常运行。"
-            yellow "请手动安装: ${packages_to_install[*]}"
+            red "✗ 部分系统依赖组件安装失败"
+            yellow "请手动执行: apt install ${packages_to_install[*]}"
+            return 1
         fi
     else
-        green "✓ 所有依赖包已安装。"
+        green "✓ 所有系统依赖组件已就绪"
     fi
+    
+    # ========== 第三阶段：检测与下载核心程序 ==========
+    echo ""
+    yellow "┌────────────────────────────────────────────────────────┐"
+    yellow "│ 开始下载安装 核心程序                                  │"
+    yellow "└────────────────────────────────────────────────────────┘"
+    echo ""
+    
+    # 检查各核心程序文件是否存在
+    local need_download=false
+    local kcp_ok=true; if [[ ! -f "$KCP_INSTALL_DIR/kcptun_server" ]]; then kcp_ok=false; need_download=true; fi
+    local udp_ok=true; if [[ ! -f "$UDP2RAW_INSTALL_DIR/udp2raw" ]]; then udp_ok=false; need_download=true; fi
+    local hy2_ok=true; if [[ ! -f "$HY2_INSTALL_DIR/hysteria" ]]; then hy2_ok=false; need_download=true; fi
+    local xray_ok=true; if [[ ! -f "$XRAY_INSTALL_DIR/xray" ]]; then xray_ok=false; need_download=true; fi
+    
+    if [[ "$need_download" == false ]]; then
+        green "✓ 所有核心程序已就绪"
+        echo ""
+        return 0
+    fi
+    
+    # 下载缺失的核心程序
+    if [[ "$kcp_ok" == false || "$udp_ok" == false ]]; then
+        cyan "  » 下载 KCPTUN/UDP2RAW"
+        download_kcp_udp_binaries || { red "✗ KCPTUN/UDP2RAW 下载失败"; return 1; }
+        green "    ✓ KCPTUN/UDP2RAW 安装完成"
+    fi
+    
+    if [[ "$hy2_ok" == false ]]; then
+        cyan "  » 下载 Hysteria2"
+        download_hysteria2_binary || { red "✗ Hysteria2 下载失败"; return 1; }
+        green "    ✓ Hysteria2 安装完成"
+    fi
+    
+    if [[ "$xray_ok" == false ]]; then
+        cyan "  » 下载 Xray-core"
+        download_xray_binary || { red "✗ Xray-core 下载失败"; return 1; }
+        green "    ✓ Xray-core 安装完成"
+    fi
+    
+    echo ""
+    green "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    green "✓ 所有组件安装完成！"
+    green "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
 }
 
 # -----------------------------------------------------------------------------
@@ -2643,35 +2712,12 @@ initial_check_and_install() {
     # 添加系统兼容性检查
     check_system_compatibility
     
-    install_dependencies
-    local has_configs=false
-    if is_installed; then has_configs=true; fi
+    # 使用统一的安装函数
+    install_dependencies_and_programs || { red "安装失败，退出脚本。"; exit 1; }
     
-    # [REFACTORED] 检查根目录下的文件
-    local kcp_ok=true; if [[ ! -f "$KCP_INSTALL_DIR/kcptun_server" ]]; then kcp_ok=false; fi
-    local udp_ok=true; if [[ ! -f "$UDP2RAW_INSTALL_DIR/udp2raw" ]]; then udp_ok=false; fi
-    local hy2_ok=true; if [[ ! -f "$HY2_INSTALL_DIR/hysteria" ]]; then hy2_ok=false; fi
-    local xray_ok=true; if [[ ! -f "$XRAY_INSTALL_DIR/xray" ]]; then xray_ok=false; fi
-    
-    if [[ "$has_configs" == true && ( "$kcp_ok" == false || "$udp_ok" == false || "$hy2_ok" == false || "$xray_ok" == false ) ]]; then
-        clear; yellow "检测到已存在的配置文件，但核心程序文件不完整。"; read -p "是否保留配置并仅重新安装核心程序？[Y/n] (默认“Y”): " choice
-        if [[ "$choice" != "n" && "$choice" != "N" ]]; then
-            log "正在重新安装核心程序..."
-            [[ "$kcp_ok" == false ]] && download_kcp_udp_binaries
-            [[ "$hy2_ok" == false ]] && download_hysteria2_binary
-            [[ "$xray_ok" == false ]] && download_xray_binary
-            green "核心程序重装完成。"; sleep 2
-        else
-            uninstall_all; exit 0
-        fi
-    elif [[ "$kcp_ok" == false || "$udp_ok" == false || "$hy2_ok" == false || "$xray_ok" == false ]]; then
-        clear; yellow "首次运行或程序不完整，需要下载核心程序文件。"; log "正在自动下载所有核心程序..."
-        [[ "$kcp_ok" == false || "$udp_ok" == false ]] && (download_kcp_udp_binaries || { red "KCP/UDP 下载失败，退出。"; exit 1; })
-        [[ "$hy2_ok" == false ]] && (download_hysteria2_binary || { red "Hysteria2 下载失败，退出。"; exit 1; })
-        [[ "$xray_ok" == false ]] && (download_xray_binary || { red "Xray-core 下载失败，退出。"; exit 1; })
-        green "核心程序准备就绪。"; sleep 2
-    fi
-    ensure_template_files; sleep 1
+    # 确保模板文件就绪
+    ensure_template_files
+    sleep 1
 }
 
 # -----------------------------------------------------------------------------
