@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
 # ax-warpsocket5.sh - WARP Socks5和全局代理管理脚本
-# 版本: 1.0.0
+# 版本: 1.1.0
 # 功能: 管理WireProxy Socks5代理和WARP全局代理
+# 更新: 添加冲突检测、端口修改、重复启动检测等功能
 
-VERSION='1.0.0'
+VERSION='1.1.0'
 
 # 环境变量设置
 export DEBIAN_FRONTEND=noninteractive
@@ -61,11 +62,12 @@ check_operating_system() {
 # 判断虚拟化
 check_virt() {
   if [ "$1" = 'Alpine' ]; then
-    VIRT=$(virt-what | tr '\n' ' ')
+    VIRT=$(virt-what 2>/dev/null | tr '\n' ' ')
   else
-    [ "$(type -p systemd-detect-virt)" ] && VIRT=$(systemd-detect-virt)
+    [ "$(type -p systemd-detect-virt)" ] && VIRT=$(systemd-detect-virt 2>/dev/null)
     [[ -z "$VIRT" && -x "$(type -p hostnamectl)" ]] && VIRT=$(hostnamectl | awk '/Virtualization:/{print $NF}')
   fi
+  VIRT=${VIRT:-"unknown"}
 }
 
 # 获取IP信息
@@ -78,11 +80,11 @@ ip_info() {
   fi
 
   [ "$CHECK_46" = '6' ] && CHOOSE_IP_API='https://api-ipv6.ip.sb/geoip' || CHOOSE_IP_API='https://ipinfo.io/ip'
-  IP_TRACE=$(curl --retry 2 -ksm5 $INTERFACE_SOCK5 https://www.cloudflare.com/cdn-cgi/trace | awk -F '=' '/^warp=/{print $NF}')
+  IP_TRACE=$(curl --retry 2 -ksm5 $INTERFACE_SOCK5 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | awk -F '=' '/^warp=/{print $NF}')
   if [ -n "$IP_TRACE" ]; then
-    local API_IP=$(curl --retry 2 -ksm5 $INTERFACE_SOCK5 --user-agent Mozilla $CHOOSE_IP_API | sed 's/.*"ip":"\([^"]\+\)".*/\1/')
-    [[ -n "$API_IP" && ! "$API_IP" =~ error[[:space:]]+code:[[:space:]]+1015 ]] && local IP_JSON=$(curl --retry 2 -ksm5 https://ip.forvps.gq/${API_IP}) || unset IP_JSON
-    IP_JSON=${IP_JSON:-"$(curl --retry 3 -ks${CHECK_46}m5 $INTERFACE_SOCK5 --user-agent Mozilla https://ifconfig.co/json)"}
+    local API_IP=$(curl --retry 2 -ksm5 $INTERFACE_SOCK5 --user-agent Mozilla $CHOOSE_IP_API 2>/dev/null | sed 's/.*"ip":"\([^"]\+\)".*/\1/')
+    [[ -n "$API_IP" && ! "$API_IP" =~ error[[:space:]]+code:[[:space:]]+1015 ]] && local IP_JSON=$(curl --retry 2 -ksm5 https://ip.forvps.gq/${API_IP} 2>/dev/null) || unset IP_JSON
+    IP_JSON=${IP_JSON:-"$(curl --retry 3 -ks${CHECK_46}m5 $INTERFACE_SOCK5 --user-agent Mozilla https://ifconfig.co/json 2>/dev/null)"}
 
     if [ -n "$IP_JSON" ]; then
       local WAN=$(sed -En 's/.*"(ip|query)":[ ]*"([^"]+)".*/\2/p' <<< "$IP_JSON")
@@ -172,12 +174,15 @@ check_client_status() {
   if [ -x "$(type -p warp-cli)" ]; then
     local CLIENT_CONNECTED=$(warp-cli --accept-tos status 2>/dev/null | awk '/Status update/{for (i=0; i<NF; i++) if ($i=="update:") {print $(i+1)}}')
     if [ "$CLIENT_CONNECTED" = 'Connected' ]; then
-      local CLIENT_MODE=$(warp-cli --accept-tos settings 2>/dev/null | awk '/Mode:/{for (i=0; i<NF; i++) if ($i=="Mode:") {print $(i+1)}}')
+      CLIENT_MODE=$(warp-cli --accept-tos settings 2>/dev/null | awk '/Mode:/{for (i=0; i<NF; i++) if ($i=="Mode:") {print $(i+1)}}')
       if [ "$CLIENT_MODE" = 'Warp' ]; then
-        CLIENT_STATUS="已开启 (WARP全局模式)"
+        CLIENT_STATUS="已开启 (Warp全局模式)"
+        # 对于全局模式，不使用端口
+      elif [ "$CLIENT_MODE" = 'WarpProxy' ]; then
+        CLIENT_STATUS="已开启 (Proxy模式)"
         get_client_ip
       else
-        CLIENT_STATUS="已开启 (Proxy模式，非全局)"
+        CLIENT_STATUS="已开启 (模式未知: $CLIENT_MODE)"
       fi
     else
       CLIENT_STATUS="已安装，断开状态"
@@ -211,20 +216,183 @@ show_info() {
   
   # 显示Client状态  
   if [[ "$CLIENT_STATUS" =~ "已开启" ]]; then
-    info "\t Client $CLIENT_STATUS\t 本地 Socks5: $CLIENT_SOCKS5"
-    info "\t IPv4: $CLIENT_WAN4 $CLIENT_COUNTRY4 $CLIENT_ASNORG4"
-    info "\t IPv6: $CLIENT_WAN6 $CLIENT_COUNTRY6 $CLIENT_ASNORG6 "
+    if [ "$CLIENT_MODE" = 'Warp' ]; then
+      info "\t WARP Client $CLIENT_STATUS"
+      # 全局模式下，获取 CloudflareWARP 接口IP
+      if ip link show 2>/dev/null | grep -q CloudflareWARP; then
+        info "\t 网络接口: CloudflareWARP (全局代理生效)"
+      fi
+    elif [ "$CLIENT_MODE" = 'WarpProxy' ]; then
+      info "\t WARP Client $CLIENT_STATUS\t 本地 Socks5: $CLIENT_SOCKS5"
+      info "\t IPv4: $CLIENT_WAN4 $CLIENT_COUNTRY4 $CLIENT_ASNORG4"
+      info "\t IPv6: $CLIENT_WAN6 $CLIENT_COUNTRY6 $CLIENT_ASNORG6 "
+    fi
   else
-    info "\t Client $CLIENT_STATUS "
+    info "\t WARP Client $CLIENT_STATUS "
   fi
   
   echo "---------------------------------------------------------"
 }
 
+# 检查端口是否被占用
+check_port_conflict() {
+  local PORT=$1
+  local SERVICE_NAME=$2
+  
+  if ss -nltp 2>/dev/null | awk '{print $4}' | awk -F: '{print $NF}' | grep -qw "$PORT"; then
+    local OCCUPIER=$(ss -nltp 2>/dev/null | grep ":$PORT" | awk '{print $NF}' | awk -F'"' '{print $2}' | head -n1)
+    warning " ⚠ 端口 $PORT 已被占用 (占用者: ${OCCUPIER:-未知})"
+    warning "   建议: 关闭占用端口的服务，或修改 $SERVICE_NAME 端口"
+    return 1
+  fi
+  return 0
+}
+
+# 输入端口
+input_port() {
+  local SERVICE_TYPE=$1  # "wireproxy" 或 "client"
+  local i=5
+  local DEFAULT_PORT=40000
+  
+  # 检查默认端口
+  if ss -nltp 2>/dev/null | awk '{print $4}' | awk -F: '{print $NF}' | grep -qw $DEFAULT_PORT; then
+    warning " 默认端口 $DEFAULT_PORT 已被占用"
+    reading " 请输入自定义端口 [1000-65535]: " PORT
+  else
+    reading " 请输入端口 (回车使用默认 $DEFAULT_PORT) [1000-65535]: " PORT
+  fi
+  
+  PORT=${PORT:-$DEFAULT_PORT}
+  
+  # 验证端口
+  until grep -qE "^[1-9][0-9]{3,4}$" <<< $PORT && [[ "$PORT" -ge 1000 && "$PORT" -le 65535 ]] && [[ ! $(ss -nltp 2>/dev/null) =~ :"$PORT"[[:space:]] ]]; do
+    (( i-- )) || true
+    [ "$i" = 0 ] && error " 输入错误达5次，脚本退出"
+    
+    if grep -qwE "^[1-9][0-9]{3,4}$" <<< $PORT; then
+      if [[ "$PORT" -ge 1000 && "$PORT" -le 65535 ]]; then
+        if ss -nltp 2>/dev/null | awk '{print $4}' | awk -F: '{print $NF}' | grep -qw $PORT; then
+          warning " 端口 $PORT 已被占用"
+          reading " 请重新输入端口 (剩余${i}次): " PORT
+          PORT=${PORT:-$DEFAULT_PORT}
+        fi
+      else
+        warning " 端口必须在 1000-65535 范围内"
+        reading " 请重新输入 (剩余${i}次): " PORT
+        PORT=${PORT:-$DEFAULT_PORT}
+      fi
+    else
+      warning " 端口格式不正确"
+      reading " 请输入有效端口 (剩余${i}次): " PORT
+      PORT=${PORT:-$DEFAULT_PORT}
+    fi
+  done
+}
+
+# 修改 WireProxy 端口
+change_wireproxy_port() {
+  if [ ! -x "$(type -p wireproxy)" ]; then
+    error " WireProxy 未安装"
+  fi
+  
+  if [ ! -f "/etc/wireguard/proxy.conf" ]; then
+    error " WireProxy 配置文件不存在: /etc/wireguard/proxy.conf"
+  fi
+  
+  # 获取当前端口
+  local CURRENT_PORT=$(grep "BindAddress" /etc/wireguard/proxy.conf 2>/dev/null | awk -F: '{print $NF}')
+  info " 当前 WireProxy 端口: ${CURRENT_PORT:-未知}"
+  
+  # 输入新端口
+  input_port "wireproxy"
+  
+  info " 正在修改 WireProxy 端口为: $PORT"
+  
+  # 停止服务
+  if [ "$SYSTEM" = "Alpine" ]; then
+    rc-service wireproxy stop >/dev/null 2>&1
+  else
+    systemctl stop wireproxy >/dev/null 2>&1
+  fi
+  
+  # 修改配置
+  sed -i "s/BindAddress.*/BindAddress = 127.0.0.1:$PORT/g" /etc/wireguard/proxy.conf
+  
+  # 启动服务
+  if [ "$SYSTEM" = "Alpine" ]; then
+    rc-service wireproxy start >/dev/null 2>&1
+  else
+    systemctl start wireproxy >/dev/null 2>&1
+  fi
+  
+  sleep 2
+  
+  # 验证
+  if ss -nltp 2>/dev/null | grep -q ":$PORT.*wireproxy"; then
+    info " ✓ WireProxy 端口已成功修改为: $PORT"
+    get_wireproxy_ip
+    info " 新的 Socks5 地址: 127.0.0.1:$PORT"
+  else
+    error " ✗ 端口修改失败，请检查配置"
+  fi
+}
+
+# 修改 Client 端口
+change_client_port() {
+  if [ ! -x "$(type -p warp-cli)" ]; then
+    error " WARP Client 未安装"
+  fi
+  
+  # 检查当前模式
+  local CURRENT_MODE=$(warp-cli --accept-tos settings 2>/dev/null | awk '/Mode:/{for (i=0; i<NF; i++) if ($i=="Mode:") {print $(i+1)}}')
+  
+  if [ "$CURRENT_MODE" != "WarpProxy" ]; then
+    warning " WARP Client 当前不在 Proxy 模式"
+    warning " 端口修改仅在 Proxy 模式下有效"
+    reading " 是否切换到 Proxy 模式? [y/N]: " SWITCH_MODE
+    
+    if [[ "${SWITCH_MODE,,}" == "y" ]]; then
+      warp-cli --accept-tos mode proxy >/dev/null 2>&1
+      sleep 1
+    else
+      info " 已取消"
+      return 0
+    fi
+  fi
+  
+  # 获取当前端口
+  local CURRENT_PORT=$(ss -nltp 2>/dev/null | awk '/"warp-svc"/{print $4}' | cut -d: -f2)
+  info " 当前 WARP Client 端口: ${CURRENT_PORT:-未知}"
+  
+  # 输入新端口
+  input_port "client"
+  
+  info " 正在修改 WARP Client 端口为: $PORT"
+  warp-cli --accept-tos proxy port "$PORT" >/dev/null 2>&1
+  sleep 2
+  
+  # 验证
+  if ss -nltp 2>/dev/null | grep -q ":$PORT.*warp-svc"; then
+    info " ✓ WARP Client 端口已成功修改为: $PORT"
+    get_client_ip
+    info " 新的 Socks5 地址: 127.0.0.1:$PORT"
+  else
+    error " ✗ 端口修改失败"
+  fi
+}
+
 # 开启 WireProxy (Socks5代理)
 enable_wireproxy() {
   if [ ! -x "$(type -p wireproxy)" ]; then
-    error " WireProxy 未安装，请先使用 warp.sh 安装"
+    error " WireProxy 未安装，请先使用 menu.sh 安装: bash menu.sh w"
+  fi
+  
+  # 检查是否已经运行
+  if ss -nltp 2>/dev/null | awk '{print $NF}' | awk -F \" '{print $2}' | grep -q wireproxy; then
+    warning " WireProxy 已在运行中，无需重复启动"
+    get_wireproxy_ip
+    info " 当前 Socks5: $WIREPROXY_SOCKS5"
+    return 0
   fi
   
   info " 正在启动 WireProxy Socks5 代理..."
@@ -244,7 +412,7 @@ enable_wireproxy() {
     info " IPv4: $WIREPROXY_WAN4 $WIREPROXY_COUNTRY4 $WIREPROXY_ASNORG4"
     info " IPv6: $WIREPROXY_WAN6 $WIREPROXY_COUNTRY6 $WIREPROXY_ASNORG6"
   else
-    error " ✗ WireProxy 启动失败"
+    error " ✗ WireProxy 启动失败，请检查配置和日志"
   fi
 }
 
@@ -253,6 +421,12 @@ disable_wireproxy() {
   if [ ! -x "$(type -p wireproxy)" ]; then
     warning " WireProxy 未安装"
     return 1
+  fi
+  
+  # 检查是否在运行
+  if ! ss -nltp 2>/dev/null | awk '{print $NF}' | awk -F \" '{print $2}' | grep -q wireproxy; then
+    warning " WireProxy 未在运行"
+    return 0
   fi
   
   info " 正在关闭 WireProxy Socks5 代理..."
@@ -275,31 +449,51 @@ disable_wireproxy() {
 # 开启 Client 全局代理
 enable_client_global() {
   if [ ! -x "$(type -p warp-cli)" ]; then
-    error " WARP Client 未安装，请先使用 warp.sh 安装"
+    error " WARP Client 未安装，请先使用 menu.sh 安装: bash menu.sh l"
+  fi
+  
+  # 检查连接状态
+  local CLIENT_CONNECTED=$(warp-cli --accept-tos status 2>/dev/null | awk '/Status update/{for (i=0; i<NF; i++) if ($i=="update:") {print $(i+1)}}')
+  local CURRENT_MODE=$(warp-cli --accept-tos settings 2>/dev/null | awk '/Mode:/{for (i=0; i<NF; i++) if ($i=="Mode:") {print $(i+1)}}')
+  
+  # 如果已连接且是Warp模式
+  if [ "$CLIENT_CONNECTED" = 'Connected' ] && [ "$CURRENT_MODE" = 'Warp' ]; then
+    warning " WARP Client 全局代理已在运行中"
+    return 0
   fi
   
   info " 正在启动 WARP Client 全局代理..."
   
-  # 确保模式为 Warp (全局模式)
-  local CURRENT_MODE=$(warp-cli --accept-tos settings 2>/dev/null | awk '/Mode:/{for (i=0; i<NF; i++) if ($i=="Mode:") {print $(i+1)}}')
-  if [ "$CURRENT_MODE" != "Warp" ]; then
-    info " 设置为 WARP 全局模式..."
-    warp-cli --accept-tos mode warp >/dev/null 2>&1
+  # 如果当前是Proxy模式，需要先断开
+  if [ "$CURRENT_MODE" = "WarpProxy" ]; then
+    hint " 检测到当前为 Proxy 模式，正在切换到 Warp 全局模式..."
+    warp-cli --accept-tos disconnect >/dev/null 2>&1
     sleep 1
   fi
   
+  # 设置为 Warp 模式
+  info " 设置为 WARP 全局模式..."
+  warp-cli --accept-tos mode warp >/dev/null 2>&1
+  sleep 1
+  
   # 连接
+  hint " 正在连接 WARP..."
   warp-cli --accept-tos connect >/dev/null 2>&1
-  sleep 2
+  sleep 3
   
   local CLIENT_CONNECTED=$(warp-cli --accept-tos status 2>/dev/null | awk '/Status update/{for (i=0; i<NF; i++) if ($i=="update:") {print $(i+1)}}')
   if [ "$CLIENT_CONNECTED" = 'Connected' ]; then
-    get_client_ip
     info " ✓ WARP Client 全局代理已成功启动"
-    info " IPv4: $CLIENT_WAN4 $CLIENT_COUNTRY4 $CLIENT_ASNORG4"
-    info " IPv6: $CLIENT_WAN6 $CLIENT_COUNTRY6 $CLIENT_ASNORG6"
+    
+    # 检查网络接口
+    if ip link show 2>/dev/null | grep -q CloudflareWARP; then
+      info " ✓ CloudflareWARP 网络接口已创建"
+      info " 所有网络流量现在通过 WARP"
+    else
+      warning " ⚠ CloudflareWARP 接口未检测到，可能需要等待几秒"
+    fi
   else
-    error " ✗ WARP Client 连接失败"
+    error " ✗ WARP Client 连接失败，请检查配置"
   fi
 }
 
@@ -308,6 +502,13 @@ disable_client_global() {
   if [ ! -x "$(type -p warp-cli)" ]; then
     warning " WARP Client 未安装"
     return 1
+  fi
+  
+  local CLIENT_CONNECTED=$(warp-cli --accept-tos status 2>/dev/null | awk '/Status update/{for (i=0; i<NF; i++) if ($i=="update:") {print $(i+1)}}')
+  
+  if [ "$CLIENT_CONNECTED" != 'Connected' ]; then
+    warning " WARP Client 未在运行"
+    return 0
   fi
   
   info " 正在关闭 WARP Client 全局代理..."
@@ -382,11 +583,12 @@ show_menu() {
   
   show_info
   
-  hint " 1）开启 warp socket5代理"
-  hint " 2）开启 warp全局代理"
+  hint " 1）开启 warp socket5代理 (WireProxy)"
+  hint " 2）开启 warp全局代理 (WARP Client Warp模式)"
   hint " 3）关闭 warp socket5代理"
   hint " 4）关闭 warp全局代理"
-  hint " 5）卸载"
+  hint " 5）修改 Socks5 端口"
+  hint " 6）卸载"
   hint " 0）退出"
   reading " 请选择: " CHOICE
   
@@ -404,6 +606,20 @@ show_menu() {
       disable_client_global
       ;;
     5)
+      # 端口修改子菜单
+      hint "\n 选择要修改端口的服务:"
+      hint " 1) WireProxy"
+      hint " 2) WARP Client"
+      hint " 0) 返回"
+      reading " 请选择: " PORT_CHOICE
+      case "$PORT_CHOICE" in
+        1) change_wireproxy_port ;;
+        2) change_client_port ;;
+        0) show_menu ;;
+        *) warning " 无效选择"; sleep 1; show_menu ;;
+      esac
+      ;;
+    6)
       uninstall
       ;;
     0)
@@ -411,7 +627,7 @@ show_menu() {
       exit 0
       ;;
     *)
-      warning " 请输入正确数字 [0-5]"
+      warning " 请输入正确数字 [0-6]"
       sleep 1
       show_menu
       ;;
@@ -453,6 +669,29 @@ main() {
     -u)
       # 卸载
       uninstall
+      ;;
+    -p)
+      # 修改端口（隐藏功能）
+      if [ "$2" = "wireproxy" ]; then
+        change_wireproxy_port
+      elif [ "$2" = "client" ]; then
+        change_client_port
+      else
+        info " 用法: $0 -p [wireproxy|client]"
+      fi
+      ;;
+    -h|--help)
+      info " ax-warpsocket5.sh v$VERSION - WARP 代理管理脚本"
+      info ""
+      info " 用法:"
+      info "   $0           # 显示交互菜单"
+      info "   $0 -s        # 开启 WireProxy Socks5 代理"
+      info "   $0 -w        # 开启 WARP Client 全局代理"
+      info "   $0 -cs       # 关闭 WireProxy Socks5 代理"
+      info "   $0 -cw       # 关闭 WARP Client 全局代理"
+      info "   $0 -p wireproxy  # 修改 WireProxy 端口"
+      info "   $0 -p client     # 修改 Client 端口"
+      info "   $0 -u        # 卸载所有组件"
       ;;
     *)
       # 默认显示菜单
