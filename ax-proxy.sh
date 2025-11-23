@@ -754,7 +754,7 @@ collect_warp_config() {
                  return 0
              fi
         fi
-        fi
+
 
         green "已启用 WARP SOCKS5 分流 (地址: ${warp_addr}:${warp_port})。" >&2
         echo "$warp_config_block"
