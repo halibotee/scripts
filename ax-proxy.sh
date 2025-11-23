@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.0.3"
+SCRIPT_VERSION="1.0.31"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -723,8 +723,25 @@ collect_warp_config() {
         
         
         # 检查 WARP 端口是否在监听
-        if [ ! -x "$(type -p wireproxy)" ]; then
+         if [ ! -x "$(type -p wireproxy)" ]; then
              yellow "警告: 检测到端口 ${warp_port} 未被监听！" >&2
+                             
+                 # 尝试安装
+                 if bash ax-warp.sh -s; then
+                     green "WireProxy 安装并启动成功！" >&2
+                 else
+                     red "WireProxy 安装失败。" >&2
+                     yellow "请尝试手动运行: bash ax-warp.sh -s" >&2
+                     # 返回直连配置
+                     if [[ "$service_type" == "hysteria2" ]]; then
+                         echo "$HYSTERIA2_DIRECT_ACL_BLOCK"
+                     else
+                         echo "$XRAY_DIRECT_OUTBOUND_AND_ROUTING_BLOCK"
+                     fi
+                     return 0
+                 fi
+             fi
+             
              yellow "正在自动启动 WARP SOCKS5 服务..." >&2
              
              # 确保 ax-warp.sh 脚本存在
