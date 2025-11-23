@@ -730,29 +730,13 @@ collect_warp_config() {
         
         # 检查 WARP 端口是否在监听
         # 检查 WARP 端口是否在监听 (同时判断 wireproxy 和 端口)
-        if [ -x "$(type -p wireproxy)" ] && ss -tuln | grep -q ":${warp_port} "; then
+        # 检查 WARP 端口是否在监听
+        if ss -tuln | grep -q ":${warp_port} "; then
              green "检测到 WARP 服务正在运行于端口 ${warp_port}。" >&2
         else
-             yellow "WARP 服务未运行，正在尝试启动..." >&2
-             
-             # 确保脚本存在
-             ensure_ax_script "ax-warp.sh"
-             
-             # 尝试启动
-             if bash ax-warp.sh -s >&2; then
-                 green "WARP SOCKS5 服务已启动。" >&2
-             else
-                 red "WARP SOCKS5 服务启动失败。" >&2
-                 yellow "请在主菜单选择 '14) 配置warp分流' 手动配置。" >&2
-                 
-                 # 返回直连配置
-                 if [[ "$service_type" == "hysteria2" ]]; then
-                     echo "$HYSTERIA2_DIRECT_ACL_BLOCK"
-                 else
-                     echo "$XRAY_DIRECT_OUTBOUND_AND_ROUTING_BLOCK"
-                 fi
-                 return 0
-             fi
+             yellow "注意: 检测到 WARP 服务未运行 (端口 ${warp_port})。" >&2
+             yellow "请在安装完成后，通过主菜单 '14) 配置warp分流' 手动启动 WARP 服务。" >&2
+             yellow "当前将继续生成启用 WARP 分流的配置。" >&2
         fi
 
 
