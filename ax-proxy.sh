@@ -2631,23 +2631,8 @@ check_system_compatibility() {
         exit 1
     fi
     
-    # 检查必要的命令是否可用
-    local required_commands=("curl" "wget" "jq" "openssl")
-    local missing_commands=()
-    
-    for cmd in "${required_commands[@]}"; do
-        if ! command -v "$cmd" &> /dev/null; then
-            missing_commands+=("$cmd")
-        fi
-    done
-    
-    if [[ ${#missing_commands[@]} -gt 0 ]]; then
-        yellow "警告: 以下必要命令在系统中不可用:"
-        for cmd in "${missing_commands[@]}"; do
-            echo "  - $cmd"
-        done
-        yellow "将尝试在初始化过程中安装这些依赖"
-    fi
+    # 依赖检查已移至 install_dependencies_and_programs 函数
+    # 该函数会静默安装所有缺失的依赖，无需警告提示
 }
 
 # -----------------------------------------------------------------------------
