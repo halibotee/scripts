@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.0.1"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -2631,8 +2631,16 @@ check_system_compatibility() {
         exit 1
     fi
     
-    # 依赖检查已移至 install_dependencies_and_programs 函数
-    # 该函数会静默安装所有缺失的依赖，无需警告提示
+    # 检查必要的命令是否可用
+    local required_commands=("curl" "wget" "jq" "openssl")
+    local missing_commands=()
+    
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            missing_commands+=("$cmd")
+        fi
+    done
+    
 }
 
 # -----------------------------------------------------------------------------
@@ -2722,7 +2730,7 @@ main_menu(){
         echo " 11) 重启全部服务"
         echo " 12) 检查更新程序" 
         cyan "--- 工具管理 ---"
-        echo " 13) VPS系统优化"
+        echo " 13) 优化VPS系统"
         echo " 14) 配置warp分流"
         echo " 15) acme证书管理"
         echo "----------------------------------"   
