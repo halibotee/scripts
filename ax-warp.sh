@@ -490,8 +490,8 @@ install_wireproxy() {
   # 从账户信息中提取配置
   if [ -f /etc/wireguard/warp-account.conf ]; then
     local PRIVATE_KEY=$(grep -o '"private_key":"[^"]*' /etc/wireguard/warp-account.conf | cut -d'"' -f4 2>/dev/null)
-    # 修复：正确提取 interface 的 IPv6 地址（不是 endpoint 的 v6）
-    local IPV6_ADDR=$(grep -o '"addresses"[^}]*"v6":"[^"]*' /etc/wireguard/warp-account.conf | grep -o '"v6":"[^"]*' | cut -d'"' -f4 | head -1)
+    # 修复：正确提取 interface 的 IPv6 地址，并强制添加 /128 后缀
+    local IPV6_ADDR=$(grep -o '"addresses"[^}]*"v6":"[^"]*' /etc/wireguard/warp-account.conf | grep -o '"v6":"[^"]*' | cut -d'"' -f4 | head -1 | sed 's|/.*||')/128
     
     # 如果从账户文件解析失败，使用预设值
     [ -z "$PRIVATE_KEY" ] && PRIVATE_KEY=$(wg genkey)
