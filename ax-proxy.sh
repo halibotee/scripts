@@ -2564,34 +2564,8 @@ uninstall_all() {
     green "Systemd 已重载并清理。"
     
     echo; green "==== 卸载完成！ ===="
-    yellow "提示：依赖包 (如 curl, openssl, jq) 未被卸载。"
+    yellow "提示：依赖包 (如 curl, openssl, jq, acme证书) 未被卸载。"
     yellow "提示：请手动删除此脚本文件。"
-    
-    # 检查是否还有 ACME 残留
-    if [ -d "/root/.acme.sh" ]; then
-        # 如果是完全卸载但 ACME 仍在，说明之前的清理失败了
-        if [[ "$nuke_choice" == "y" || "$nuke_choice" == "Y" ]]; then
-            yellow "警告：ACME.sh 清理可能未完全成功，您可手动卸载："
-            cyan "      bash ax-acme.sh -u"
-        else
-            # 软卸载时只是提醒用户
-            yellow "提示：检测到 ACME.sh 证书客户端仍存在，您可通过以下方式卸载："
-            cyan "      bash ax-acme.sh -u"
-        fi
-    fi
-    
-    # 检查是否还有 WARP 残留
-    if [ -x "$(type -p warp-cli)" ] || [ -x "$(type -p wireproxy)" ] || [ -f /etc/apt/sources.list.d/cloudflare-client.list ]; then
-        # 如果是完全卸载但 WARP 仍在，说明之前的清理失败了
-        if [[ "$nuke_choice" == "y" || "$nuke_choice" == "Y" ]]; then
-            yellow "警告：WARP-Socks5 清理可能未完全成功，您可手动卸载："
-            cyan "      bash ax-warp.sh -u"
-        else
-            # 软卸载时只是提醒用户
-            yellow "提示：检测到 WARP-Socks5 客户端仍存在，您可通过以下方式卸载："
-            cyan "      bash ax-warp.sh -u"
-        fi
-    fi
     
     sleep 3
     return 0
