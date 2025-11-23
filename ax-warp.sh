@@ -475,10 +475,48 @@ disable_wireproxy() {
   fi
 }
 
+# 安装 WARP Client
+install_warp_client() {
+  if [ -x "$(type -p warp-cli)" ]; then
+    info " WARP Client 已安装"
+    return 0
+  fi
+
+  info " 正在安装 WARP Client..."
+  
+  if [ "$SYSTEM" = "Debian" ] || [ "$SYSTEM" = "Ubuntu" ]; then
+    # 添加 GPG key
+    curl https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+    
+    # 添加源
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list
+    
+    # 更新并安装
+    apt-get update && apt-get install -y cloudflare-warp
+    
+  elif [ "$SYSTEM" = "CentOS" ] || [ "$SYSTEM" = "Fedora" ]; then
+    # 添加源
+    curl -fsSL https://pkg.cloudflareclient.com/cloudflare-warp-ascii.repo | tee /etc/yum.repos.d/cloudflare-warp.repo
+    
+    # 安装
+    yum install -y cloudflare-warp
+    
+  else
+    error " 暂不支持自动安装 WARP Client 的系统: $SYSTEM"
+  fi
+  
+  if [ -x "$(type -p warp-cli)" ]; then
+    info " ✓ WARP Client 安装完成"
+  else
+    error " WARP Client 安装失败"
+  fi
+}
+
 # 开启 Client 全局代理
 enable_client_global() {
   if [ ! -x "$(type -p warp-cli)" ]; then
-    error " WARP Client 未安装，请手动安装 Cloudflare WARP Client"
+    warning " WARP Client 未安装，正在尝试自动安装..."
+    install_warp_client
   fi
   
   # 检查连接状态
