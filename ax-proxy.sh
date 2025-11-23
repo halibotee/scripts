@@ -723,29 +723,8 @@ collect_warp_config() {
         
         
         # 检查 WARP 端口是否在监听
-        if ! ss -tuln | grep -q ":${warp_port} "; then
+        if [ ! -x "$(type -p wireproxy)" ]; then
              yellow "警告: 检测到端口 ${warp_port} 未被监听！" >&2
-             
-             # 检查 WireProxy 是否已安装
-             if [ ! -x "$(type -p wireproxy)" ]; then
-                 red "错误: WireProxy 未安装，无法启动 WARP SOCKS5 服务。" >&2
-                 echo "" >&2
-                 yellow "请先安装 WireProxy，有以下两种方式：" >&2
-                 cyan "  方式1: 使用 menu.sh 脚本安装" >&2
-                 cyan "    wget -N https://cdn.jsdelivr.net/gh/fscarmen/warp/menu.sh && bash menu.sh w" >&2
-                 echo "" >&2
-                 cyan "  方式2: 在主菜单选择 '14) 安装warp-Socks5' 手动安装" >&2
-                 echo "" >&2
-                 yellow "安装完成后重新创建此实例即可启用 WARP 分流。" >&2
-                 # 返回直连配置，不中断流程
-                 if [[ "$service_type" == "hysteria2" ]]; then
-                     echo "$HYSTERIA2_DIRECT_ACL_BLOCK"
-                 else
-                     echo "$XRAY_DIRECT_OUTBOUND_AND_ROUTING_BLOCK"
-                 fi
-                 return 0
-             fi
-             
              yellow "正在自动启动 WARP SOCKS5 服务..." >&2
              
              # 确保 ax-warp.sh 脚本存在
