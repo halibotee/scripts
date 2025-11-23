@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.0.2"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -259,7 +259,7 @@ read -r -d '' XRAY_VLESS_MKCP_TEMPLATE <<'EOM'
         "streamSettings": {
             "network": "kcp",
             "kcpSettings": {
-                "mtu": 1200, "tti": 30, "uplinkCapacity": 25, "downlinkCapacity": 100, "congestion": true, "readBufferSize": 4, "writeBufferSize": 4,
+                "mtu": 1200, "tti": 30, "uplinkCapacity": 25, "downlinkCapacity": 100, "congestion": __MKCP_CONGESTION__, "readBufferSize": 4, "writeBufferSize": 4,
                 "header": { "type": "wechat-video" },
                 "seed": "__MKCP_SEED__"
             }
@@ -685,9 +685,6 @@ collect_kcptun_params() {
     
     read -p "tcp [true/false] (默认 false): " tcp_enabled >&2
     tcp_enabled=${tcp_enabled:-false}
-    if [[ "$tcp_enabled" != "true" ]]; then
-        tcp_enabled="false"
-    fi
     
     read -p "nocomp [true/false] (默认 false): " nocomp_input >&2
     nocomp_input=${nocomp_input:-false}
@@ -1210,9 +1207,6 @@ create_new_instance() {
             replacements["__LISTEN__"]=":${listen_port}"
             read -p "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth
             ignore_client_bandwidth=${ignore_client_bandwidth:-true}
-            if [[ "$ignore_client_bandwidth" != "false" ]]; then
-                ignore_client_bandwidth="true"
-            fi
             replacements["__IGNORE_CLIENT_BANDWIDTH__"]="$ignore_client_bandwidth"
 
             cyan "--- ACME证书 配置 ---"
@@ -1398,14 +1392,7 @@ create_new_xray_instance() {
         local mkcp_seed=$(handle_password_input "xray_mkcp"); replacements["__MKCP_SEED__"]="$mkcp_seed"
         read -p "congestion [true/false] (默认 true): " mkcp_congestion
         mkcp_congestion=${mkcp_congestion:-true}
-        if [[ "$mkcp_congestion" != "false" ]]; then
-            mkcp_congestion="true"
-        fi
-        
-        if [[ "$mkcp_congestion" == "true" ]]; then
-            # 在模板中添加congestion字段
-            temp_config=$(echo "$temp_config" | sed 's/"seed": "__MKCP_SEED__"/"seed": "__MKCP_SEED__", "congestion": true/')
-        fi
+        replacements["__MKCP_CONGESTION__"]="$mkcp_congestion"
     elif [[ "$type" == "xray_ss" ]]; then
         title="Shadowsocks"
         temp_config="$XRAY_SHADOWSOCKS_TCP_UDP_TEMPLATE"
@@ -1972,17 +1959,11 @@ start_new_chain_instance() {
         cyan "--- Hysteria2 配置 ---"
         read -p "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth
         ignore_client_bandwidth=${ignore_client_bandwidth:-true}
-        if [[ "$ignore_client_bandwidth" != "false" ]]; then
-            ignore_client_bandwidth="true"
-        fi
     else # vless
         # 添加VLESS mKCP串联实例的配置选项
         cyan "--- VLESS mKCP 配置 ---"
         read -p "congestion [true/false] (默认 true): " mkcp_congestion
         mkcp_congestion=${mkcp_congestion:-true}
-        if [[ "$mkcp_congestion" != "false" ]]; then
-            mkcp_congestion="true"
-        fi
     fi
     
     
@@ -2048,14 +2029,13 @@ start_new_chain_instance() {
     else # vless
         local uuid=$(generate_strong_password); echo -n "已自动生成 VLESS UUID: "; green "$uuid"
         local mkcp_seed=$(generate_strong_password); echo -n "已自动生成 mKCP Seed: "; green "$mkcp_seed"
+        
+        # 替换所有占位符
         main_config=${main_config/__LISTEN_ADDR__/127.0.0.1}
         main_config=${main_config/__LISTEN_PORT__/$internal_listen_port}
         main_config=${main_config/__UUID__/$uuid}
         main_config=${main_config/__MKCP_SEED__/$mkcp_seed}
-        
-        if [[ "$mkcp_congestion" == "true" ]]; then
-            main_config=$(echo "$main_config" | sed 's/"seed": "__MKCP_SEED__"/"seed": "__MKCP_SEED__", "congestion": true/')
-        fi
+        main_config=${main_config/__MKCP_CONGESTION__/$mkcp_congestion}
         
         main_conf_path="$main_conf_dir/xray_${chain_id}.json"
     fi
@@ -2540,26 +2520,32 @@ uninstall_all() {
         rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$HY2_INSTALL_DIR" "$XRAY_INSTALL_DIR"
         green "程序和配置文件目录已删除 (证书已保留)。"
         
-        # 清理 WARP-Socks5
-        # 检查是否安装了 WARP（检查 warp-cli 或 wireproxy）
+        # 步骤 4: 清理 WARP-Socks5（完全卸载模式）
         if [ -x "$(type -p warp-cli)" ] || [ -x "$(type -p wireproxy)" ] || [ -f /etc/apt/sources.list.d/cloudflare-client.list ]; then
-            log "步骤 4: 清理 WARP-Socks5 客户端..."
-            
-            # 确保 ax-warp.sh 脚本存在
+            log "正在清理 WARP-Socks5 客户端..."
             if ! ensure_ax_script "ax-warp.sh"; then
                 yellow "无法下载 ax-warp.sh，将跳过 WARP 卸载。"
-                yellow "您可以后续手动卸载 WARP。"
             else
-                # 使用脚本命令卸载 WARP
-                yellow "正在使用 ax-warp.sh 卸载 WARP..."
                 if bash ax-warp.sh -u; then
                     green "WARP-Socks5 客户端已删除。"
                 else
-                    yellow "警告: WARP 卸载可能未完全成功，请手动检查。"
+                    yellow "警告: WARP 卸载可能未完全成功。"
                 fi
             fi
-        else
-            yellow "未检测到 WARP-Socks5 客户端，跳过清理。"
+        fi
+        
+        # 步骤 5: 清理 ACME.sh（完全卸载模式）
+        if [ -d "/root/.acme.sh" ]; then
+            log "正在清理 ACME.sh 证书客户端..."
+            if ! ensure_ax_script "ax-acme.sh"; then
+                yellow "无法下载 ax-acme.sh，将跳过 ACME 卸载。"
+            else
+                if bash ax-acme.sh -u; then
+                    green "ACME.sh 证书客户端已删除。"
+                else
+                    yellow "警告: ACME.sh 卸载可能未完全成功。"
+                fi
+            fi
         fi
     else
         log "步骤 3: 执行软卸载 (仅删除二进制文件和 dat 文件)..."
@@ -2568,12 +2554,12 @@ uninstall_all() {
         rm -f "$XRAY_INSTALL_DIR/xray" "$XRAY_INSTALL_DIR/geoip.dat" "$XRAY_INSTALL_DIR/geosite.dat"
         green "程序文件已删除。"
     fi
-    log "步骤 5: 清理残留的二进制文件..."
+    log "步骤 6: 清理残留的二进制文件..."
     rm -f /usr/local/bin/hysteria
     green "残留二进制文件已清理。"
-    log "步骤 6: 清理临时文件..."
+    log "步骤 7: 清理临时文件..."
     rm -f /tmp/kcptun.tar.gz /tmp/udp2raw.tar.gz /tmp/xray.zip
-    log "步骤 7: 重载 systemd 并清理状态..."
+    log "步骤 8: 重载 systemd 并清理状态..."
     systemctl daemon-reload; systemctl reset-failed
     green "Systemd 已重载并清理。"
     
@@ -2581,30 +2567,30 @@ uninstall_all() {
     yellow "提示：依赖包 (如 curl, openssl, jq) 未被卸载。"
     yellow "提示：请手动删除此脚本文件。"
     
-    # 检查是否还有 acme.sh 残留
+    # 检查是否还有 ACME 残留
     if [ -d "/root/.acme.sh" ]; then
-        yellow "提示：检测到 ACME.sh 证书客户端仍存在，正在卸载..."
-        
-        # 确保 ax-acme.sh 脚本存在
-        if ! ensure_ax_script "ax-acme.sh"; then
-            yellow "无法下载 ax-acme.sh，请手动卸载 ACME.sh："
-            cyan "      /root/.acme.sh/acme.sh --uninstall && rm -rf /root/.acme.sh"
+        # 如果是完全卸载但 ACME 仍在，说明之前的清理失败了
+        if [[ "$nuke_choice" == "y" || "$nuke_choice" == "Y" ]]; then
+            yellow "警告：ACME.sh 清理可能未完全成功，您可手动卸载："
+            cyan "      bash ax-acme.sh -u"
         else
-            # 使用脚本命令卸载 ACME
-            if bash ax-acme.sh -u; then
-                green "ACME.sh 证书客户端已卸载。"
-            else
-                yellow "警告: ACME.sh 卸载可能未完全成功，您可手动卸载："
-                cyan "      bash ax-acme.sh -u"
-            fi
+            # 软卸载时只是提醒用户
+            yellow "提示：检测到 ACME.sh 证书客户端仍存在，您可通过以下方式卸载："
+            cyan "      bash ax-acme.sh -u"
         fi
     fi
     
     # 检查是否还有 WARP 残留
-    # 检查 warp-cli 或 wireproxy 是否还在
-    if [[ "$nuke_choice" != "y" && "$nuke_choice" != "Y" ]] && ([ -x "$(type -p warp-cli)" ] || [ -x "$(type -p wireproxy)" ]); then
-        yellow "提示：检测到 WARP-Socks5 客户端仍存在，您可通过以下方式卸载："
-        cyan "      bash ax-warp.sh -u"
+    if [ -x "$(type -p warp-cli)" ] || [ -x "$(type -p wireproxy)" ] || [ -f /etc/apt/sources.list.d/cloudflare-client.list ]; then
+        # 如果是完全卸载但 WARP 仍在，说明之前的清理失败了
+        if [[ "$nuke_choice" == "y" || "$nuke_choice" == "Y" ]]; then
+            yellow "警告：WARP-Socks5 清理可能未完全成功，您可手动卸载："
+            cyan "      bash ax-warp.sh -u"
+        else
+            # 软卸载时只是提醒用户
+            yellow "提示：检测到 WARP-Socks5 客户端仍存在，您可通过以下方式卸载："
+            cyan "      bash ax-warp.sh -u"
+        fi
     fi
     
     sleep 3
@@ -2737,17 +2723,12 @@ main_menu(){
         echo " 99) 卸载"
         echo "----------------------------------"   
         echo " 0) 退出"
-        
-        # --- [新] 全局 TLS 状态 (位于 0 和 "当前状态" 之间) ---
         echo "----------------------------------"
         show_global_tls_status
-        # --- ACME 状态结束 ---
-        
         echo "----------------------------------"
         show_status_summary
         local num_items=${#QUICK_MANAGE_MAP_ID[@]}; local max_index=$((20 + num_items))
         echo "----------------------------------"
-        # [MODIFIED] 更改提示符范围
         local prompt="请选择 [0-15, 99"; if [[ $num_items -gt 0 ]]; then prompt+=", 21-${max_index}]"; else prompt+="]"; fi
         read -p "$prompt： " choice
         
