@@ -531,16 +531,15 @@ ensure_ax_script() {
     local script_name=$1
     local script_url="https://raw.githubusercontent.com/halibotee/scripts/main/${script_name}"
     
-    if [ ! -f "$script_name" ]; then
-        log "未检测到 ${script_name}，正在下载..."
-        download_with_retry "$script_url" "$script_name"
-        if [ $? -ne 0 ]; then
-            red "${script_name} 下载失败。"
-            return 1
-        fi
-        chmod +x "$script_name"
-        green "${script_name} 下载完成。"
+    # 每次都重新下载以获取最新版本
+    log "正在下载最新版本的 ${script_name}..."
+    download_with_retry "$script_url" "$script_name"
+    if [ $? -ne 0 ]; then
+        red "${script_name} 下载失败。"
+        return 1
     fi
+    chmod +x "$script_name"
+    green "${script_name} 下载完成。"
     return 0
 }
 
