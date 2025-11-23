@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.0.2"
+SCRIPT_VERSION="1.0.3"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -517,11 +517,11 @@ install_dependencies_and_programs(){
 download_with_retry(){
     local url=$1 output=$2 retries=3 timeout=15
     for ((i=1; i<=retries; i++)); do
-        log "下载 ($i/$retries)：$url"
+        log "下载 ($i/$retries)：$url" >&2
         curl -L --connect-timeout 5 --max-time $timeout -o "$output" "$url" && return 0
-        yellow "下载失败，正在重试..."
+        yellow "下载失败，正在重试..." >&2
     done
-    red "下载失败超过 $retries 次，请检查网络。"
+    red "下载失败超过 $retries 次，请检查网络。" >&2
     return 1
 }
 
@@ -534,14 +534,15 @@ ensure_ax_script() {
     local script_url="https://raw.githubusercontent.com/halibotee/scripts/main/${script_name}"
     
     # 每次都重新下载以获取最新版本
-    log "正在下载最新版本的 ${script_name}..."
-    download_with_retry "$script_url" "$script_name"
+    # 所有输出重定向到 stderr，避免污染命令替换的返回值
+    log "正在下载最新版本的 ${script_name}..." >&2
+    download_with_retry "$script_url" "$script_name" >&2
     if [ $? -ne 0 ]; then
-        red "${script_name} 下载失败。"
+        red "${script_name} 下载失败。" >&2
         return 1
     fi
     chmod +x "$script_name"
-    green "${script_name} 下载完成。"
+    green "${script_name} 下载完成。" >&2
     return 0
 }
 
@@ -720,9 +721,31 @@ collect_warp_config() {
             warp_config_block=${warp_config_block/__WARP_SOCKS5_PORT__/$warp_port}
         fi
         
+        
         # 检查 WARP 端口是否在监听
         if ! ss -tuln | grep -q ":${warp_port} "; then
              yellow "警告: 检测到端口 ${warp_port} 未被监听！" >&2
+             
+             # 检查 WireProxy 是否已安装
+             if [ ! -x "$(type -p wireproxy)" ]; then
+                 red "错误: WireProxy 未安装，无法启动 WARP SOCKS5 服务。" >&2
+                 echo "" >&2
+                 yellow "请先安装 WireProxy，有以下两种方式：" >&2
+                 cyan "  方式1: 使用 menu.sh 脚本安装" >&2
+                 cyan "    wget -N https://cdn.jsdelivr.net/gh/fscarmen/warp/menu.sh && bash menu.sh w" >&2
+                 echo "" >&2
+                 cyan "  方式2: 在主菜单选择 '14) 安装warp-Socks5' 手动安装" >&2
+                 echo "" >&2
+                 yellow "安装完成后重新创建此实例即可启用 WARP 分流。" >&2
+                 # 返回直连配置，不中断流程
+                 if [[ "$service_type" == "hysteria2" ]]; then
+                     echo "$HYSTERIA2_DIRECT_ACL_BLOCK"
+                 else
+                     echo "$XRAY_DIRECT_OUTBOUND_AND_ROUTING_BLOCK"
+                 fi
+                 return 0
+             fi
+             
              yellow "正在自动启动 WARP SOCKS5 服务..." >&2
              
              # 确保 ax-warp.sh 脚本存在
@@ -2524,29 +2547,39 @@ uninstall_all() {
         # 步骤 4: 清理 WARP-Socks5（完全卸载模式）
         if [ -x "$(type -p warp-cli)" ] || [ -x "$(type -p wireproxy)" ] || [ -f /etc/apt/sources.list.d/cloudflare-client.list ]; then
             log "正在清理 WARP-Socks5 客户端..."
-            if ! ensure_ax_script "ax-warp.sh"; then
-                yellow "无法下载 ax-warp.sh，将跳过 WARP 卸载。"
-            else
-                if bash ax-warp.sh -u; then
-                    green "WARP-Socks5 客户端已删除。"
-                else
-                    yellow "警告: WARP 卸载可能未完全成功。"
+            # 卸载时使用本地脚本，如果不存在才下载
+            if [ ! -f "ax-warp.sh" ]; then
+                if ! ensure_ax_script "ax-warp.sh"; then
+                    yellow "无法下载 ax-warp.sh，将跳过 WARP 卸载。"
+                    continue
                 fi
             fi
+            if bash ax-warp.sh -u; then
+                green "WARP-Socks5 客户端已删除。"
+            else
+                yellow "警告: WARP 卸载可能未完全成功。"
+            fi
+        else
+            log "未检测到 WARP-Socks5 客户端，跳过清理。"
         fi
         
         # 步骤 5: 清理 ACME.sh（完全卸载模式）
         if [ -d "/root/.acme.sh" ]; then
             log "正在清理 ACME.sh 证书客户端..."
-            if ! ensure_ax_script "ax-acme.sh"; then
-                yellow "无法下载 ax-acme.sh，将跳过 ACME 卸载。"
-            else
-                if bash ax-acme.sh -u; then
-                    green "ACME.sh 证书客户端已删除。"
-                else
-                    yellow "警告: ACME.sh 卸载可能未完全成功。"
+            # 卸载时使用本地脚本，如果不存在才下载
+            if [ ! -f "ax-acme.sh" ]; then
+                if ! ensure_ax_script "ax-acme.sh"; then
+                    yellow "无法下载 ax-acme.sh，将跳过 ACME 卸载。"
+                    continue
                 fi
             fi
+            if bash ax-acme.sh -u; then
+                green "ACME.sh 证书客户端已删除。"
+            else
+                yellow "警告: ACME.sh 卸载可能未完全成功。"
+            fi
+        else
+            log "未检测到 ACME.sh 客户端，跳过清理。"
         fi
     else
         log "步骤 3: 执行软卸载 (仅删除二进制文件和 dat 文件)..."
