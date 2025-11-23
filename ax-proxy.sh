@@ -432,10 +432,6 @@ install_dependencies_and_programs(){
     fi
     
     # ========== 第三阶段：检测与下载核心程序 ==========
-    echo ""
-    yellow "开始下载安装 核心程序..." 
-    echo ""
-    
     # 检查各核心程序文件是否存在
     local need_download=false
     local kcp_ok=true; if [[ ! -f "$KCP_INSTALL_DIR/kcptun_server" ]]; then kcp_ok=false; need_download=true; fi
@@ -444,10 +440,16 @@ install_dependencies_and_programs(){
     local xray_ok=true; if [[ ! -f "$XRAY_INSTALL_DIR/xray" ]]; then xray_ok=false; need_download=true; fi
     
     if [[ "$need_download" == false ]]; then
+        echo ""
         green "✓ 所有核心程序已就绪"
         echo ""
         return 0
     fi
+    
+    # 只有需要下载时才显示此消息
+    echo ""
+    yellow "开始下载安装 核心程序..." 
+    echo ""
     
     # 下载缺失的核心程序
     if [[ "$kcp_ok" == false || "$udp_ok" == false ]]; then
