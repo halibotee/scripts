@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.0.31"
+SCRIPT_VERSION="1.0.32"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -491,17 +491,17 @@ install_dependencies_and_programs(){
         # 下载缺失的辅助脚本
         if [[ "$acme_ok" == false ]]; then
             cyan "  » 下载 ax-acme.sh"
-            ensure_ax_script "ax-acme.sh" && green "    ✓ ax-acme.sh 安装完成" || yellow "    ⚠ ax-acme.sh 下载失败（可稍后自动下载）"
+            ensure_ax_script "ax-acme.sh" "true" && green "    ✓ ax-acme.sh 安装完成" || yellow "    ⚠ ax-acme.sh 下载失败（可稍后自动下载）"
         fi
         
         if [[ "$warp_ok" == false ]]; then
             cyan "  » 下载 ax-warp.sh"
-            ensure_ax_script "ax-warp.sh" && green "    ✓ ax-warp.sh 安装完成" || yellow "    ⚠ ax-warp.sh 下载失败（可稍后自动下载）"
+            ensure_ax_script "ax-warp.sh" "true" && green "    ✓ ax-warp.sh 安装完成" || yellow "    ⚠ ax-warp.sh 下载失败（可稍后自动下载）"
         fi
         
         if [[ "$optz_ok" == false ]]; then
             cyan "  » 下载 ax-optz.sh"
-            ensure_ax_script "ax-optz.sh" && green "    ✓ ax-optz.sh 安装完成" || yellow "    ⚠ ax-optz.sh 下载失败（可稍后自动下载）"
+            ensure_ax_script "ax-optz.sh" "true" && green "    ✓ ax-optz.sh 安装完成" || yellow "    ⚠ ax-optz.sh 下载失败（可稍后自动下载）"
         fi
         
         echo ""
@@ -528,13 +528,19 @@ download_with_retry(){
 # -----------------------------------------------------------------------------
 # 确保辅助脚本存在（统一下载函数）
 # 参数: $1=脚本名称 (ax-acme.sh, ax-warp.sh, ax-optz.sh)
+# 参数: $2=强制更新 (true/false, 默认 false)
 # -----------------------------------------------------------------------------
 ensure_ax_script() {
     local script_name=$1
+    local force_update=${2:-false}
     local script_url="https://raw.githubusercontent.com/halibotee/scripts/main/${script_name}"
     
-    # 每次都重新下载以获取最新版本
-    # 所有输出重定向到 stderr，避免污染命令替换的返回值
+    # 如果本地存在且不强制更新，直接返回
+    if [ -f "$script_name" ] && [ "$force_update" != "true" ]; then
+        return 0
+    fi
+    
+    # 否则下载
     log "正在下载最新版本的 ${script_name}..." >&2
     download_with_retry "$script_url" "$script_name" >&2
     if [ $? -ne 0 ]; then
@@ -723,51 +729,31 @@ collect_warp_config() {
         
         
         # 检查 WARP 端口是否在监听
-         if [ ! -x "$(type -p wireproxy)" ]; then
-             yellow "警告: 检测到端口 ${warp_port} 未被监听！" >&2
-                             
-                 # 尝试安装
-                 if bash ax-warp.sh -s; then
-                     green "WireProxy 安装并启动成功！" >&2
-                 else
-                     red "WireProxy 安装失败。" >&2
-                     yellow "请尝试手动运行: bash ax-warp.sh -s" >&2
-                     # 返回直连配置
-                     if [[ "$service_type" == "hysteria2" ]]; then
-                         echo "$HYSTERIA2_DIRECT_ACL_BLOCK"
-                     else
-                         echo "$XRAY_DIRECT_OUTBOUND_AND_ROUTING_BLOCK"
-                     fi
-                     return 0
-                 fi
-             fi
-             
-             yellow "正在自动启动 WARP SOCKS5 服务..." >&2
-             
-             # 确保 ax-warp.sh 脚本存在
-             if ! ensure_ax_script "ax-warp.sh"; then
-                 red "无法下载 ax-warp.sh，WARP SOCKS5 配置失败。" >&2
-                 yellow "您可以在主菜单选择 '14) 安装warp-Socks5' 手动安装或配置。" >&2
-             else
-                 # 使用脚本自动启动 WARP SOCKS5
-                 log "执行命令: bash ax-warp.sh -s" >&2
-                 if bash ax-warp.sh -s; then
-                     green "WARP SOCKS5 服务已成功启动。" >&2
-                     # 等待服务完全启动
-                     sleep 2
-                     # 再次检查端口
-                     if ss -tuln | grep -q ":${warp_port} "; then
-                         green "检测到 WARP 服务正在运行于端口 ${warp_port}。" >&2
-                     else
-                         yellow "WARP 服务可能需要更多时间启动，请稍后确认。" >&2
-                     fi
-                 else
-                     red "WARP SOCKS5 服务启动失败，请检查日志。" >&2
-                     yellow "您可以手动运行: bash ax-warp.sh -s" >&2
-                 fi
-             fi
-        else
+        # 检查 WARP 端口是否在监听 (同时判断 wireproxy 和 端口)
+        if [ -x "$(type -p wireproxy)" ] && ss -tuln | grep -q ":${warp_port} "; then
              green "检测到 WARP 服务正在运行于端口 ${warp_port}。" >&2
+        else
+             yellow "WARP 服务未运行，正在尝试启动..." >&2
+             
+             # 确保脚本存在
+             ensure_ax_script "ax-warp.sh"
+             
+             # 尝试启动
+             if bash ax-warp.sh -s; then
+                 green "WARP SOCKS5 服务已启动。" >&2
+             else
+                 red "WARP SOCKS5 服务启动失败。" >&2
+                 yellow "请在主菜单选择 '14) 配置warp分流' 手动配置。" >&2
+                 
+                 # 返回直连配置
+                 if [[ "$service_type" == "hysteria2" ]]; then
+                     echo "$HYSTERIA2_DIRECT_ACL_BLOCK"
+                 else
+                     echo "$XRAY_DIRECT_OUTBOUND_AND_ROUTING_BLOCK"
+                 fi
+                 return 0
+             fi
+        fi
         fi
 
         green "已启用 WARP SOCKS5 分流 (地址: ${warp_addr}:${warp_port})。" >&2
