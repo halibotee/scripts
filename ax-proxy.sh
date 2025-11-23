@@ -6,7 +6,7 @@
 # 1. 核心全局变量与脚本版本
 # =============================================================================
 # 脚本版本号，用于显示和版本检查
-SCRIPT_VERSION="1.0.32"
+SCRIPT_VERSION="1.0.33"
 
 # 组件安装目录定义
 KCP_INSTALL_DIR="/etc/kcptun"       # KCPTUN 安装目录
@@ -739,7 +739,7 @@ collect_warp_config() {
              ensure_ax_script "ax-warp.sh"
              
              # 尝试启动
-             if bash ax-warp.sh -s; then
+             if bash ax-warp.sh -s >&2; then
                  green "WARP SOCKS5 服务已启动。" >&2
              else
                  red "WARP SOCKS5 服务启动失败。" >&2
