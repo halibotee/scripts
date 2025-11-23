@@ -387,6 +387,26 @@ install_wireproxy() {
 
   info " 正在安装 WireProxy..."
   
+  # 检查并安装 wireguard-tools
+  if ! type -p wg > /dev/null; then
+    info " 正在安装 wireguard-tools..."
+    if [ "$SYSTEM" = "Debian" ] || [ "$SYSTEM" = "Ubuntu" ]; then
+      apt-get install -y wireguard-tools > /dev/null 2>&1
+    elif [ "$SYSTEM" = "CentOS" ] || [ "$SYSTEM" = "Fedora" ]; then
+      yum install -y wireguard-tools > /dev/null 2>&1
+    elif [ "$SYSTEM" = "Alpine" ]; then
+      apk add wireguard-tools > /dev/null 2>&1
+    elif [ "$SYSTEM" = "Arch" ]; then
+      pacman -S --noconfirm wireguard-tools > /dev/null 2>&1
+    fi
+    
+    if type -p wg > /dev/null; then
+      info " ✓ wireguard-tools 安装完成"
+    else
+      error " wireguard-tools 安装失败，请手动安装后重试"
+    fi
+  fi
+  
   # 获取最新版本
   local LATEST_VERSION=$(curl -s https://api.github.com/repos/whyvl/wireproxy/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
   if [ -z "$LATEST_VERSION" ]; then
@@ -413,19 +433,26 @@ install_wireproxy() {
     mkdir -p /etc/wireguard
     
     # 生成配置文件
+    # 保留已有私钥或生成新私钥
+    if [ -f /etc/wireguard/proxy.conf ]; then
+      local EXISTING_KEY=$(grep "^PrivateKey" /etc/wireguard/proxy.conf 2>/dev/null | awk '{print $NF}')
+      local PRIVATE_KEY=${EXISTING_KEY:-$(wg genkey)}
+      info " 保留现有私钥"
+    else
+      local PRIVATE_KEY=$(wg genkey)
+      info " 生成新私钥"
+    fi
+    
     cat > /etc/wireguard/proxy.conf <<EOF
 [Interface]
 Address = 172.16.0.2/32
 MTU = 1280
-PrivateKey = $(wg genkey)
+PrivateKey = $PRIVATE_KEY
 DNS = 1.1.1.1,8.8.8.8
-LogFile = /etc/wireguard/wireproxy.log
-LogLevel = info
 
 [Peer]
 PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
-AllowedIPs = 0.0.0.0/0
-AllowedIPs = ::/0
+AllowedIPs = 0.0.0.0/0,::/0
 Endpoint = engage.cloudflareclient.com:2408
 
 [Socks5]
@@ -449,12 +476,14 @@ EOF
       cat > /lib/systemd/system/wireproxy.service <<EOF
 [Unit]
 Description=WireProxy for WARP
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
+Type=simple
 ExecStart=/usr/bin/wireproxy -c /etc/wireguard/proxy.conf
-RemainAfterExit=yes
-Restart=always
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
@@ -495,11 +524,35 @@ enable_wireproxy() {
   if ss -nltp 2>/dev/null | awk '{print $NF}' | awk -F \" '{print $2}' | grep -q wireproxy; then
     get_wireproxy_ip
     info " ✓ WireProxy Socks5 代理已成功启动"
-    info " 本地 Socks5: $WIREPROXY_SOCKS5"
-    info " IPv4: $WIREPROXY_WAN4 $WIREPROXY_COUNTRY4 $WIREPROXY_ASNORG4"
-    info " IPv6: $WIREPROXY_WAN6 $WIREPROXY_COUNTRY6 $WIREPROXY_ASNORG6"
+    info "   本地 Socks5: $WIREPROXY_SOCKS5"
+    info "   IPv4: $WIREPROXY_WAN4 $WIREPROXY_COUNTRY4 $WIREPROXY_ASNORG4"
+    info "   IPv6: $WIREPROXY_WAN6 $WIREPROXY_COUNTRY6 $WIREPROXY_ASNORG6"
   else
-    error " ✗ WireProxy 启动失败，请检查配置和日志"
+    error " ✗ WireProxy 启动失败，正在诊断问题..."
+    
+    # 检查配置文件
+    if [ ! -f /etc/wireguard/proxy.conf ]; then
+      error "   配置文件不存在: /etc/wireguard/proxy.conf"
+    fi
+    
+    # 测试配置文件语法（尝试运行并捕获错误）
+    warning "   尝试手动启动以查看错误信息:"
+    timeout 3 /usr/bin/wireproxy -c /etc/wireguard/proxy.conf 2>&1 | head -20 | sed 's/^/   /'
+    
+    # 检查端口冲突
+    local BIND_PORT=$(grep "BindAddress" /etc/wireguard/proxy.conf 2>/dev/null | awk -F: '{print $NF}')
+    if [ -n "$BIND_PORT" ] && ss -nltp 2>/dev/null | grep -q ":$BIND_PORT"; then
+      local OCCUPIER=$(ss -nltp 2>/dev/null | grep ":$BIND_PORT" | awk '{print $NF}' | awk -F'"' '{print $2}' | head -n1)
+      error "   端口 $BIND_PORT 被占用: ${OCCUPIER:-未知进程}"
+    fi
+    
+    # 显示 systemd 日志
+    if [ "$SYSTEM" != "Alpine" ]; then
+      warning "   systemd 日志 (最近20条):"
+      journalctl -u wireproxy -n 20 --no-pager 2>/dev/null | sed 's/^/   /'
+    fi
+    
+    exit 1
   fi
 }
 
