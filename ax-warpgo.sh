@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ===========================================
-# warp-go 一键安装 + systemd + 菜单 + 状态显示
+# warp-go 一键安装 + systemd + 菜单 + 状态显示 + 版本号
 # 单目录安装：可执行文件 + 配置 + systemd
 # ===========================================
 
+VERSION="1.0.0"
 WARP_GO_INSTALL_DIR="/etc/warp-go"
 SERVICE_NAME="warp-go.service"
 SOCKS_PORT=40000
@@ -18,7 +19,6 @@ error(){ echo -e "\033[1;31m$1\033[0m"; }
 # 安装依赖
 # ----------------------------
 install_dependencies(){
-    # 安装 jq
     if ! command -v jq &>/dev/null; then
         info "检测到 jq 未安装，正在安装..."
         if [ -f /etc/debian_version ]; then
@@ -32,8 +32,6 @@ install_dependencies(){
         fi
         info "依赖安装完成"
     fi
-
-    # 安装 curl
     if ! command -v curl &>/dev/null; then
         warn "curl 未安装，请手动安装或确保网络通畅"
         exit 1
@@ -176,6 +174,7 @@ show_status(){
     get_sys_info
     get_warp_status
     info "======== 系统状态 ========"
+    info "版本: $VERSION"
     info "系统信息:"
     info "\t当前操作系统: $SYS"
     info "\t内核: $KERNEL"
