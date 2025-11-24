@@ -121,7 +121,7 @@ GITHUB_URL="https://github.com"               # GitHub 主页地址
 
 # 辅助脚本 URL 配置
 AX_ACME_URL="https://raw.githubusercontent.com/halibotee/scripts/main/ax-acme.sh"  # ACME 证书管理脚本
-CFWARP_URL="https://raw.githubusercontent.com/yonggekkk/warp-yg/main/CFwarp.sh"    # WARP 配置脚本
+CFWARP_URL="https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh"    # WARP 配置脚本
 AX_OPTZ_URL="https://raw.githubusercontent.com/halibotee/scripts/main/ax-optz.sh"  # VPS 优化脚本
 
 # 从 URL 自动提取脚本名称（用户只需修改上面的 URL 即可）
@@ -1267,7 +1267,7 @@ create_new_instance() {
                 fi
 
                 # 尝试申请证书，如果失败直接退出
-                # 确保 ax-acme.sh 存在
+                # 确保 ACME 证书管理脚本存在
                 if ! ensure_ax_script "$AX_ACME_SCRIPT" "$AX_ACME_URL"; then
                     red "无法获取 $AX_ACME_SCRIPT，已取消创建实例。"
                     return 1
@@ -2040,7 +2040,7 @@ start_new_chain_instance() {
             fi
 
             # 尝试申请证书，如果失败直接退出
-            # 确保 ax-acme.sh 存在
+            # 确保 ACME 证书管理脚本存在
             if ! ensure_ax_script "$AX_ACME_SCRIPT" "$AX_ACME_URL"; then
                 red "无法获取 $AX_ACME_SCRIPT，已取消创建实例。"
                 return 1
@@ -2489,19 +2489,19 @@ check_for_updates(){
     
     local script_updated=false
     
-    # 更新 ax-acme.sh
+    # 更新 ACME 证书管理脚本
     if [[ -f "$AX_ACME_SCRIPT" ]]; then
         cyan "  » 更新 $AX_ACME_SCRIPT"
         download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_ACME_SCRIPT 更新失败"
     fi
     
-    # 更新 CFwarp.sh
+    # 更新 WARP 管理脚本
     if [[ -f "$CFWARP_SCRIPT" ]]; then
         cyan "  » 更新 $CFWARP_SCRIPT"
         download_with_retry "$CFWARP_URL" "$CFWARP_SCRIPT" >/dev/null 2>&1 && chmod +x "$CFWARP_SCRIPT" && green "    ✓ $CFWARP_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $CFWARP_SCRIPT 更新失败"
     fi
     
-    # 更新 ax-optz.sh
+    # 更新 VPS 优化脚本
     if [[ -f "$AX_OPTZ_SCRIPT" ]]; then
         cyan "  » 更新 $AX_OPTZ_SCRIPT"
         download_with_retry "$AX_OPTZ_URL" "$AX_OPTZ_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_OPTZ_SCRIPT" && green "    ✓ $AX_OPTZ_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_OPTZ_SCRIPT 更新失败"
@@ -2595,28 +2595,28 @@ uninstall_all() {
         rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$HY2_INSTALL_DIR" "$XRAY_INSTALL_DIR"
         green "程序和配置文件目录已删除 (证书已保留)。"
         
-        # 步骤 4: 清理 WARP-Socks5（完全卸载模式）
+        # 步骤 4: 清理 WARP-Socks5 代理（完全卸载模式）
         if [ -x "$(type -p warp-cli)" ] || [ -x "$(type -p wireproxy)" ] || [ -f /etc/apt/sources.list.d/cloudflare-client.list ]; then
-            log "正在清理 WARP-Socks5 客户端..."
+            log "正在清理 WARP-Socks5 代理..."
             # 卸载时使用本地脚本，如果不存在才下载
-            if [ ! -f "ax-warp.sh" ]; then
-                if ! ensure_ax_script "ax-warp.sh"; then
-                    yellow "无法下载 ax-warp.sh，将跳过 WARP 卸载。"
+            if [ ! -f "$CFWARP_SCRIPT" ]; then
+                if ! ensure_ax_script "$CFWARP_SCRIPT"; then
+                    yellow "无法下载 $CFWARP_SCRIPT，将跳过 WARP-Socks5代理 卸载。"
                     continue
                 fi
             fi
-            if bash ax-warp.sh -u; then
-                green "WARP-Socks5 客户端已删除。"
+            if bash "$CFWARP_SCRIPT" -u; then
+                green "WARP-Socks5代理 已删除。"
             else
-                yellow "警告: WARP 卸载可能未完全成功。"
+                yellow "警告: WARP-Socks5代理 卸载可能未完全成功。"
             fi
         else
-            log "未检测到 WARP-Socks5 客户端，跳过清理。"
+            log "未检测到 WARP-Socks5代理，跳过清理。"
         fi
         
-        # 步骤 5: 清理 ACME.sh（完全卸载模式）
+        # 步骤 5: 清理证书客户端（完全卸载模式）
         if [ -d "/root/.acme.sh" ]; then
-            log "正在清理 ACME.sh 证书客户端..."
+            log "正在清理 $AX_ACME_SCRIPT 证书客户端..."
             # 卸载时使用本地脚本，如果不存在才下载
             if [ ! -f "$AX_ACME_SCRIPT" ]; then
                 if ! ensure_ax_script "$AX_ACME_SCRIPT" "$AX_ACME_URL"; then
@@ -2625,12 +2625,12 @@ uninstall_all() {
                 fi
             fi
             if bash "$AX_ACME_SCRIPT" -u; then
-                green "ACME.sh 证书客户端已删除。"
+                green "$AX_ACME_SCRIPT 证书客户端已删除。"
             else
-                yellow "警告: ACME.sh 卸载可能未完全成功。"
+                yellow "警告: $AX_ACME_SCRIPT 卸载可能未完全成功。"
             fi
         else
-            log "未检测到 ACME.sh 客户端，跳过清理。"
+            log "未检测到 $AX_ACME_SCRIPT 客户端，跳过清理。"
         fi
     else
         log "步骤 3: 执行软卸载 (仅删除二进制文件和 dat 文件)..."
@@ -2775,9 +2775,9 @@ main_menu(){
         echo " 11) 重启全部服务"
         echo " 12) 检查更新程序" 
         cyan "--- 工具管理 ---"
-        echo " 13) VPS系统优化"
-        echo " 14) 配置warp分流"
-        echo " 15) acme证书管理"
+        echo " 13) 运行VPS优化脚本"
+        echo " 14) 运行WARP脚本"
+        echo " 15) 运行ACME证书脚本"
         echo "----------------------------------"   
         echo " 99) 卸载"
         echo "----------------------------------"   
