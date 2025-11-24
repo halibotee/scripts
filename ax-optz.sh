@@ -1322,7 +1322,7 @@ fn_show_status_report() {
         clear
     fi
     
-    echo "==================== 系统优化状态 ====================" 
+    echo "-------------------- 系统优化状态 ---------------------" 
     [ -f /etc/os-release ] && source /etc/os-release
     printf "系统: %s\n" "${PRETTY_NAME:-unknown}"
     printf "内存: %s MB\n" "$MEM_MB"
@@ -1417,7 +1417,8 @@ fn_show_status_report() {
 }
 
 fn_show_menu() {
-
+    clear
+    echo ""
     echo "==============================================="
     echo " VPS 优化脚本 (ax-optz)"
     echo " 版本: $SCRIPT_VERSION"
@@ -1430,10 +1431,7 @@ fn_show_menu() {
     echo " 0) 退出"
     echo "==============================================="
 
-    echo "------- 系统状态 -------------------------------"
     fn_show_status_report "noclear"
-    echo "-----------------------------------------------"
-    echo ""
 
     read -rp "请选择: " CH || true
     case "$CH" in
