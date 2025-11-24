@@ -2426,12 +2426,12 @@ show_warp_status() {
         if [ -s /etc/wireguard/info.log ]; then
             if grep -sq 'Device name' /etc/wireguard/info.log; then
                 local device_name=$(awk '/Device name/{print $NF}' /etc/wireguard/info.log)
-                echo "  账户类型: WARP+ (设备名: $device_name)"
+                echo "账户类型: WARP+ (设备名: $device_name)"
             else
-                echo "  账户类型: Teams"
+                echo "账户类型: Teams"
             fi
         else
-            echo "  账户类型: Free"
+            echo "账户类型: Free"
         fi
     else
         yellow "WireProxy 未运行"
