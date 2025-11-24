@@ -1353,7 +1353,7 @@ fn_show_status_report() {
     fi
     
     fn_print_line "BBR+FQ 加速" "$bbr_status" "[ 已启用 ]" "[ 未启用 ]" ""
-    fn_print_line "网络优化配置" "$sysctl_status" "[ 已配置 ]" "[ 未配置 ]" ""
+    fn_print_line "网络优化配置" "$sysctl_status" "    [ 已配置 ]" "    [ 未配置 ]" ""
     
     local ipv6_status="false"
     local ipv6_details=""
@@ -1400,7 +1400,7 @@ fn_show_status_report() {
         journal_status="true"
         journal_details="(模式: 仅内存)"
     fi
-    fn_print_line "Journald 日志" "$journal_status" "[ 已优化 ]" "[ 未优化 ]" "$journal_details"
+    fn_print_line "Journald 日志" "$journal_status" "  [ 已优化 ]" "  [ 未优化 ]" "$journal_details"
 
     local zram_status="false"
     local zram_details="(未激活)"
