@@ -15,6 +15,32 @@ warn() { echo -e "\033[1;33m$1\033[0m"; }
 error(){ echo -e "\033[1;31m$1\033[0m"; }
 
 # ----------------------------
+# 安装依赖
+# ----------------------------
+install_dependencies(){
+    # 安装 jq
+    if ! command -v jq &>/dev/null; then
+        info "检测到 jq 未安装，正在安装..."
+        if [ -f /etc/debian_version ]; then
+            apt update && apt install -y jq curl
+        elif [ -f /etc/redhat-release ]; then
+            yum install -y epel-release && yum install -y jq curl
+        elif [ -f /etc/arch-release ]; then
+            pacman -Sy --noconfirm jq curl
+        else
+            warn "未检测到受支持的包管理器，请手动安装 jq 和 curl"
+        fi
+        info "依赖安装完成"
+    fi
+
+    # 安装 curl
+    if ! command -v curl &>/dev/null; then
+        warn "curl 未安装，请手动安装或确保网络通畅"
+        exit 1
+    fi
+}
+
+# ----------------------------
 # 系统信息
 # ----------------------------
 get_sys_info(){
@@ -196,6 +222,7 @@ menu(){
 # ----------------------------
 # 主逻辑
 # ----------------------------
+install_dependencies
 if [ ! -f "$WARP_GO_INSTALL_DIR/warp-go" ]; then
     install_warp
 fi
