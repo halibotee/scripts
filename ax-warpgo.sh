@@ -5,7 +5,7 @@
 # 单目录安装：可执行文件 + 配置 + systemd
 # ===========================================
 
-VERSION="1.0.1"
+VERSION="1.0.11"
 WARP_GO_INSTALL_DIR="/etc/warp-go"
 SERVICE_NAME="warp-go.service"
 SOCKS_PORT=40000#!/bin/bash
