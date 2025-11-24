@@ -2435,7 +2435,7 @@ show_warp_status() {
         fi
     else
         yellow "WireProxy 未运行"
-        yellow "提示: 可通过主菜单 '14) 运行WARP脚本 ，然后选择 13. 安装 wireproxy socks5 代理 ' 启动"
+        yellow "提示: 可通过主菜单 14) 运行WARP脚本 ，然后选择 13. 安装 wireproxy socks5 代理 "
     fi
 }
 
