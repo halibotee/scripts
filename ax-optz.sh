@@ -66,7 +66,6 @@ declare -ga PKG_CMD_CHECK
 declare -ga PKG_CMD_UPDATE
 
 FN_TRIM_SERVICES_LIST=(
-"systemd-resolved.service"
 "ModemManager.service"
 "rpcbind.service"
 "unattended-upgrades.service"
