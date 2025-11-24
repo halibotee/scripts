@@ -1416,12 +1416,12 @@ fn_show_status_report() {
     echo "------------------------------------------------------"
 }
 
+fn_show_menu() {
     clear
-    echo ""
+    
+    # 在菜单上方显示系统优化状态
     fn_show_status_report "noclear"
     echo ""
-    
-fn_show_menu() {
 
     echo "==============================================="
     echo " VPS 优化脚本 (ax-optz)"
