@@ -315,23 +315,12 @@ install_socks5(){
     fi
 
     # 3. 冲突检查
-    yellow "正在检查服务冲突..."
-    systemctl stop wg-quick@wgcf >/dev/null 2>&1
-    kill -15 $(pgrep warp-go) >/dev/null 2>&1 && sleep 2
-    
-    v4v6
-    if [[ -n $v6 && -z $v4 ]]; then
-    systemctl start wg-quick@wgcf >/dev/null 2>&1
-    restwarpgo
-    red "纯IPV6的VPS目前不支持安装Socks5-WARP" && sleep 2 && return 1
-    else
-    systemctl start wg-quick@wgcf >/dev/null 2>&1
-    restwarpgo
-    fi
+    # (已移除服务冲突检查)
+
 
     # 4. 开始安装
     yellow "正在执行一键安装/启动 Socks5-WARP..."
-    yellow "⚠ 提示: 如果您通过 SSH 连接，建议在 screen/tmux 会话中运行"
+
     
     if [[ $release = Centos ]]; then 
     yellow "正在安装依赖 (epel-release, net-tools)..."
