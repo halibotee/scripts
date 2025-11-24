@@ -408,8 +408,8 @@ install_socks5(){
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
     # --- [修改] 添加超时和防止升级内核 ---
-    yellow "正在更新软件源 (添加超时保护)..."
-    timeout 180 sudo apt-get update || yellow "! apt update 超时，继续安装"
+   # yellow "正在更新软件源 (添加超时保护)..."
+   # timeout 180 sudo apt-get update || yellow "! apt update 超时，继续安装"
     yellow "正在安装 cloudflare-warp (不升级系统包)..."
     timeout 300 sudo apt-get install -y --no-upgrade cloudflare-warp || {
         red "cloudflare-warp 安装失败或超时"
@@ -515,8 +515,6 @@ main_menu() {
         bblue " CFwarp Socks5 (warp-cli) 管理脚本"
         green "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
         
-        # 实时显示状态
-        # --- [v1.3.7 修复] 移除冗余的 "正在获取" 和 顶部分隔线 ---
         echo
         ShowSOCKS5
         blue "------------------------------------------------------------------------------------------------"
@@ -590,7 +588,4 @@ script_main_wrapper() {
     main_menu
 }
 
-# --- [修改] 脚本主入口 (简化为安全的单层日志) ---
-# 将 stdout 和 stderr 合并后写入完整日志
-# 避免复杂的进程替换可能导致的管道阻塞问题
 script_main_wrapper 2>&1 | tee -a "$FULL_LOG_FILE"
