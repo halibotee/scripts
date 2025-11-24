@@ -8,7 +8,7 @@ VERSION='1.0.0'
 export DEBIAN_FRONTEND=noninteractive
 
 # Warp-go安装目录
-WARP_DIR="/etc/warp-go"
+WARP_DIR="/opt/warp-go"
 WARP_CONF="$WARP_DIR/warp.conf"
 
 # 清理函数
