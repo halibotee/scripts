@@ -1339,7 +1339,7 @@ fn_show_status_report() {
         [ "$status" == "true" ] && status_msg="$success_msg"
         local details_str=""
         [ -n "$details" ] && details_str="$details"
-        printf "  %-30s %-15s %s\n" "$name" "$status_msg" "$details_str"
+        printf "  %-28s %-18s %s\n" "$name" "$status_msg" "$details_str"
     }
 
     local sysctl_conf_file="/etc/sysctl.d/99-net.conf"
@@ -1352,8 +1352,8 @@ fn_show_status_report() {
         bbr_status="true"
     fi
     
-    fn_print_line "BBR+FQ 加速" "$bbr_status" "  [ 已启用 ]" "  [ 未启用 ]" ""
-    fn_print_line "网络优化配置" "$sysctl_status" "   [ 已配置 ]" "   [ 未配置 ]" ""
+    fn_print_line "BBR+FQ 加速" "$bbr_status" "[ 已启用 ]" "[ 未启用 ]" ""
+    fn_print_line "网络优化配置" "$sysctl_status" "[ 已配置 ]" "[ 未配置 ]" ""
     
     local ipv6_status="false"
     local ipv6_details=""
@@ -1364,7 +1364,7 @@ fn_show_status_report() {
         ipv6_status="false"
         ipv6_details="(已启用)"
     fi
-    fn_print_line "IPv6 禁用" "$ipv6_status" "  [ 已禁用 ]" "  [ 已启用 ]" "$ipv6_details"
+    fn_print_line "IPv6 禁用" "$ipv6_status" "[ 已禁用 ]" "[ 已启用 ]" "$ipv6_details"
 
     local selinux_status="false"
     local selinux_details="(未检测到)"
@@ -1400,7 +1400,7 @@ fn_show_status_report() {
         journal_status="true"
         journal_details="(模式: 仅内存)"
     fi
-    fn_print_line "Journald 日志" "$journal_status" "  [ 已优化 ]" "  [ 未优化 ]" "$journal_details"
+    fn_print_line "Journald 日志" "$journal_status" "[ 已优化 ]" "[ 未优化 ]" "$journal_details"
 
     local zram_status="false"
     local zram_details="(未激活)"
