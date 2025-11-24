@@ -1352,8 +1352,8 @@ fn_show_status_report() {
         bbr_status="true"
     fi
     
-    fn_print_line "BBR+FQ 加速" "$bbr_status" "[ 已启用 ]" "[ 未启用 ]" ""
-    fn_print_line "网络优化配置" "$sysctl_status" "    [ 已配置 ]" "    [ 未配置 ]" ""
+    fn_print_line "BBR+FQ 加速" "$bbr_status" "[   已启用 ]" "[   未启用 ]" ""
+    fn_print_line "网络优化配置" "$sysctl_status" "    [   已配置 ]" "    [   未配置 ]" ""
     
     local ipv6_status="false"
     local ipv6_details=""
@@ -1364,7 +1364,7 @@ fn_show_status_report() {
         ipv6_status="false"
         ipv6_details="(已启用)"
     fi
-    fn_print_line "IPv6 禁用" "$ipv6_status" "[ 已禁用 ]" "[ 已启用 ]" "$ipv6_details"
+    fn_print_line "IPv6 禁用" "$ipv6_status" "[   已禁用 ]" "[   已启用 ]" "$ipv6_details"
 
     local selinux_status="false"
     local selinux_details="(未检测到)"
