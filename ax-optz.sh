@@ -1419,7 +1419,7 @@ fn_show_status_report() {
 fn_show_menu() {
     clear
     echo ""
-    fn_show_menu
+    fn_show_status_report "noclear"
     echo ""
 
     echo "==============================================="
@@ -1433,8 +1433,6 @@ fn_show_menu() {
     echo " 3) 优化网络代理服务"
     echo " 0) 退出"
     echo "==============================================="
-
-    fn_show_status_report "noclear"
 
     read -rp "请选择: " CH || true
     case "$CH" in
