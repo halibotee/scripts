@@ -199,7 +199,7 @@ sniff:
   rewriteDomain: true
   tcpPorts: 80,443,8000-9000
   __UDP_SNIFF_CONFIG__
-  __OUTBOUNDS_AND_ACL__
+__OUTBOUNDS_AND_ACL__ 
 EOM
 
 # -----------------------------------------------------------------------------
