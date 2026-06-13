@@ -2427,8 +2427,9 @@ chain_manager_menu_3() {
             1) start_new_chain_instance_3; read -p $'\n按任意键返回...' -n1 -s;;
             2) 
                 if [[ -z "$INSTANCES" ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
-                read -p "请输入您想管理的串联实例ID (仅数字) [$(echo $INSTANCES | tr '\n' ' ')]: " manage_id_num
-                # 简单的存在性检查
+                echo "$(bold "可用实例:")"
+                local ii; for ii in $INSTANCES; do display_instance_status_line "ss_3_chain_chain" "$ii" "  "; done
+                read -p "请输入您想管理的实例序号: " manage_id_num
                 if echo "$INSTANCES" | grep -w -q "$manage_id_num"; then 
                     manage_chain_instance_3 "$manage_id_num"
                 else 
@@ -2475,7 +2476,10 @@ chain_manager_menu() {
         read -p "请选择: " choice
         case $choice in
             1) start_new_chain_instance "$chain_type"; read -p $'\n按任意键返回...' -n1 -s;;
-            2) if [[ -z "$INSTANCES" ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi; read -p "请输入您想管理的串联实例ID (仅数字) [$(echo $INSTANCES | tr '\n' ' ')]: " manage_id_num; if echo "$INSTANCES" | grep -w -q "$manage_id_num"; then manage_chain_instance "$chain_type" "$manage_id_num"; else red "无效的实例ID！"; sleep 2; fi;;
+             2) if [[ -z "$INSTANCES" ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
+                local _chain_display=""; [[ "$chain_type" == "hy2" ]] && _chain_display="hy2_chain" || _chain_display="vless_chain"
+                echo "$(bold "可用实例:")"; local ii; for ii in $INSTANCES; do display_instance_status_line "$_chain_display" "$ii" "  "; done
+                read -p "请输入您想管理的实例序号: " manage_id_num; if echo "$INSTANCES" | grep -w -q "$manage_id_num"; then manage_chain_instance "$chain_type" "$manage_id_num"; else red "无效的实例ID！"; sleep 2; fi;;
             3) if [[ -z "$INSTANCES" ]]; then yellow "当前没有实例可供查看。"; sleep 2; continue; fi; local i; for i in $INSTANCES; do view_chain_client_config "$chain_type" $i; done; read -p $'\n按任意键返回...' -n1 -s;;
             0) break;; *) red "无效输入"; sleep 1;;
         esac
@@ -2519,7 +2523,8 @@ main_manager_loop() {
                 read -p $'\n按任意键返回...' -n1 -s;;
             2)
                 if [[ ${#INSTANCES[@]} -eq 0 ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
-                local manage_id; read -p "请输入您想管理的实例ID [$(echo "${INSTANCES[@]}")]: " manage_id; local is_valid=false; for id in "${INSTANCES[@]}"; do if [[ "$id" == "$manage_id" ]]; then is_valid=true; break; fi; done
+                echo "$(bold "可用实例:")"; local ii; for ii in "${INSTANCES[@]}"; do display_instance_status_line "$type_lowercase" "$ii" "  "; done
+                local manage_id; read -p "请输入您想管理的实例ID: " manage_id; local is_valid=false; for id in "${INSTANCES[@]}"; do if [[ "$id" == "$manage_id" ]]; then is_valid=true; break; fi; done
                 if [[ "$is_valid" == true ]]; then
                     local conf_path
                     case $type in
@@ -2534,7 +2539,8 @@ main_manager_loop() {
                 if [[ ${#INSTANCES[@]} -eq 0 ]]; then yellow "当前没有实例可供查看。"; sleep 2; continue; fi
                 if [[ "$type" == "hysteria2" ]]; then view_all_hy2_subscriptions
                 else
-                    local view_id; read -p "请输入您想查看的实例ID [$(echo "${INSTANCES[@]}")]: " view_id; local is_valid=false; for id in "${INSTANCES[@]}"; do if [[ "$id" == "$view_id" ]]; then is_valid=true; break; fi; done
+                    echo "$(bold "可用实例:")"; local ii; for ii in "${INSTANCES[@]}"; do display_instance_status_line "$type_lowercase" "$ii" "  "; done
+                    local view_id; read -p "请输入您想查看的实例ID: " view_id; local is_valid=false; for id in "${INSTANCES[@]}"; do if [[ "$id" == "$view_id" ]]; then is_valid=true; break; fi; done
                     if [[ "$is_valid" == true ]]; then
                         case "$type" in
                             udp2raw) view_udp2raw_client_config "$view_id" ;;
