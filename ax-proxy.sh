@@ -1134,7 +1134,7 @@ generate_instance_display_name() {
         xray_reality|xray_mkcp|xray_ss) conf_file="$XRAY_INSTALL_DIR/xray_${id}.json" ;;
     esac
     [[ -f "$conf_file" ]] && ip=$(grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$conf_file" 2>/dev/null | grep -v '127\.0\.0\.1\|0\.0\.0\.0' | head -1)
-    [[ -z "$ip" ]] && ip="unknown"
+    [[ -z "$ip" ]] && ip="$id"
     case "$type" in
         hysteria2) echo "HY2_${ip}" ;;
         udp2raw) echo "UDP2RAW_${ip}" ;;
@@ -2606,14 +2606,14 @@ view_all_configs() {
     local hy2_chain_instances=$(get_chain_instances "hy2"); if [[ -n "$hy2_chain_instances" ]]; then for i in $hy2_chain_instances; do view_chain_client_config "hy2" "$i"; echo "----------------------------------"; done; fi
     local vless_chain_instances=$(get_chain_instances "vless"); if [[ -n "$vless_chain_instances" ]]; then for i in $vless_chain_instances; do echo; view_chain_client_config "vless" "$i"; echo "----------------------------------"; done; fi
     
-    local standalone_hy2=($(get_standalone_instances "hysteria2")); if [[ ${#standalone_hy2[@]} -gt 0 ]]; then echo; cyan "--- Hysteria2 (独立) 实例订阅链接 ---"; echo 
+    local standalone_hy2=($(get_standalone_instances "hysteria2")); if [[ ${#standalone_hy2[@]} -gt 0 ]]; then echo; cyan "--- Hysteria2 独立模式订阅链接 ---"; echo 
     for id in "${standalone_hy2[@]}"; do green "$(generate_hy2_subscription_link $id)"; done; echo "----------------------------------"; fi
     
-    local standalone_reality=($(get_standalone_instances "xray_reality")); if [[ ${#standalone_reality[@]} -gt 0 ]]; then echo; cyan "--- VLESS+Reality (独立) 实例订阅链接 ---"; echo 
+    local standalone_reality=($(get_standalone_instances "xray_reality")); if [[ ${#standalone_reality[@]} -gt 0 ]]; then echo; cyan "--- VLESS+Reality 独立模式订阅链接 ---"; echo 
     for id in "${standalone_reality[@]}"; do green "$(generate_xray_reality_link $id)"; done; echo "----------------------------------"; fi
-    local standalone_mkcp=($(get_standalone_instances "xray_mkcp")); if [[ ${#standalone_mkcp[@]} -gt 0 ]]; then echo; cyan "--- VLESS+mKCP (独立) 实例订阅链接 ---"; echo 
+    local standalone_mkcp=($(get_standalone_instances "xray_mkcp")); if [[ ${#standalone_mkcp[@]} -gt 0 ]]; then echo; cyan "--- VLESS+mKCP 独立模式订阅链接 ---"; echo 
     for id in "${standalone_mkcp[@]}"; do green "$(generate_xray_mkcp_link $id)"; done; echo "----------------------------------"; fi
-    local standalone_ss=($(get_standalone_instances "xray_ss")); if [[ ${#standalone_ss[@]} -gt 0 ]]; then echo; cyan "--- Shadowsocks (独立) 实例订阅链接 ---"; echo
+    local standalone_ss=($(get_standalone_instances "xray_ss")); if [[ ${#standalone_ss[@]} -gt 0 ]]; then echo; cyan "--- Shadowsocks 独立模式订阅链接 ---"; echo
     for id in "${standalone_ss[@]}"; do green "$(generate_xray_ss_link $id)"; done; echo "----------------------------------"; fi
     
     local standalone_udp2raw=($(get_standalone_instances "udp2raw")); if [[ ${#standalone_udp2raw[@]} -gt 0 ]]; then echo; for id in "${standalone_udp2raw[@]}"; do view_udp2raw_client_config "$id"; echo; done; echo "----------------------------------"; fi
@@ -2625,7 +2625,25 @@ view_all_configs() {
 # -----------------------------------------------------------------------------
 # 重启所有服务
 # -----------------------------------------------------------------------------
-restart_all_services(){ log "正在重启所有正在运行的实例..."; systemctl restart 'ax-kcptun@*' 'ax-udp2raw@*' 'ax-xray@*' 'ax-hysteria2@*' 2>/dev/null; green "操作完成！"; sleep 2; }
+restart_all_services() {
+    log "正在重启所有正在运行的实例..."
+    local count=0
+    for f in "$KCP_INSTALL_DIR"/kcptun_*.json "$UDP2RAW_INSTALL_DIR"/udp2raw_*.conf \
+             "$HY2_INSTALL_DIR"/hy2_*.yaml "$XRAY_INSTALL_DIR"/xray_*.json; do
+        [[ -f "$f" ]] || continue
+        local base=$(basename "$f")
+        local id=""; local srv=""
+        case "$base" in
+            kcptun_*.json)   id="${base#kcptun_}"; id="${id%.json}";   srv="ax-kcptun@${id}" ;;
+            udp2raw_*.conf)  id="${base#udp2raw_}"; id="${id%.conf}";  srv="ax-udp2raw@${id}" ;;
+            hy2_*.yaml)      id="${base#hy2_}";     id="${id%.yaml}";  srv="ax-hysteria2@${id}" ;;
+            xray_*.json)     id="${base#xray_}";    id="${id%.json}";  srv="ax-xray@${id}" ;;
+        esac
+        [[ -n "$srv" ]] && systemctl restart "$srv" 2>/dev/null && count=$((count + 1))
+    done
+    green "已重启 ${count} 个实例"
+    sleep 2
+}
 
 # -----------------------------------------------------------------------------
 # 检查并更新所有核心程序
@@ -2903,17 +2921,17 @@ show_status_summary() {
     
     local ss_3_chain_instances=$(get_chain_instances_3)
     if [[ -n "$ss_3_chain_instances" ]]; then
-        echo "$(bold "SS+KCP+UDP 串联实例:")"
+        echo "$(bold "SS+KCP+UDP 串联模式:")"
         for i in $ss_3_chain_instances; do display_instance_status_line "ss_3_chain_chain" "$i" "$menu_index) "; QUICK_MANAGE_MAP_ID[$menu_index]=$i; QUICK_MANAGE_MAP_TYPE[$menu_index]="ss_3_chain_chain"; menu_index=$((menu_index + 1)); done
     fi
     local hy2_chain_instances=$(get_chain_instances "hy2")
     if [[ -n "$hy2_chain_instances" ]]; then
-        echo "$(bold "Hysteria2+UDP 串联实例:")"
+        echo "$(bold "Hysteria2+UDP 串联模式:")"
         for i in $hy2_chain_instances; do display_instance_status_line "hy2_chain" "$i" "$menu_index) "; QUICK_MANAGE_MAP_ID[$menu_index]=$i; QUICK_MANAGE_MAP_TYPE[$menu_index]="hy2_chain"; menu_index=$((menu_index + 1)); done
     fi
     local vless_chain_instances=$(get_chain_instances "vless")
     if [[ -n "$vless_chain_instances" ]]; then
-        echo "$(bold "VLESS_mKCP+UDP 串联实例:")"
+        echo "$(bold "VLESS_mKCP+UDP 串联模式:")"
         for i in $vless_chain_instances; do display_instance_status_line "vless_chain" "$i" "$menu_index) "; QUICK_MANAGE_MAP_ID[$menu_index]=$i; QUICK_MANAGE_MAP_TYPE[$menu_index]="vless_chain"; menu_index=$((menu_index + 1)); done
     fi
 
@@ -2931,7 +2949,7 @@ show_status_summary() {
         local standalone_instances=($(get_standalone_instances "$type_lowercase"))
 
         if [[ ${#standalone_instances[@]} -gt 0 ]]; then
-            echo "$(bold "${type} (独立) 实例:")"
+            echo "$(bold "${type} 独立模式:")"
             for i in "${standalone_instances[@]}"; do
                 display_instance_status_line "$type_lowercase" "$i" "$menu_index) "
                 QUICK_MANAGE_MAP_ID[$menu_index]=$i; QUICK_MANAGE_MAP_TYPE[$menu_index]="$type_lowercase"; menu_index=$((menu_index + 1))
