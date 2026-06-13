@@ -2625,7 +2625,7 @@ view_all_configs() {
 # -----------------------------------------------------------------------------
 # 重启所有服务
 # -----------------------------------------------------------------------------
-restart_all_services(){ log "正在重启所有正在运行的实例..."; systemctl restart ax-kcptun@*.service ax-udp2raw@*.service ax-xray@*.service ax-hysteria2@*.service 2>/dev/null; green "操作完成！"; sleep 2; }
+restart_all_services(){ log "正在重启所有正在运行的实例..."; systemctl restart 'ax-kcptun@*' 'ax-udp2raw@*' 'ax-xray@*' 'ax-hysteria2@*' 2>/dev/null; green "操作完成！"; sleep 2; }
 
 # -----------------------------------------------------------------------------
 # 检查并更新所有核心程序
@@ -2636,8 +2636,8 @@ check_for_updates(){
 
      # 先停止所有服务
     log "正在停止全部服务以进行组件更新..."
-    systemctl stop ax-kcptun@*.service ax-udp2raw@*.service \
-                   ax-xray@*.service ax-hysteria2@*.service 2>/dev/null
+    systemctl stop 'ax-kcptun@*' 'ax-udp2raw@*' \
+                   'ax-xray@*' 'ax-hysteria2@*' 2>/dev/null
     sleep 2
     
     # ========== 第一部分：更新核心程序 ==========
