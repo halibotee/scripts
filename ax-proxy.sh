@@ -860,19 +860,31 @@ download_kcp_udp_binaries(){
     mkdir -p "$KCP_INSTALL_DIR"
     mkdir -p "$UDP2RAW_INSTALL_DIR"
 
-    # 1. KCPTUN 下载 (直接下载可执行文件，无需解压)
-    log "正在从固定源下载 KCPTUN (kcptun_server)..."
-    download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/kcptun_server" "$KCP_INSTALL_DIR/kcptun_server" && \
-    chmod +x "$KCP_INSTALL_DIR/kcptun_server" && \
-    echo "Fixed-Source-v1.0.2" > "$KCP_INSTALL_DIR/version.txt" || { red "KCPTUN 下载失败。"; return 1; }
+    local kcp_current=$(cat "$KCP_INSTALL_DIR/version.txt" 2>/dev/null)
+    local udp_current=$(cat "$UDP2RAW_INSTALL_DIR/version.txt" 2>/dev/null)
+    local fixed_version="Fixed-Source-v1.0.2"
 
-    # 2. UDP2RAW 下载 (下载压缩包并解压)
-    log "正在从固定源下载 UDP2RAW (udp2raw_binaries.tar.gz)..."
-    download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/udp2raw_binaries.tar.gz" /tmp/udp2raw.tar.gz && \
-    tar -xzf /tmp/udp2raw.tar.gz -C "$UDP2RAW_INSTALL_DIR" udp2raw_amd64 && \
-    mv "$UDP2RAW_INSTALL_DIR/udp2raw_amd64" "$UDP2RAW_INSTALL_DIR/udp2raw" && \
-    echo "Fixed-Source-v1.0.2" > "$UDP2RAW_INSTALL_DIR/version.txt" && \
-    chmod +x "$UDP2RAW_INSTALL_DIR/udp2raw" || { red "UDP2RAW 下载失败。"; return 1; }
+    # KCPTUN - 只有版本不匹配或文件缺失才下载
+    if [[ "$kcp_current" != "$fixed_version" || ! -f "$KCP_INSTALL_DIR/kcptun_server" ]]; then
+        log "下载 KCPTUN (kcptun_server)..."
+        download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/kcptun_server" "$KCP_INSTALL_DIR/kcptun_server" && \
+        chmod +x "$KCP_INSTALL_DIR/kcptun_server" && \
+        echo "$fixed_version" > "$KCP_INSTALL_DIR/version.txt" || { red "KCPTUN 下载失败。"; return 1; }
+    else
+        green "KCPTUN 已是最新版本 ($kcp_current)"
+    fi
+
+    # UDP2RAW - 只有版本不匹配或文件缺失才下载
+    if [[ "$udp_current" != "$fixed_version" || ! -f "$UDP2RAW_INSTALL_DIR/udp2raw" ]]; then
+        log "下载 UDP2RAW (udp2raw_binaries.tar.gz)..."
+        download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/udp2raw_binaries.tar.gz" /tmp/udp2raw.tar.gz && \
+        tar -xzf /tmp/udp2raw.tar.gz -C "$UDP2RAW_INSTALL_DIR" udp2raw_amd64 && \
+        mv "$UDP2RAW_INSTALL_DIR/udp2raw_amd64" "$UDP2RAW_INSTALL_DIR/udp2raw" && \
+        echo "$fixed_version" > "$UDP2RAW_INSTALL_DIR/version.txt" && \
+        chmod +x "$UDP2RAW_INSTALL_DIR/udp2raw" || { red "UDP2RAW 下载失败。"; return 1; }
+    else
+        green "UDP2RAW 已是最新版本 ($udp_current)"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2654,14 +2666,14 @@ check_for_updates(){
         has_updates=true
     fi
     
-    # 只有在有更新时才执行后续操作
+    # 无论是否有更新，都要重启之前被停止的服务
     if [[ "$has_updates" == true ]]; then
         green "核心程序已更新，重启服务中..."
-        restart_all_services
-        sleep 2
     else
-        green "核心程序均已是最新版本。"
+        green "核心程序均已是最新版本，重启服务中..."
     fi
+    restart_all_services
+    sleep 2
     
     # ========== 第二部分：更新辅助脚本 ==========
     echo ""
