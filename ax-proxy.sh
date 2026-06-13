@@ -1882,7 +1882,7 @@ start_new_chain_instance_3() {
     
     local chain_id="s3c${i}"
     log "启动一个新的 SS+KCP+UDP 串联实例..."
-    green "新串联实例将被创建为: ${chain_id} (ax-xray@${chain_id} + ax-kcptun@${chain_id} + ax-udp2raw@${chain_id})"
+    green "新串联实例 #${i} (SS + KCPTUN + UDP2RAW 三层串联)"
     prompt_custom_instance_name "ss_3_chain_chain" "$i"
     
     read_valid_port "请输入UDP2RAW对外端口 (留空则随机): " udp2raw_listen_port true
@@ -2164,9 +2164,9 @@ start_new_chain_instance() {
     local chain_id="${id_prefix}${i}"
     log "启动一个新的 ${title} 串联实例..."
     if [[ "$chain_type" == "hy2" ]]; then
-        green "新串联实例将被创建为: ${chain_id} (ax-hysteria2@${chain_id} + ax-udp2raw@${chain_id})"
+        green "新串联实例 #${i} (Hysteria2 + UDP2RAW 两层串联)"
     else
-        green "新串联实例将被创建为: ${chain_id} (ax-xray@${chain_id} + ax-udp2raw@${chain_id})"
+        green "新串联实例 #${i} (VLESS_mKCP + UDP2RAW 两层串联)"
     fi
     local chain_display_type=""; [[ "$chain_type" == "hy2" ]] && chain_display_type="hy2_chain" || chain_display_type="vless_chain"
     prompt_custom_instance_name "$chain_display_type" "$i"
