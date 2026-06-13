@@ -1193,7 +1193,7 @@ get_instance_display_name() {
 }
 
 prompt_custom_instance_name() {
-    local type=$1 id=$2; local default_name="${type}_${id}"
+    local type=$1 id=$2; local default_name=$(generate_instance_display_name "$type" "$id")
     read -p "请输入实例名称 (留空则使用默认: ${default_name}): " custom_name
     if [[ -n "$custom_name" ]]; then set_custom_instance_name "${type}_${id}" "$custom_name"; fi
 }
