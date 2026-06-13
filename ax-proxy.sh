@@ -1084,33 +1084,110 @@ get_3_chain_status_tuple() {
     echo "$status_color $(get_service_status_string "$service1_name") $(get_service_status_string "$service2_name") $(get_service_status_string "$service3_name")"
 }
 
+INSTANCE_NAMES_FILE="/etc/ax-instance-names.json"
+
+get_custom_instance_name() {
+    local key=$1
+    [[ ! -f "$INSTANCE_NAMES_FILE" ]] && echo "" && return
+    jq -r --arg k "$key" '.[$k] // ""' "$INSTANCE_NAMES_FILE" 2>/dev/null
+}
+
+set_custom_instance_name() {
+    local key=$1 name=$2; local tmp
+    if [[ -f "$INSTANCE_NAMES_FILE" ]]; then
+        tmp=$(jq -c --arg k "$key" --arg v "$name" '.[$k] = $v' "$INSTANCE_NAMES_FILE" 2>/dev/null)
+    else
+        tmp=$(jq -c -n --arg k "$key" --arg v "$name" '{$k: $v}')
+    fi
+    echo "$tmp" > "$INSTANCE_NAMES_FILE"
+    green "实例名称已设置为: $name"
+}
+
+remove_custom_instance_name() {
+    local key=$1
+    [[ ! -f "$INSTANCE_NAMES_FILE" ]] && return
+    local tmp=$(jq -c "del(.\"$key\")" "$INSTANCE_NAMES_FILE" 2>/dev/null)
+    echo "$tmp" > "$INSTANCE_NAMES_FILE"
+}
+
+generate_instance_display_name() {
+    local type=$1 id=$2; local ip="" conf_file=""
+    case "$type" in
+        hy2_chain) conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_c${id}.conf" ;;
+        vless_chain) conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_vc${id}.conf" ;;
+        ss_3_chain_chain) conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_s3c${id}.conf" ;;
+        hysteria2) conf_file="$HY2_INSTALL_DIR/hy2_${id}.yaml" ;;
+        udp2raw) conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf" ;;
+        kcptun) conf_file="$KCP_INSTALL_DIR/kcptun_${id}.json" ;;
+        xray_reality|xray_mkcp|xray_ss) conf_file="$XRAY_INSTALL_DIR/xray_${id}.json" ;;
+    esac
+    [[ -f "$conf_file" ]] && ip=$(grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$conf_file" 2>/dev/null | grep -v '127\.0\.0\.1\|0\.0\.0\.0' | head -1)
+    [[ -z "$ip" ]] && ip="unknown"
+    case "$type" in
+        hysteria2) echo "HY2_${ip}" ;;
+        udp2raw) echo "UDP2RAW_${ip}" ;;
+        kcptun) echo "KCP_${ip}" ;;
+        xray_reality) echo "VLESS_${ip}" ;;
+        xray_mkcp) echo "VLESS_mKCP_${ip}" ;;
+        xray_ss) echo "SS_${ip}" ;;
+        hy2_chain) echo "HY2_UDP_${ip}" ;;
+        vless_chain) echo "VLESS_KCP_UDP_${ip}" ;;
+        ss_3_chain_chain) echo "SS_KCP_UDP_${ip}" ;;
+        *) echo "${type}_${id}" ;;
+    esac
+}
+
+get_instance_display_name() {
+    local type=$1 id=$2; local key="${type}_${id}"
+    local custom_name=$(get_custom_instance_name "$key")
+    if [[ -n "$custom_name" ]]; then echo "$custom_name"; else generate_instance_display_name "$type" "$id"; fi
+}
+
+prompt_custom_instance_name() {
+    local type=$1 id=$2; local default_name="${type}_${id}"
+    read -p "请输入实例名称 (留空则使用默认: ${default_name}): " custom_name
+    if [[ -n "$custom_name" ]]; then set_custom_instance_name "${type}_${id}" "$custom_name"; fi
+}
+
+interactive_rename_instance() {
+    local type=$1 id=$2; local key="${type}_${id}"
+    local current=$(get_instance_display_name "$type" "$id")
+    echo "当前名称: $(cyan "$current")"
+    read -p "请输入新名称 (留空恢复默认): " new_name
+    if [[ -z "$new_name" ]]; then
+        remove_custom_instance_name "$key"
+        green "已恢复默认名称"
+    else
+        set_custom_instance_name "$key" "$new_name"
+    fi
+}
 
 # -----------------------------------------------------------------------------
 # 显示单个实例的状态行 (用于主菜单)
 # -----------------------------------------------------------------------------
 display_instance_status_line() {
-    local type=$1 id=$2 prefix=$3; local full_id="$id"; local line
+    local type=$1 id=$2 prefix=$3; local full_id="$id"; local line; local name=$(get_instance_display_name "$type" "$id")
     case "$type" in
         "hy2_chain")
             full_id="c${id}"
             read -r color hy2_status udp_status <<< "$(get_chain_status_tuple "hy2" "$full_id")"
             local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
             local warp_status=$(get_warp_status_from_conf "$HY2_INSTALL_DIR/hy2_${full_id}.yaml")
-            line="$($color "${prefix}Hysteria2 [${hy2_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
+            line="$($color "${prefix}${name}:  Hysteria2 [${hy2_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
             ;;
         "vless_chain")
             full_id="vc${id}"
             read -r color xray_status udp_status <<< "$(get_chain_status_tuple "vless" "$full_id")"
             local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
             local warp_status=$(get_warp_status_from_conf "$XRAY_INSTALL_DIR/xray_${full_id}.json")
-            line="$($color "${prefix}VLESS_mKCP [${xray_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
+            line="$($color "${prefix}${name}:  VLESS_mKCP [${xray_status}] + UDP2RAW [${udp_status}] ${udp_info} (${warp_status})")"
             ;;
         "ss_3_chain_chain")
             full_id="s3c${id}"
             read -r color s1_status s2_status s3_status <<< "$(get_3_chain_status_tuple "$full_id")"
             local udp_info=$(get_listen_info_from_conf "$UDP2RAW_INSTALL_DIR/udp2raw_${full_id}.conf")
             local warp_status=$(get_warp_status_from_conf "$XRAY_INSTALL_DIR/xray_${full_id}.json")
-            line="$($color "${prefix}SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] ${udp_info} (${warp_status})")"
+            line="$($color "${prefix}${name}:  SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] ${udp_info} (${warp_status})")"
             ;;
         "hysteria2"|"udp2raw"|"kcptun"|"xray_reality"|"xray_mkcp"|"xray_ss")
             local conf_file service_prefix title; local color_func="yellow"
@@ -1129,7 +1206,7 @@ display_instance_status_line() {
                 extra_info=" ($(get_warp_status_from_conf "$conf_file"))"
             fi
             if [[ "$status_str" == "运行中" ]]; then color_func="cyan"; fi
-            line="$($color_func "${prefix}${title} [${status_str}] ${status_info}${extra_info}")"
+            line="$($color_func "${prefix}${name}:  ${title} [${status_str}] ${status_info}${extra_info}")"
             ;;
     esac
     echo -e "$line"
@@ -1184,16 +1261,16 @@ get_standalone_instances() {
 # 管理单个独立实例的子菜单
 # -----------------------------------------------------------------------------
 manage_instance_menu() {
-    local type=$1 id=$2 service=$3 conf=$4
+    local type=$1 id=$2 service=$3 conf=$4; local disp_name=$(get_instance_display_name "$type" "$id")
     while true; do
-        clear; echo "=================================="; echo "      管理 ${type^^} 实例 $(dim "$id")"; echo "=================================="
+        clear; echo "=================================="; echo "      ${disp_name}  $(dim "(${type^^} ${id})")"; echo "=================================="
         echo "状态：$(get_service_status_string "$service") $(dim "$(get_listen_info_from_conf "$conf")")"
         if [[ "$type" == "hysteria2" ]]; then cyan "订阅链接: $(generate_hy2_subscription_link $id)"; fi
         if [[ "$type" == "xray_reality" ]]; then cyan "分享链接: $(generate_xray_reality_link $id)"; fi
         if [[ "$type" == "xray_mkcp" ]]; then cyan "分享链接: $(generate_xray_mkcp_link $id)"; fi
         if [[ "$type" == "xray_ss" ]]; then cyan "分享链接: $(generate_xray_ss_link $id)"; fi
-        echo "----------------------------------"; echo "1) 启动/重启"; echo "2) 停止"; echo "3) 查看实时日志"; echo "4) 编辑配置"; echo "6) 查看客户端配置"; echo "99) 删除此实例"; echo "0) 返回"
-        read -p "请选择 [0-4, 6, 99]: " choice
+        echo "----------------------------------"; echo "1) 启动/重启"; echo "2) 停止"; echo "3) 查看实时日志"; echo "4) 编辑配置"; echo "5) 修改实例名称"; echo "6) 查看客户端配置"; echo "99) 删除此实例"; echo "0) 返回"
+        read -p "请选择 [0-6, 99]: " choice
         case $choice in
             1) log "正在启动/重启..."; systemctl restart "$service"; green "操作完成！";;
             2) log "正在停止..."; systemctl stop "$service"; green "操作完成！";;
@@ -1207,7 +1284,8 @@ manage_instance_menu() {
                 eval "$current_trap" # 恢复 trap
                 ;;
             4) nano "$conf"; log "重启实例以应用配置..."; systemctl restart "$service"; green "配置已更新！";;
-            99) read -p "确认彻底删除实例 ${id}？(默认“否”) [y/N]: " confirm; if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then log "停止并删除..."; systemctl stop "$service"; systemctl disable "$service" >/dev/null 2>&1; rm -f "$conf"; systemctl daemon-reload; green "实例 ${id} 已删除！"; break; fi;;
+            5) interactive_rename_instance "$type" "$id"; read -p $'\n按任意键返回...' -n1 -s;;
+            99) read -p "确认彻底删除实例 ${id}？(默认“否”) [y/N]: " confirm; if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then log "停止并删除..."; systemctl stop "$service"; systemctl disable "$service" >/dev/null 2>&1; rm -f "$conf"; remove_custom_instance_name "${type}_${id}"; systemctl daemon-reload; green "实例 ${id} 已删除！"; break; fi;;
             6) clear; echo "--- ${type^^} 客户端配置 (实例 $id) ---"
                case "$type" in
                    "hysteria2") cyan "订阅链接: $(generate_hy2_subscription_link "$id")" ;;
@@ -1242,6 +1320,7 @@ create_new_instance() {
 
             log "启动一个新的 ${TITLE} 实例..."; next_id=$(find_next_available_id "$type")
             green "新实例将被创建为: ax-${SYSTEMD_SERVICE_NAME}@${next_id}.service"
+            prompt_custom_instance_name "$type" "$next_id"
 
             read -p "请输入监听端口 (留空则随机生成): " listen_port; if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已为您随机选择端口: $listen_port"; fi
             replacements["__LISTEN__"]=":${listen_port}"
@@ -1327,6 +1406,7 @@ create_new_instance() {
         udp2raw) TITLE="UDP2RAW"; INSTALL_DIR="$UDP2RAW_INSTALL_DIR"; SERVICE_PREFIX="udp2raw"; SYSTEMD_SERVICE_NAME="ax-udp2raw"; FILE_EXT="conf"; CONFIG_TEMPLATE="$UDP2RAW_CONFIG_TEMPLATE" 
             log "启动一个新的 ${TITLE} 实例..."; next_id=$(find_next_available_id "$type")
             green "新实例将被创建为: ax-${SYSTEMD_SERVICE_NAME}@${next_id}.service"
+            prompt_custom_instance_name "$type" "$next_id"
             read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input; listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
             read -p "请输入监听端口 (留空则随机生成): " listen_port; if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已为您随机选择端口: $listen_port"; fi
             replacements["__LISTEN_ADDR__"]="${listen_addr}:${listen_port}"
@@ -1348,6 +1428,7 @@ create_new_instance() {
         kcptun) TITLE="KCPTUN"; INSTALL_DIR="$KCP_INSTALL_DIR"; SERVICE_PREFIX="kcptun"; SYSTEMD_SERVICE_NAME="ax-kcptun"; FILE_EXT="json"; CONFIG_TEMPLATE="$KCPTUN_CONFIG_JSON_TEMPLATE" 
             log "启动一个新的 ${TITLE} 实例..."; next_id=$(find_next_available_id "$type")
             green "新实例将被创建为: ax-${SYSTEMD_SERVICE_NAME}@${next_id}.service"
+            prompt_custom_instance_name "$type" "$next_id"
             read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input; listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
             read -p "请输入监听端口 (留空则随机生成): " listen_port; if [[ -z "$listen_port" ]]; then listen_port=$(find_available_port); green "已为您随机选择端口: $listen_port"; fi
             replacements["__LISTEN__"]="${listen_addr}:${listen_port}"
@@ -1391,6 +1472,7 @@ create_new_instance() {
 create_new_xray_instance() {
     local type=$1; local next_id;
     next_id=$(find_next_available_id "xray")
+    prompt_custom_instance_name "$type" "$next_id"
     
     declare -A replacements
     local temp_config=""
@@ -1748,6 +1830,7 @@ start_new_chain_instance_3() {
     local chain_id="s3c${i}"
     log "启动一个新的 SS+KCP+UDP 串联实例..."
     green "新串联实例将被创建为: ${chain_id} (ax-xray@${chain_id} + ax-kcptun@${chain_id} + ax-udp2raw@${chain_id})"
+    prompt_custom_instance_name "ss_3_chain_chain" "$i"
     
     read -p "请输入UDP2RAW对外端口 (远程客户端->UDP2RAW) (留空则随机): " udp2raw_listen_port
     if [[ -z "$udp2raw_listen_port" ]]; then 
@@ -1855,11 +1938,13 @@ start_new_chain_instance_3() {
 }
 
 # -----------------------------------------------------------------------------
-# [NEW] 管理一个已存在的 3 组件串联实例
+# [NEW] 管理 3 组件串联实例
 # -----------------------------------------------------------------------------
 manage_chain_instance_3() {
     local id_num=$1
     local manage_id="s3c${id_num}"
+    local manage_type="ss_3_chain_chain"
+    local disp_name=$(get_instance_display_name "$manage_type" "$id_num")
     
     local service1_full="ax-xray@${manage_id}.service" # SS
     local service2_full="ax-kcptun@${manage_id}.service"        # KCP
@@ -1870,13 +1955,13 @@ manage_chain_instance_3() {
     local conf3_path="$UDP2RAW_INSTALL_DIR/udp2raw_${manage_id}.conf"
     
     while true; do
-        clear; echo "=================================="; echo "   管理 SS+KCP+UDP $(dim "${manage_id}")"; echo "=================================="
+        clear; echo "=================================="; echo "     ${disp_name}  $(dim "(${manage_id})")"; echo "=================================="
         read -r color s1_status s2_status s3_status <<< "$(get_3_chain_status_tuple "$manage_id")"
         local udp2raw_info=$(get_listen_info_from_conf "$conf3_path")
         
         $color "状态: SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] $(dim "$udp2raw_info")"
 
-        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置指南"; echo "4) 查看 SS (Xray) 日志"; echo "5) 查看 KCPTUN 日志"; echo "6) 查看 UDP2RAW 日志"; echo "7) 编辑 SS (Xray) 配置文件"; echo "8) 编辑 KCPTUN 配置文件"; echo "9) 编辑 UDP2RAW 配置文件"; echo "99) 彻底删除此串联"; echo "0) 返回"
+        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置指南"; echo "4) 查看 SS (Xray) 日志"; echo "5) 查看 KCPTUN 日志"; echo "6) 查看 UDP2RAW 日志"; echo "7) 编辑 SS (Xray) 配置文件"; echo "8) 编辑 KCPTUN 配置文件"; echo "9) 编辑 UDP2RAW 配置文件"; echo "10) 修改实例名称"; echo "99) 彻底删除此串联"; echo "0) 返回"
         read -p "请选择: " manage_choice
         case $manage_choice in
             1) log "重启串联..."; systemctl restart "$service1_full" "$service2_full" "$service3_full";;
@@ -1888,11 +1973,13 @@ manage_chain_instance_3() {
             7) nano "$conf1_path"; systemctl restart "$service1_full";;
             8) nano "$conf2_path"; systemctl restart "$service2_full";;
             9) nano "$conf3_path"; systemctl restart "$service3_full";;
+            10) interactive_rename_instance "$manage_type" "$id_num"; read -p $'\n按任意键返回...' -n1 -s;;
             99) read -p "确认删除串联实例 ${manage_id}？(默认“否”) [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
                 log "删除串联..."; 
                 systemctl stop "$service1_full" "$service2_full" "$service3_full"; 
                 systemctl disable "$service1_full" "$service2_full" "$service3_full" >/dev/null 2>&1; 
                 rm -f "$conf1_path" "$conf2_path" "$conf3_path"; 
+                remove_custom_instance_name "${manage_type}_${id_num}"
                 systemctl daemon-reload; green "已删除。"; break; 
                 fi;;
             0) break;; *) red "无效输入";;
@@ -2035,6 +2122,8 @@ start_new_chain_instance() {
     else
         green "新串联实例将被创建为: ${chain_id} (ax-xray@${chain_id} + ax-udp2raw@${chain_id})"
     fi
+    local chain_display_type=""; [[ "$chain_type" == "hy2" ]] && chain_display_type="hy2_chain" || chain_display_type="vless_chain"
+    prompt_custom_instance_name "$chain_display_type" "$i"
     
     # 先进行参数配置
     read -p "请输入对外端口 (留空则随机生成): " udp2raw_listen_port
@@ -2198,11 +2287,13 @@ start_new_chain_instance() {
 }
 
 # -----------------------------------------------------------------------------
-# 管理一个已存在的 2 组件串联实例
+# 管理 2 组件串联实例
 # -----------------------------------------------------------------------------
 manage_chain_instance() {
     local chain_type=$1 id_num=$2
     local id_prefix="" title="" service1_name="" service2_name="" main_conf_path=""
+    local manage_type=""; [[ "$chain_type" == "hy2" ]] && manage_type="hy2_chain" || manage_type="vless_chain"
+    local disp_name=$(get_instance_display_name "$manage_type" "$id_num")
     
     if [[ "$chain_type" == "hy2" ]]; then
         id_prefix="c"; title="Hysteria2"; service1_name="ax-hysteria2"; main_conf_path="$HY2_INSTALL_DIR/hy2_c${id_num}.yaml"
@@ -2217,7 +2308,7 @@ manage_chain_instance() {
     local udp2raw_conf_path="$UDP2RAW_INSTALL_DIR/udp2raw_${manage_id}.conf"
     
     while true; do
-        clear; echo "=================================="; echo "      管理${title}串联实例 $(dim "${manage_id}")"; echo "=================================="
+        clear; echo "=================================="; echo "      ${disp_name}  $(dim "(${manage_id})")"; echo "=================================="
         read -r color s1_status s2_status <<< "$(get_chain_status_tuple "$chain_type" "$manage_id")"
         local udp2raw_info=$(get_listen_info_from_conf "$udp2raw_conf_path")
         
@@ -2227,8 +2318,8 @@ manage_chain_instance() {
             $color "状态: VLESS_mKCP [${s1_status}] + UDP2RAW [${s2_status}] $(dim "$udp2raw_info")"
         fi
 
-        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置指南"; echo "4) 查看 ${title} 日志"; echo "5) 查看 UDP2RAW 日志"; echo "6) 编辑 ${title} 配置文件"; echo "7) 编辑 UDP2RAW 配置文件"; echo "99) 彻底删除此串联"; echo "0) 返回"
-        read -p "请选择: " manage_choice
+        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置指南"; echo "4) 查看 ${title} 日志"; echo "5) 查看 UDP2RAW 日志"; echo "6) 编辑 ${title} 配置文件"; echo "7) 编辑 UDP2RAW 配置文件"; echo "8) 修改实例名称"; echo "99) 彻底删除此串联"; echo "0) 返回"
+        read -p "请选择 [0-8, 99]: " manage_choice
         case $manage_choice in
             1) log "重启串联..."; systemctl restart "$service1_full" "$service2_full";;
             2) log "停止串联..."; systemctl stop "$service1_full" "$service2_full";;
@@ -2251,11 +2342,13 @@ manage_chain_instance() {
                 ;;
             6) nano "$main_conf_path"; systemctl restart "$service1_full";;
             7) nano "$udp2raw_conf_path"; systemctl restart "$service2_full";;
+            8) interactive_rename_instance "$manage_type" "$id_num"; read -p $'\n按任意键返回...' -n1 -s;;
             99) read -p "确认删除串联实例 ${manage_id}？(默认“否”) [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
                 log "删除串联..."; 
                 systemctl stop "$service1_full" "$service2_full"; 
                 systemctl disable "$service1_full" "$service2_full" >/dev/null 2>&1; 
                 rm -f "$main_conf_path" "$udp2raw_conf_path"; 
+                remove_custom_instance_name "${manage_type}_${id_num}"
                 systemctl daemon-reload; green "已删除。"; break; 
                 fi;;
             0) break;; *) red "无效输入";;
@@ -2276,7 +2369,7 @@ chain_manager_menu_3() {
         
         local INSTANCES=$(get_chain_instances_3)
         if [[ -n "$INSTANCES" ]]; then 
-            echo "$(bold "--- 已存在的串联实例 ---")"
+            echo "$(bold "--- 现有串联实例 ---")"
             for i in $INSTANCES; do 
                 display_instance_status_line "ss_3_chain_chain" "$i" "  "
             done
@@ -2284,7 +2377,7 @@ chain_manager_menu_3() {
             yellow "当前没有已创建的串联实例。"
         fi
         
-        echo "----------------------------------"; echo "1) 启动一个新的串联实例"; echo "2) 管理一个已存在的串联实例"; echo "3) 查看配置"; echo "0) 返回主菜单"
+        echo "----------------------------------"; echo "1) 新建实例"; echo "2) 管理已有实例"; echo "3) 查看配置"; echo "0) 返回主菜单"
         read -p "请选择: " choice
         case $choice in
             1) start_new_chain_instance_3; read -p $'\n按任意键返回...' -n1 -s;;
@@ -2326,7 +2419,7 @@ chain_manager_menu() {
         
         local INSTANCES=$(get_chain_instances "$chain_type")
         if [[ -n "$INSTANCES" ]]; then 
-            echo "$(bold "--- 已存在的串联实例 ---")"
+            echo "$(bold "--- 现有串联实例 ---")"
             for i in $INSTANCES; do 
                 display_instance_status_line "${chain_type}_chain" "$i" "  "
             done
@@ -2334,7 +2427,7 @@ chain_manager_menu() {
             yellow "当前没有已创建的串联实例。"
         fi
         
-        echo "----------------------------------"; echo "1) 启动一个新的串联实例"; echo "2) 管理一个已存在的串联实例"; echo "3) 查看配置"; echo "0) 返回主菜单"
+        echo "----------------------------------"; echo "1) 新建实例"; echo "2) 管理已有实例"; echo "3) 查看配置"; echo "0) 返回主菜单"
         read -p "请选择: " choice
         case $choice in
             1) start_new_chain_instance "$chain_type"; read -p $'\n按任意键返回...' -n1 -s;;
@@ -2365,12 +2458,12 @@ main_manager_loop() {
         local INSTANCES=($(get_standalone_instances "$type_lowercase"))
 
         if [[ ${#INSTANCES[@]} -gt 0 ]]; then
-            echo "$(bold "--- 已存在的实例 ---")"; for i in "${INSTANCES[@]}"; do display_instance_status_line "$type_lowercase" "$i" "  "; done
+            echo "$(bold "--- 现有实例 ---")"; for i in "${INSTANCES[@]}"; do display_instance_status_line "$type_lowercase" "$i" "  "; done
         else
             yellow "当前没有已创建的 $title 实例。"
         fi
 
-        echo "----------------------------------"; local menu_options=("1) 启动一个新的实例" "2) 管理一个已存在的实例")
+        echo "----------------------------------"; local menu_options=("1) 新建实例" "2) 管理已有实例")
         if [[ "$type" == "hysteria2" ]]; then menu_options+=("3) 查看hy2订阅地址");
         elif [[ "$type" == "xray_reality" || "$type" == "xray_mkcp" || "$type" == "xray_ss" ]]; then menu_options+=("3) 查看分享链接");
         elif [[ "$type" == "udp2raw" || "$type" == "kcptun" ]]; then menu_options+=("3) 查看客户端配置"); fi
@@ -2844,16 +2937,16 @@ main_menu(){
         QUICK_MANAGE_MAP_ID=(); QUICK_MANAGE_MAP_TYPE=()
         trap '' SIGINT
         clear; echo "=================================="; echo "  多合一隧道管理脚本 V$SCRIPT_VERSION"; echo "=================================="
-        cyan "--- 串联管理 ---"
+        cyan "--- 串联模式 ---"
         echo " 1) Hysteria2+UDP2RAW 串联"
         echo " 2) VLESS_mKCP+UDP2RAW 串联"
         echo " 3) Shadowsocks+KCP+UDP 串联"
-        cyan "--- 独立实例管理 ---"
+        cyan "--- 独立模式 ---"
         echo " 4) Hysteria2"
         echo " 5) VLESS+Reality"
         echo " 6) VLESS+mKCP"
         echo " 7) Shadowsocks"
-        cyan "--- 加速管理 ---"
+        cyan "--- 组件管理 ---"
         echo " 8) UDP2RAW"
         echo " 9) KCPTUN"
         echo "----------------------------------"
