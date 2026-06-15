@@ -192,7 +192,7 @@ quic:
 masquerade:
   type: proxy
   proxy:
-     url: https://www.bing.com
+    url: https://www.bing.com
     rewriteHost: true
     insecure: false
 ignoreClientBandwidth: __IGNORE_CLIENT_BANDWIDTH__
