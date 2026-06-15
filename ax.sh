@@ -671,11 +671,6 @@ download_xray_binary(){
     unzip -o /tmp/xray.zip -d "$XRAY_INSTALL_DIR" xray geoip.dat geosite.dat || { red "Xray-core 解压失败。"; return 1; }
     chmod +x "$XRAY_INSTALL_DIR/xray"
     
-    # [REFACTORED] 复制 geo dat 文件到 Hysteria2 根目录
-    log "正在复制 geoip.dat / geosite.dat 到 Hysteria2 目录..."
-    cp -n "$XRAY_INSTALL_DIR/geoip.dat" "$HY2_INSTALL_DIR/" 2>/dev/null
-    cp -n "$XRAY_INSTALL_DIR/geosite.dat" "$HY2_INSTALL_DIR/" 2>/dev/null
-    chmod 644 "$HY2_INSTALL_DIR/geoip.dat" "$HY2_INSTALL_DIR/geosite.dat" 2>/dev/null
 }
 
 # --- 12. Systemd 与服务状态管理 ---
