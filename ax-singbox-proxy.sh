@@ -89,8 +89,6 @@ SS_DEFAULT_METHOD="2022-blake3-aes-256-gcm"           # Shadowsocks 默认加密
 # =============================================================================
 # 6. WARP 分流配置
 # =============================================================================
-DEFAULT_WARP_SOCKS_ADDR="127.0.0.1" # WARP SOCKS5 服务的默认监听地址
-DEFAULT_WARP_SOCKS_PORT="40000"     # WARP SOCKS5 服务的默认端口
 # WARP 分流规则
 WARP_GEOSITE_LIST_JSON='"geosite:google","geosite:openai","geosite:perplexity"'
 
@@ -105,12 +103,10 @@ GITHUB_URL="https://github.com"               # GitHub 主页地址
 
 # 辅助脚本 URL 配置
 AX_ACME_URL="https://raw.githubusercontent.com/halibotee/scripts/main/ax-acme.sh"  # ACME 证书管理脚本
-CFWARP_URL="https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh"    # WARP 配置脚本
 AX_OPTZ_URL="https://raw.githubusercontent.com/halibotee/scripts/main/ax-optz.sh"  # VPS 优化脚本
 
 # 从 URL 自动提取脚本名称（用户只需修改上面的 URL 即可）
 AX_ACME_SCRIPT="${AX_ACME_URL##*/}"      
-CFWARP_SCRIPT="${CFWARP_URL##*/}"        
 AX_OPTZ_SCRIPT="${AX_OPTZ_URL##*/}"      
 
 # =============================================================================
@@ -285,18 +281,6 @@ read -r -d '' SINGBOX_WARP_WIREGUARD_OUTBOUND <<'EOM'
 EOM
 
 # -----------------------------------------------------------------------------
-# Sing-box WARP 分流 outbound 块 (SOCKS5 备用方案)
-# -----------------------------------------------------------------------------
-read -r -d '' SINGBOX_WARP_SOCKS5_OUTBOUND <<'EOM'
-{
-    "type": "socks",
-    "tag": "warp-out",
-    "server": "__WARP_SOCKS5_ADDR__",
-    "server_port": __WARP_SOCKS5_PORT__
-}
-EOM
-
-# -----------------------------------------------------------------------------
 # Sing-box 直连路由规则块 (JSON)
 # -----------------------------------------------------------------------------
 read -r -d '' SINGBOX_DIRECT_ROUTE_RULES <<'EOM'
@@ -307,10 +291,6 @@ read -r -d '' SINGBOX_DIRECT_ROUTE_RULES <<'EOM'
     { "outbound": "block", "domain_regex": [ "^.*doubleclick\\.net$", "^.*googleadservices\\.com$" ], "domain": [ "category-ads-all" ] }
 ]
 EOM
-
-# WARP_WIREGUARD 开关: 设为 "" 使用 SOCKS5, 设为 "1" 使用 WireGuard
-WARP_USE_WIREGUARD=""
-
 
 # =============================================================================
 # 10. 辅助工具函数 (颜色、日志、检查等)
@@ -472,12 +452,10 @@ install_dependencies_and_programs(){
     
     # Derive script names from URLs
     AX_ACME_SCRIPT=$(basename "$AX_ACME_URL")
-    CFWARP_SCRIPT=$(basename "$CFWARP_URL")
     AX_OPTZ_SCRIPT=$(basename "$AX_OPTZ_URL")
 
     local script_download_needed=false
     local acme_ok=true; if [[ ! -f "$AX_ACME_SCRIPT" ]]; then acme_ok=false; script_download_needed=true; fi
-    local warp_ok=true; if [[ ! -f "$CFWARP_SCRIPT" ]]; then warp_ok=false; script_download_needed=true; fi
     local optz_ok=true; if [[ ! -f "$AX_OPTZ_SCRIPT" ]]; then optz_ok=false; script_download_needed=true; fi
     
     if [[ "$script_download_needed" == false ]]; then
@@ -488,11 +466,6 @@ install_dependencies_and_programs(){
         if [[ "$acme_ok" == false ]]; then
             cyan "  » 下载 $AX_ACME_SCRIPT"
             download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 下载完成" || yellow "    ⚠ $AX_ACME_SCRIPT 下载失败"
-        fi
-        
-        if [[ "$warp_ok" == false ]]; then
-            cyan "  » 下载 $CFWARP_SCRIPT"
-            download_with_retry "$CFWARP_URL" "$CFWARP_SCRIPT" >/dev/null 2>&1 && chmod +x "$CFWARP_SCRIPT" && green "    ✓ $CFWARP_SCRIPT 下载完成" || yellow "    ⚠ $CFWARP_SCRIPT 下载失败"
         fi
         
         if [[ "$optz_ok" == false ]]; then
@@ -977,20 +950,15 @@ WantedBy=multi-user.target"
         local base_config=$SINGBOX_BASE_CONFIG_TEMPLATE
 
         # 自动注册 WARP WireGuard (首次安装时静默执行)
-        local warp_block
         if command -v wg &>/dev/null && [[ ! -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
             register_warp_wireguard &>/dev/null || true
         fi
+        local warp_block='{"type": "direct", "tag": "warp-out"}'
         if [[ -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
-            warp_block=$(apply_warp_wireguard_config) || true
-        fi
-        if [[ -z "$warp_block" ]]; then
-            warp_block=$SINGBOX_WARP_SOCKS5_OUTBOUND
-            yellow "⚠ WARP WireGuard 注册失败，已使用 SOCKS5 占位配置（不影响直连）。" >&2
+            local wg_block=$(apply_warp_wireguard_config) || true
+            if [[ -n "$wg_block" ]]; then warp_block=$wg_block; fi
         fi
         base_config=${base_config/__WARP_OUTBOUND__/$warp_block}
-        base_config=${base_config/__WARP_SOCKS5_ADDR__/$DEFAULT_WARP_SOCKS_ADDR}
-        base_config=${base_config/__WARP_SOCKS5_PORT__/$DEFAULT_WARP_SOCKS_PORT}
         base_config=${base_config/__ROUTE_RULES__/$route_rules}
         echo "$base_config" > "$SINGBOX_INSTALL_DIR/singbox.json"
         log "已创建初始 Sing-box 基础配置文件: $SINGBOX_INSTALL_DIR/singbox.json"
@@ -1116,7 +1084,7 @@ generate_instance_display_name() {
         udp2raw) echo "UDP2RAW_${ip}_${id}" ;;
         kcptun) echo "KCP_${ip}_${id}" ;;
         xray_reality) echo "VLESS_${ip}_${id}" ;;
-        xray_ss) echo "SS_${ip}_${id}" ;;
+        hysteria2) echo "HY2_${ip}_${id}" ;;
         hy2_chain) echo "HY2_UDP_${ip}_${id}" ;;
         ss_3_chain_chain) echo "SS_KCP_UDP_${ip}_${id}" ;;
         *) echo "${type}_${id}" ;;
@@ -1168,18 +1136,18 @@ display_instance_status_line() {
             local warp_status=$(get_warp_status_from_conf "$SINGBOX_INSTALL_DIR/singbox.json")
             line="$($color "${prefix}${name}:  SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] ${udp_info} (${warp_status})")"
             ;;
-        "udp2raw"|"kcptun"|"xray_reality"|"xray_ss")
+        "udp2raw"|"kcptun"|"xray_reality"|"hysteria2")
             local conf_file service_prefix title; local color_func="yellow"
             case "$type" in
                 udp2raw) conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"; service_prefix="ax-udp2raw"; title="UDP2RAW";;
                 kcptun) conf_file="$KCP_INSTALL_DIR/kcptun_${id}.json"; service_prefix="ax-kcptun"; title="KCPTUN";;
-                xray_reality) conf_file="$SINGBOX_INSTALL_DIR/singbox.json"; service_prefix="ax-singbox"; title="VLESS+Reality (Sing-box)";;
-                xray_ss) conf_file="$SINGBOX_INSTALL_DIR/singbox.json"; service_prefix="ax-singbox"; title="Shadowsocks (Sing-box)";;
+                xray_reality) conf_file="$SINGBOX_INSTALL_DIR/singbox.json"; service_prefix="ax-singbox"; title="VLESS+Reality";;
+                hysteria2) conf_file="$SINGBOX_INSTALL_DIR/singbox.json"; service_prefix="ax-singbox"; title="Hysteria2";;
             esac
             local status_info=""
-            if [[ "$type" == "xray_reality" || "$type" == "xray_ss" ]]; then
+            if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then
                 local tag
-                case "$type" in xray_reality) tag="vless-reality-${id}";; xray_ss) tag="ss-${id}";; esac
+                case "$type" in xray_reality) tag="vless-reality-${id}";; hysteria2) tag="hy2-${id}";; esac
                 local port=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .listen_port' "$conf_file" 2>/dev/null)
                 status_info="0.0.0.0:${port}"
             else
@@ -1187,7 +1155,7 @@ display_instance_status_line() {
             fi
             local status_str=$(get_service_status_string "$service_prefix")
             local extra_info=""
-            if [[ "$type" == "xray_reality" || "$type" == "xray_ss" ]]; then
+            if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then
                 extra_info=" ($(get_warp_status_from_conf "$SINGBOX_INSTALL_DIR/singbox.json"))"
             fi
             if [[ "$status_str" == "运行中" ]]; then color_func="cyan"; fi
@@ -1222,9 +1190,9 @@ get_standalone_instances() {
             fi
             return
             ;;
-        "xray_ss")
+        "hysteria2")
             if [[ -f "$config_file" ]]; then
-                local ids=$(jq -r '.inbounds[] | select(.type == "shadowsocks") | .tag | split("-")[1]' "$config_file" 2>/dev/null)
+                local ids=$(jq -r '.inbounds[] | select(.type == "hysteria2") | .tag | split("-")[1]' "$config_file" 2>/dev/null)
                 echo "$ids"
             fi
             return
@@ -1255,14 +1223,14 @@ manage_instance_menu() {
     while true; do
         clear; echo "=================================="; echo "      ${disp_name}  $(dim "(${type^^} ${id})")"; echo "=================================="
         local status_info=""
-        if [[ "$type" == "xray_reality" || "$type" == "xray_ss" ]]; then
-            local tag; case "$type" in xray_reality) tag="vless-reality-${id}";; xray_ss) tag="ss-${id}";; esac
+        if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then
+            local tag; case "$type" in xray_reality) tag="vless-reality-${id}";; hysteria2) tag="hy2-${id}";; esac
             local port=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .listen_port' "$conf" 2>/dev/null)
             status_info="0.0.0.0:${port}"
         fi
         echo "状态：$(get_service_status_string "$service") $(dim "$status_info")"
         if [[ "$type" == "xray_reality" ]]; then cyan "分享链接: $(generate_singbox_reality_link $id)"; fi
-        if [[ "$type" == "xray_ss" ]]; then cyan "分享链接: $(generate_singbox_ss_link $id)"; fi
+        if [[ "$type" == "hysteria2" ]]; then cyan "分享链接: $(generate_singbox_hy2_link $id)"; fi
         echo "----------------------------------"; echo "1) 启动/重启"; echo "2) 停止"; echo "3) 查看实时日志"; echo "4) 编辑配置"; echo "5) 修改实例名称"; echo "6) 查看客户端配置"; echo "99) 删除此实例"; echo "0) 返回"
         read -p "请选择 [0-6, 99]: " choice
         case $choice in
@@ -1280,8 +1248,8 @@ manage_instance_menu() {
             5) interactive_rename_instance "$type" "$id"; read -p $'\n按任意键返回...' -n1 -s;;
             99) read -p "确认彻底删除实例 ${id}？(默认"否") [y/N]: " confirm
                 if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                    if [[ "$type" == "xray_reality" || "$type" == "xray_ss" ]]; then
-                        local tag; case "$type" in xray_reality) tag="vless-reality-${id}";; xray_ss) tag="ss-${id}";; esac
+                    if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then
+                        local tag; case "$type" in xray_reality) tag="vless-reality-${id}";; hysteria2) tag="hy2-${id}";; esac
                         remove_singbox_inbound "$tag"
                     else
                         systemctl stop "$service"; systemctl disable "$service" >/dev/null 2>&1; rm -f "$conf"
@@ -1289,12 +1257,12 @@ manage_instance_menu() {
                     remove_custom_instance_name "${type}_${id}"; systemctl daemon-reload; green "实例 ${id} 已删除！"; break
                 fi;;
              6) clear; echo "--- ${type^^} 客户端配置 (实例 $id) ---"
-               case "$type" in
-                   "udp2raw") view_udp2raw_client_config "$id" ;;
-                   "kcptun") view_kcptun_client_config "$id" ;;
-                   "xray_reality") cyan "分享链接: $(generate_singbox_reality_link "$id")" ;;
-                   "xray_ss") cyan "分享链接: $(generate_singbox_ss_link "$id")" ;;
-               esac
+                case "$type" in
+                    "udp2raw") view_udp2raw_client_config "$id" ;;
+                    "kcptun") view_kcptun_client_config "$id" ;;
+                    "xray_reality") cyan "分享链接: $(generate_singbox_reality_link "$id")" ;;
+                    "hysteria2") cyan "分享链接: $(generate_singbox_hy2_link "$id")" ;;
+                esac
                read -p $'\n按任意键返回...' -n1 -s;;
             0) break;; *) red "无效输入";;
         esac
@@ -1421,41 +1389,6 @@ add_singbox_inbound() {
         inbound_json=${inbound_json/__PRIVATE_KEY__/$private_key}
         inbound_json=${inbound_json/__SHORT_ID__/$short_id}
         
-    elif [[ "$type" == "xray_ss" ]]; then
-        tag="ss-${next_id}"
-        log "添加一个新的 Shadowsocks inbound, tag: $tag"
-        
-        local listen_port; read_valid_port "请输入监听端口 (留空则随机): " listen_port true
-
-        cyan "--- Shadowsocks 加密方式选项 ---"
-        echo "1) 2022-blake3-aes-256-gcm (推荐)"
-        echo "2) 2022-blake3-aes-128-gcm"
-        echo "3) 2022-blake3-chacha20-poly1305"
-        echo "4) aes-256-gcm"
-        echo "5) aes-128-gcm"
-        echo "6) chacha20-poly1305"
-        read -p "请选择加密方式 (默认 1): " ss_method_choice
-        ss_method_choice=${ss_method_choice:-1}
-        
-        local ss_method=""
-        case $ss_method_choice in
-            1) ss_method="2022-blake3-aes-256-gcm" ;;
-            2) ss_method="2022-blake3-aes-128-gcm" ;;
-            3) ss_method="2022-blake3-chacha20-poly1305" ;;
-            4) ss_method="aes-256-gcm" ;;
-            5) ss_method="aes-128-gcm" ;;
-            6) ss_method="chacha20-poly1305" ;;
-            *) ss_method="2022-blake3-aes-256-gcm" ;;
-        esac
-        
-        local ss_password=$(handle_password_input "shadowsocks")
-        
-        inbound_json=$SINGBOX_SHADOWSOCKS_TEMPLATE
-        inbound_json=${inbound_json/__ID__/$next_id}
-        inbound_json=${inbound_json/__LISTEN_PORT__/$listen_port}
-        inbound_json=${inbound_json/__SS_METHOD__/$ss_method}
-        inbound_json=${inbound_json/__SS_PASSWORD__/$ss_password}
-        
     elif [[ "$type" == "hysteria2" ]]; then
         tag="hy2-${next_id}"
         log "添加一个新的 Hysteria2 inbound, tag: $tag"
@@ -1493,8 +1426,6 @@ add_singbox_inbound() {
         green "Inbound '$tag' 已添加！Sing-box 运行正常。"; echo
         if [[ "$type" == "xray_reality" ]]; then
             cyan "分享链接: $(generate_singbox_reality_link "$next_id")"
-        elif [[ "$type" == "xray_ss" ]]; then
-            cyan "分享链接: $(generate_singbox_ss_link "$next_id")"
         elif [[ "$type" == "hysteria2" ]]; then
             cyan "分享链接: $(generate_singbox_hy2_link "$next_id")"
         fi
@@ -2272,8 +2203,8 @@ main_manager_loop() {
     case $type in 
         udp2raw) title="UDP2RAW (独立)"; dir="$UDP2RAW_INSTALL_DIR"; pattern="udp2raw_*.conf"; service_prefix="udp2raw"; type_lowercase="udp2raw";;
         kcptun) title="KCPTUN (独立)"; dir="$KCP_INSTALL_DIR"; pattern="kcptun_*.json"; service_prefix="kcptun"; type_lowercase="kcptun";;
-        xray_reality) title="VLESS+Reality (Sing-box)"; dir="$SINGBOX_INSTALL_DIR"; pattern=""; service_prefix="ax-singbox"; type_lowercase="xray_reality";;
-        xray_ss) title="Shadowsocks (Sing-box)"; dir="$SINGBOX_INSTALL_DIR"; pattern=""; service_prefix="ax-singbox"; type_lowercase="xray_ss";;
+        xray_reality) title="VLESS+Reality"; dir="$SINGBOX_INSTALL_DIR"; pattern=""; service_prefix="ax-singbox"; type_lowercase="xray_reality";;
+        hysteria2) title="Hysteria2"; dir="$SINGBOX_INSTALL_DIR"; pattern=""; service_prefix="ax-singbox"; type_lowercase="hysteria2";;
     esac
     while true; do
         trap 'echo -e "\n\n${yellow}操作已取消, 返回上级菜单...${reset}"; sleep 1; return' SIGINT
@@ -2288,7 +2219,7 @@ main_manager_loop() {
         fi
 
         echo "----------------------------------"; local menu_options=("1) 新建实例" "2) 管理已有实例")
-        if [[ "$type" == "xray_reality" || "$type" == "xray_ss" ]]; then menu_options+=("3) 查看分享链接");
+        if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then menu_options+=("3) 查看分享链接");
         elif [[ "$type" == "udp2raw" || "$type" == "kcptun" ]]; then menu_options+=("3) 查看客户端配置"); fi
         menu_options+=("0) 返回主菜单"); for opt in "${menu_options[@]}"; do echo "$opt"; done
         read -p "请选择: " choice
@@ -2313,7 +2244,7 @@ main_manager_loop() {
                         udp2raw) view_udp2raw_client_config "$view_id" ;;
                         kcptun) view_kcptun_client_config "$view_id" ;;
                         xray_reality) cyan "$(generate_singbox_reality_link "$view_id")" ;;
-                        xray_ss) cyan "$(generate_singbox_ss_link "$view_id")" ;;
+                        hysteria2) cyan "$(generate_singbox_hy2_link "$view_id")" ;;
                     esac
                 else red "无效的实例ID！"; fi
                 read -p $'\n按任意键返回...' -n1 -s;;
@@ -2374,25 +2305,15 @@ show_global_tls_status() {
 # -----------------------------------------------------------------------------
 show_warp_status() {
     echo "--- WARP 状态 ---"
-
-    # 检查 sing-box WARP WireGuard 密钥
     local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
     if [[ -f "$warp_key_file" ]]; then
         local wg_private=$(jq -r '.private_key // empty' "$warp_key_file" 2>/dev/null)
         if [[ -n "$wg_private" ]]; then
             green "[Sing-box WireGuard] WARP 已注册"
-            jq -r '"账户类型: Free"' "$warp_key_file" 2>/dev/null || echo "账户类型: Free"
+            echo "账户类型: Free"
         fi
     else
-        # 兼容旧版: 检查 wireproxy 是否在运行
-        local wireproxy_socks5=$(ss -nltp 2>/dev/null | awk '/"wireproxy"/{print $4}')
-        local wireproxy_port=$(cut -d: -f2 <<< "$wireproxy_socks5" 2>/dev/null)
-        if [ -n "$wireproxy_port" ]; then
-            yellow "[WireProxy] 运行中 (端口: $wireproxy_port) — 旧版 SOCKS5 模式，建议重新安装以使用 Sing-box WireGuard"
-        else
-            yellow "WARP 未配置"
-            echo "  可在创建实例时自动注册 Sing-box WireGuard WARP"
-        fi
+        yellow "WARP 未配置 — 首次安装时自动注册 Sing-box WireGuard WARP"
     fi
 }
 
@@ -2405,10 +2326,10 @@ view_all_configs() {
     local ss_3_chain_instances=$(get_chain_instances_3); if [[ -n "$ss_3_chain_instances" ]]; then for i in $ss_3_chain_instances; do view_chain_client_config_3 "$i"; echo "----------------------------------"; done; fi
     local hy2_chain_instances=$(get_chain_instances "hy2"); if [[ -n "$hy2_chain_instances" ]]; then for i in $hy2_chain_instances; do view_chain_client_config "hy2" "$i"; echo "----------------------------------"; done; fi
     
-    local standalone_reality=($(get_standalone_instances "xray_reality")); if [[ ${#standalone_reality[@]} -gt 0 ]]; then echo; cyan "--- VLESS+Reality (Sing-box) 独立模式订阅链接 ---"; echo 
+    local standalone_reality=($(get_standalone_instances "xray_reality")); if [[ ${#standalone_reality[@]} -gt 0 ]]; then echo; cyan "--- VLESS+Reality 独立模式订阅链接 ---"; echo 
     for id in "${standalone_reality[@]}"; do green "$(generate_singbox_reality_link $id)"; done; echo "----------------------------------"; fi
-    local standalone_ss=($(get_standalone_instances "xray_ss")); if [[ ${#standalone_ss[@]} -gt 0 ]]; then echo; cyan "--- Shadowsocks (Sing-box) 独立模式订阅链接 ---"; echo
-    for id in "${standalone_ss[@]}"; do green "$(generate_singbox_ss_link $id)"; done; echo "----------------------------------"; fi
+    local standalone_hy2=($(get_standalone_instances "hysteria2")); if [[ ${#standalone_hy2[@]} -gt 0 ]]; then echo; cyan "--- Hysteria2 独立模式订阅链接 ---"; echo
+    for id in "${standalone_hy2[@]}"; do green "$(generate_singbox_hy2_link $id)"; done; echo "----------------------------------"; fi
     
     local standalone_udp2raw=($(get_standalone_instances "udp2raw")); if [[ ${#standalone_udp2raw[@]} -gt 0 ]]; then echo; for id in "${standalone_udp2raw[@]}"; do view_udp2raw_client_config "$id"; echo; done; echo "----------------------------------"; fi
     local standalone_kcptun=($(get_standalone_instances "kcptun")); if [[ ${#standalone_kcptun[@]} -gt 0 ]]; then echo; for id in "${standalone_kcptun[@]}"; do view_kcptun_client_config "$id"; echo; done; fi
@@ -2506,12 +2427,6 @@ check_for_updates(){
         download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_ACME_SCRIPT 更新失败"
     fi
     
-    # 更新 WARP 管理脚本
-    if [[ -f "$CFWARP_SCRIPT" ]]; then
-        cyan "  » 更新 $CFWARP_SCRIPT"
-        download_with_retry "$CFWARP_URL" "$CFWARP_SCRIPT" >/dev/null 2>&1 && chmod +x "$CFWARP_SCRIPT" && green "    ✓ $CFWARP_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $CFWARP_SCRIPT 更新失败"
-    fi
-    
     # 更新 VPS 优化脚本
     if [[ -f "$AX_OPTZ_SCRIPT" ]]; then
         cyan "  » 更新 $AX_OPTZ_SCRIPT"
@@ -2589,30 +2504,10 @@ uninstall_all() {
         log "步骤 3: 执行彻底清理..."
         rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$SINGBOX_INSTALL_DIR"
         green "程序和配置文件目录已删除 (证书已保留)。"
-        
-        # 步骤 4: 清理 WARP-Socks5 代理（完全卸载模式）
-        if [ -x "$(type -p warp-cli)" ] || [ -x "$(type -p wireproxy)" ] || [ -f /etc/apt/sources.list.d/cloudflare-client.list ]; then
-            log "正在清理 WARP-Socks5 代理..."
-            # 卸载时使用本地脚本，如果不存在才下载
-            if [ ! -f "$CFWARP_SCRIPT" ]; then
-                if ! ensure_ax_script "$CFWARP_SCRIPT"; then
-                    yellow "无法下载 $CFWARP_SCRIPT，将跳过 WARP-Socks5代理 卸载。"
-                    continue
-                fi
-            fi
-            if bash "$CFWARP_SCRIPT" -u; then
-                green "WARP-Socks5代理 已删除。"
-            else
-                yellow "警告: WARP-Socks5代理 卸载可能未完全成功。"
-            fi
-        else
-            log "未检测到 WARP-Socks5代理，跳过清理。"
-        fi
-        
-        # 步骤 5: 清理证书客户端（完全卸载模式）
+
+        # 步骤 4: 清理证书客户端（完全卸载模式）
         if [ -d "/root/.acme.sh" ]; then
             log "正在清理 $AX_ACME_SCRIPT 证书客户端..."
-            # 卸载时使用本地脚本，如果不存在才下载
             if [ ! -f "$AX_ACME_SCRIPT" ]; then
                 if ! ensure_ax_script "$AX_ACME_SCRIPT" "$AX_ACME_URL"; then
                     yellow "无法下载 $AX_ACME_SCRIPT，将跳过 ACME 卸载。"
@@ -2633,12 +2528,12 @@ uninstall_all() {
         rm -f "$SINGBOX_INSTALL_DIR/sing-box" "$SINGBOX_INSTALL_DIR/.reality_keys.json"
         green "程序文件已删除。"
     fi
-    log "步骤 6: 清理残留的二进制文件..."
+    log "步骤 5: 清理残留的二进制文件..."
     rm -f /usr/local/bin/hysteria
     green "残留二进制文件已清理。"
-    log "步骤 7: 清理临时文件..."
+    log "步骤 6: 清理临时文件..."
     rm -f /tmp/kcptun.tar.gz /tmp/udp2raw.tar.gz /tmp/singbox.tar.gz
-    log "步骤 8: 重载 systemd 并清理状态..."
+    log "步骤 7: 重载 systemd 并清理状态..."
     systemctl daemon-reload; systemctl reset-failed
     green "Systemd 已重载并清理。"
     
@@ -2713,11 +2608,11 @@ show_status_summary() {
         echo "$(bold "Hysteria2+UDP 串联模式:")"
         for i in $hy2_chain_instances; do display_instance_status_line "hy2_chain" "$i" "$menu_index) "; QUICK_MANAGE_MAP_ID[$menu_index]=$i; QUICK_MANAGE_MAP_TYPE[$menu_index]="hy2_chain"; menu_index=$((menu_index + 1)); done
     fi
-    for type in "VLESS+Reality" "Shadowsocks" "UDP2RAW" "KCPTUN"; do
+    for type in "VLESS+Reality" "Hysteria2" "UDP2RAW" "KCPTUN"; do
         local type_lowercase=""
         case "$type" in
             "VLESS+Reality") type_lowercase="xray_reality";;
-            "Shadowsocks") type_lowercase="xray_ss";;
+            "Hysteria2") type_lowercase="hysteria2";;
             "UDP2RAW") type_lowercase="udp2raw";;
             "KCPTUN") type_lowercase="kcptun";;
         esac
@@ -2745,10 +2640,10 @@ main_menu(){
         clear; echo "=================================="; echo "  多合一隧道管理脚本 V$SCRIPT_VERSION"; echo "=================================="
         cyan "--- 串联模式 ---"
         echo " 1) Hysteria2+UDP2RAW 串联"
-        echo " 2) Shadowsocks+KCP+UDP 串联 (原选项3)"
+        echo " 2) Shadowsocks+KCP+UDP 串联"
         cyan "--- 独立模式 ---"
-        echo " 3) VLESS+Reality (Sing-box)"
-        echo " 4) Shadowsocks (Sing-box)"
+        echo " 3) VLESS+Reality"
+        echo " 4) Hysteria2"
         cyan "--- 组件管理 ---"
         echo " 5) UDP2RAW"
         echo " 6) KCPTUN"
@@ -2780,7 +2675,7 @@ main_menu(){
                 "ss_3_chain_chain") manage_chain_instance_3 "$real_id" ;;
                 "hy2_chain") manage_chain_instance "hy2" "$real_id" ;;
                 "xray_reality") manage_instance_menu "xray_reality" "$real_id" "ax-singbox" "$SINGBOX_INSTALL_DIR/singbox.json" ;;
-                "xray_ss") manage_instance_menu "xray_ss" "$real_id" "ax-singbox" "$SINGBOX_INSTALL_DIR/singbox.json" ;;
+                "hysteria2") manage_instance_menu "hysteria2" "$real_id" "ax-singbox" "$SINGBOX_INSTALL_DIR/singbox.json" ;;
                 "udp2raw") manage_instance_menu "udp2raw" "$real_id" "ax-udp2raw@${real_id}" "$UDP2RAW_INSTALL_DIR/udp2raw_${real_id}.conf" ;;
                 "kcptun") manage_instance_menu "kcptun" "$real_id" "ax-kcptun@${real_id}" "$KCP_INSTALL_DIR/kcptun_${real_id}.json" ;;
             esac
@@ -2791,7 +2686,7 @@ main_menu(){
             1) chain_manager_menu "hy2" ;;
             2) chain_manager_menu_3 ;;
             3) main_manager_loop "xray_reality" ;;
-            4) main_manager_loop "xray_ss" ;;
+            4) main_manager_loop "hysteria2" ;;
             5) main_manager_loop "udp2raw" ;;
             6) main_manager_loop "kcptun" ;;
             7) view_all_configs; read -p $'\n按任意键返回...' -n1 -s;;
