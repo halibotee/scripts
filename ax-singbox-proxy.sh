@@ -976,13 +976,17 @@ WantedBy=multi-user.target"
         route_rules=${route_rules//__WARP_GEOSITE_LIST_JSON__/$WARP_GEOSITE_LIST_JSON}
         local base_config=$SINGBOX_BASE_CONFIG_TEMPLATE
 
-        # 选择 WARP outbound: WireGuard (首选) 或 SOCKS5 (备用)
+        # 自动注册 WARP WireGuard (首次安装时静默执行)
         local warp_block
-        if [[ "$WARP_USE_WIREGUARD" == "1" ]]; then
-            warp_block=$(apply_warp_wireguard_config) || warp_block=$SINGBOX_WARP_SOCKS5_OUTBOUND
+        if command -v wg &>/dev/null && [[ ! -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
+            register_warp_wireguard &>/dev/null || true
+        fi
+        if [[ -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
+            warp_block=$(apply_warp_wireguard_config) || true
         fi
         if [[ -z "$warp_block" ]]; then
             warp_block=$SINGBOX_WARP_SOCKS5_OUTBOUND
+            yellow "⚠ WARP WireGuard 注册失败，已使用 SOCKS5 占位配置（不影响直连）。" >&2
         fi
         base_config=${base_config/__WARP_OUTBOUND__/$warp_block}
         base_config=${base_config/__WARP_SOCKS5_ADDR__/$DEFAULT_WARP_SOCKS_ADDR}
@@ -2370,28 +2374,25 @@ show_global_tls_status() {
 # -----------------------------------------------------------------------------
 show_warp_status() {
     echo "--- WARP 状态 ---"
-    
-    # 检查 wireproxy 是否在运行
-    local wireproxy_socks5=$(ss -nltp 2>/dev/null | awk '/"wireproxy"/{print $4}')
-    local wireproxy_port=$(cut -d: -f2 <<< "$wireproxy_socks5" 2>/dev/null)
-    
-    if [ -n "$wireproxy_port" ]; then
-        green "[WireProxy] 运行中 (端口: $wireproxy_port)"
-        
-        # 尝试检测账户类型（如果 menu.sh 有保存相关信息）
-        if [ -s /etc/wireguard/info.log ]; then
-            if grep -sq 'Device name' /etc/wireguard/info.log; then
-                local device_name=$(awk '/Device name/{print $NF}' /etc/wireguard/info.log)
-                echo "账户类型: WARP+ (设备名: $device_name)"
-            else
-                echo "账户类型: Teams"
-            fi
-        else
-            echo "账户类型: Free"
+
+    # 检查 sing-box WARP WireGuard 密钥
+    local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
+    if [[ -f "$warp_key_file" ]]; then
+        local wg_private=$(jq -r '.private_key // empty' "$warp_key_file" 2>/dev/null)
+        if [[ -n "$wg_private" ]]; then
+            green "[Sing-box WireGuard] WARP 已注册"
+            jq -r '"账户类型: Free"' "$warp_key_file" 2>/dev/null || echo "账户类型: Free"
         fi
     else
-        yellow "WireProxy 未运行"
-        yellow "提示: 可通过主菜单 14) 运行WARP脚本 ，然后选择 13. 安装 wireproxy socks5 代理 "
+        # 兼容旧版: 检查 wireproxy 是否在运行
+        local wireproxy_socks5=$(ss -nltp 2>/dev/null | awk '/"wireproxy"/{print $4}')
+        local wireproxy_port=$(cut -d: -f2 <<< "$wireproxy_socks5" 2>/dev/null)
+        if [ -n "$wireproxy_port" ]; then
+            yellow "[WireProxy] 运行中 (端口: $wireproxy_port) — 旧版 SOCKS5 模式，建议重新安装以使用 Sing-box WireGuard"
+        else
+            yellow "WARP 未配置"
+            echo "  可在创建实例时自动注册 Sing-box WireGuard WARP"
+        fi
     fi
 }
 
@@ -2561,20 +2562,6 @@ run_local_script() {
 # -----------------------------------------------------------------------------
 install_sys_opt() {
     run_local_script "$AX_OPTZ_SCRIPT" "VPS 优化脚本" "$AX_OPTZ_URL"
-}
-
-# -----------------------------------------------------------------------------
-# 安装 CFwarp 脚本
-# -----------------------------------------------------------------------------
-install_warp_yg() {
-    run_local_script "$CFWARP_SCRIPT" "WARP 管理脚本" "$CFWARP_URL"
-}
-
-# -----------------------------------------------------------------------------
-# 安装 ax-acme 脚本 (菜单 15)
-# -----------------------------------------------------------------------------
-install_acme_tool() {
-    run_local_script "$AX_ACME_SCRIPT" "ACME 证书管理脚本" "$AX_ACME_URL"
 }
 
 # -----------------------------------------------------------------------------
@@ -2772,8 +2759,6 @@ main_menu(){
         echo " 9) 检查更新程序" 
         cyan "--- 工具管理 ---"
         echo " 10) 运行VPS优化脚本"
-        echo " 11) 运行WARP脚本"
-        echo " 12) 运行ACME证书脚本"
         echo "----------------------------------"   
         echo " 99) 卸载"
         echo "----------------------------------"   
@@ -2786,7 +2771,7 @@ main_menu(){
         show_status_summary
         local num_items=${#QUICK_MANAGE_MAP_ID[@]}; local max_index=$((20 + num_items))
         echo "----------------------------------"
-        local prompt="请选择 [0-15, 99"; if [[ $num_items -gt 0 ]]; then prompt+=", 21-${max_index}]"; else prompt+="]"; fi
+        local prompt="请选择 [0-10, 99"; if [[ $num_items -gt 0 ]]; then prompt+=", 21-${max_index}]"; else prompt+="]"; fi
         read -p "$prompt： " choice
         
         if [[ -n "$choice" && -n "${QUICK_MANAGE_MAP_ID[$choice]}" ]]; then
@@ -2813,8 +2798,6 @@ main_menu(){
             8) restart_all_services ;;
             9) check_for_updates; read -p "按任意键继续..." -n1 -s ;;
             10) clear; install_sys_opt; read -p $'\n按任意键返回...' -n1 -s ;;
-            14) clear; install_warp_yg; read -p $'\n按任意键返回...' -n1 -s ;;
-            12) clear; install_acme_tool; read -p $'\n按任意键返回...' -n1 -s ;;
             99) uninstall_all; if [[ $? -eq 0 ]]; then exit 0; fi ;;
             0) trap - SIGINT; exit 0 ;; 
             *) red "无效选择!"; sleep 1 ;;
