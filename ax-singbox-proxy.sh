@@ -954,14 +954,15 @@ download_singbox_binary(){
     if [[ "$singbox_latest" != "$singbox_current" ]]; then
         log "发现 Sing-box 新版本: $singbox_latest (当前: ${singbox_current:-未知})"
         log "下载 Sing-box ($singbox_latest)..."
-        local singbox_url="$GITHUB_URL/$SINGBOX_REPO/releases/download/${singbox_latest}/sing-box-${singbox_latest}-linux-amd64.tar.gz"
+        local singbox_ver="${singbox_latest#v}"
+        local singbox_url="$GITHUB_URL/$SINGBOX_REPO/releases/download/${singbox_latest}/sing-box-${singbox_ver}-linux-amd64.tar.gz"
         download_with_retry "$singbox_url" /tmp/singbox.tar.gz || {
-            # fallback: try without arch suffix
+            # fallback: try with v prefix in archive name
             singbox_url="$GITHUB_URL/$SINGBOX_REPO/releases/download/${singbox_latest}/sing-box-${singbox_latest}-linux-amd64.tar.gz"
             download_with_retry "$singbox_url" /tmp/singbox.tar.gz || { red "Sing-box 下载失败。"; return 1; }
         }
         tar -xzf /tmp/singbox.tar.gz -C /tmp && \
-        cp "/tmp/sing-box-${singbox_latest}-linux-amd64/sing-box" "$SINGBOX_INSTALL_DIR/sing-box" && \
+        cp "/tmp/sing-box-${singbox_ver}-linux-amd64/sing-box" "$SINGBOX_INSTALL_DIR/sing-box" && \
         chmod +x "$SINGBOX_INSTALL_DIR/sing-box" && \
         echo "$singbox_latest" > "$SINGBOX_INSTALL_DIR/version.txt" || { red "Sing-box 解压/安装失败。"; return 1; }
         rm -rf "/tmp/sing-box-${singbox_latest}-linux-amd64" /tmp/singbox.tar.gz
