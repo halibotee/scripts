@@ -2440,12 +2440,13 @@ chain_manager_menu_3() {
             2) 
                 if [[ -z "$INSTANCES" ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
                 echo "$(bold "可用实例:")"
-                local ii; for ii in $INSTANCES; do display_instance_status_line "ss_3_chain_chain" "$ii" "  "; done
+                local ii __seq=1; for ii in $INSTANCES; do display_instance_status_line "ss_3_chain_chain" "$ii" "$__seq) "; CHAIN_MAP[$__seq]=$ii; __seq=$((__seq + 1)); done
                 read -p "请输入您想管理的实例序号: " manage_id_num
-                if echo "$INSTANCES" | grep -w -q "$manage_id_num"; then 
-                    manage_chain_instance_3 "$manage_id_num"
+                local mapped_id="${CHAIN_MAP[$manage_id_num]}"
+                if [[ -n "$mapped_id" ]]; then 
+                    manage_chain_instance_3 "$mapped_id"
                 else 
-                    red "无效的实例ID！"; sleep 2
+                    red "无效的实例序号！"; sleep 2
                 fi
                 ;;
             3) 
@@ -2488,10 +2489,10 @@ chain_manager_menu() {
         read -p "请选择: " choice
         case $choice in
             1) start_new_chain_instance "$chain_type"; read -p $'\n按任意键返回...' -n1 -s;;
-             2) if [[ -z "$INSTANCES" ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
+                2) if [[ -z "$INSTANCES" ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
                 local _chain_display=""; [[ "$chain_type" == "hy2" ]] && _chain_display="hy2_chain" || _chain_display="vless_chain"
-                echo "$(bold "可用实例:")"; local ii; for ii in $INSTANCES; do display_instance_status_line "$_chain_display" "$ii" "  "; done
-                read -p "请输入您想管理的实例序号: " manage_id_num; if echo "$INSTANCES" | grep -w -q "$manage_id_num"; then manage_chain_instance "$chain_type" "$manage_id_num"; else red "无效的实例ID！"; sleep 2; fi;;
+                echo "$(bold "可用实例:")"; local ii __seq=1; for ii in $INSTANCES; do display_instance_status_line "$_chain_display" "$ii" "$__seq) "; CHAIN_MAP[$__seq]=$ii; __seq=$((__seq + 1)); done
+                read -p "请输入您想管理的实例序号: " manage_id_num; local mapped_id="${CHAIN_MAP[$manage_id_num]}"; if [[ -n "$mapped_id" ]]; then manage_chain_instance "$chain_type" "$mapped_id"; else red "无效的实例序号！"; sleep 2; fi;;
             3) if [[ -z "$INSTANCES" ]]; then yellow "当前没有实例可供查看。"; sleep 2; continue; fi; local i; for i in $INSTANCES; do view_chain_client_config "$chain_type" $i; done; read -p $'\n按任意键返回...' -n1 -s;;
             0) break;; *) red "无效输入"; sleep 1;;
         esac
