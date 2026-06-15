@@ -809,15 +809,17 @@ collect_warp_config() {
         fi
         
         
-        # 检查 WARP 端口是否在监听
-        # 检查 WARP 端口是否在监听 (同时判断 wireproxy 和 端口)
-        # 检查 WARP 端口是否在监听
-        if ss -tuln | grep -q ":${warp_port} "; then
-             green "检测到 WARP 服务正在运行于端口 ${warp_port}。" >&2
+        # 功能检测 WARP SOCKS5 代理是否正常
+        local warp_test_result=$(curl -s --connect-timeout 5 --max-time 6 \
+            -x "socks5h://${warp_addr}:${warp_port}" \
+            -o /dev/null -w "%{http_code}" \
+            http://www.gstatic.com/generate_204 2>&1)
+        if [[ "$warp_test_result" == "204" ]]; then
+            green "✓ WARP 服务正常 (端口 ${warp_port}，返回 204)。" >&2
         else
-             yellow "注意: 检测到 WARP 服务未运行 (端口 ${warp_port})。" >&2
-             yellow "请在安装完成后，通过主菜单 '14) 配置warp分流' 手动启动 WARP 服务。" >&2
-             yellow "当前将继续生成启用 WARP 分流的配置。" >&2
+            yellow "⚠ WARP 服务异常 (端口 ${warp_port}，curl 返回: ${warp_test_result:-超时/无响应})。" >&2
+            yellow "  请稍后通过主菜单 '14) 配置warp分流' 检查或重启 WARP。" >&2
+            yellow "  当前将继续生成启用 WARP 分流的配置。" >&2
         fi
 
 
@@ -1871,7 +1873,7 @@ view_chain_client_config_3() {
     local ss_chain_clean="ss://${ss_user_info}@${ss_host}:${ss_port}/?kcp_mode=${kcp_mode}&kcp_crypt=${kcp_crypt}&kcp_nocomp=${kcp_nocomp}"
     local kcp_chain_link="kcptun://${kcp_args}"
     local udp_chain_link="udp2raw://${client_args_udp2raw}"
-    local chain_name="ss_kcp_udp_${ip}_$(echo "${id}" | tr '[:upper:]' '[:lower:]')"
+    local chain_name="chian_ss+kcp+udp_${ip}_${id_num}"
     green "CHAIN://[${ss_chain_clean} && ${kcp_chain_link} && ${udp_chain_link}]#${chain_name}"
     echo
 }
@@ -2126,7 +2128,7 @@ view_chain_client_config() {
         
         sub_link="hysteria2://${hy2_password}@${client_udp2raw_host}:${client_udp2raw_port}?sni=${sni}&insecure=${insecure_flag}${obfs_param}#Chain_hy2_${host_label}_${id}+UDP2RAW"
         local hy2_chain_clean="hysteria2://${hy2_password}@${client_udp2raw_host}:${client_udp2raw_port}?sni=${sni}&insecure=${insecure_flag}${obfs_param}"
-        local chain_name="hy2_$(echo "${host_label}" | tr '[:upper:]' '[:lower:]')_$(echo "${id}" | tr '[:upper:]' '[:lower:]')"
+        local chain_name="chian_hy2+udp_${ip}_${id_num}"
         local chain_link="CHAIN://[${hy2_chain_clean} && udp2raw://${client_args}]#${chain_name}"
     else # vless
         display_title="[VLESS_mKCP+UDP2RAW]"
@@ -2137,7 +2139,7 @@ view_chain_client_config() {
         
         sub_link="vless://${uuid}@${client_udp2raw_host}:${client_udp2raw_port}?type=kcp&security=none&headerType=${header_type}&seed=${seed}&congestion=${congestion}#Chain_vless_kcp_${host_label}_${id}+UDP2RAW"
         local vless_chain_clean="vless://${uuid}@${client_udp2raw_host}:${client_udp2raw_port}?type=kcp&security=none&headerType=${header_type}&seed=${seed}&congestion=${congestion}"
-        local chain_name="vless_kcp_$(echo "${host_label}" | tr '[:upper:]' '[:lower:]')_$(echo "${id}" | tr '[:upper:]' '[:lower:]')"
+        local chain_name="chian_vless+mkcp+udp_${ip}_${id_num}"
         local chain_link="CHAIN://[${vless_chain_clean} && udp2raw://${client_args}]#${chain_name}"
     fi
 
