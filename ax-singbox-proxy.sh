@@ -2600,7 +2600,7 @@ uninstall_all() {
     green "Systemd 服务文件已删除。"
     if [[ "$nuke_choice" == "y" || "$nuke_choice" == "Y" ]]; then
         log "步骤 3: 执行彻底清理..."
-        rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$HY2_INSTALL_DIR" "$SINGBOX_INSTALL_DIR"
+        rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$SINGBOX_INSTALL_DIR"
         green "程序和配置文件目录已删除 (证书已保留)。"
         
         # 步骤 4: 清理 WARP-Socks5 代理（完全卸载模式）
@@ -2643,7 +2643,6 @@ uninstall_all() {
     else
         log "步骤 3: 执行软卸载 (仅删除二进制文件和 dat 文件)..."
         rm -f "$KCP_INSTALL_DIR/kcptun_server" "$UDP2RAW_INSTALL_DIR/udp2raw"
-        rm -f "$HY2_INSTALL_DIR/hysteria" "$HY2_INSTALL_DIR/geoip.dat" "$HY2_INSTALL_DIR/geosite.dat"
         rm -f "$SINGBOX_INSTALL_DIR/sing-box" "$SINGBOX_INSTALL_DIR/.reality_keys.json"
         green "程序文件已删除。"
     fi
