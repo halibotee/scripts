@@ -93,7 +93,6 @@ DEFAULT_WARP_SOCKS_ADDR="127.0.0.1" # WARP SOCKS5 服务的默认监听地址
 DEFAULT_WARP_SOCKS_PORT="40000"     # WARP SOCKS5 服务的默认端口
 # WARP 分流规则 (JSON 格式)
 WARP_GEOSITE_LIST_JSON='"geosite:google","geosite:openai","geosite:perplexity"'
-WARP_GEOIP_LIST_JSON='"geoip:google"'
 # WARP 分流规则 (YAML 格式，用于 Hysteria2)
 WARP_GEOSITE_LIST_YAML='- warp(suffix:ip-api.com)
     - warp(geosite:google)
@@ -313,7 +312,7 @@ EOM
 read -r -d '' SINGBOX_DIRECT_ROUTE_RULES <<'EOM'
 [
     { "outbound": "warp-out", "domain": [ __WARP_GEOSITE_LIST_JSON__ ] },
-    { "outbound": "warp-out", "ip_cidr": [ __WARP_GEOIP_LIST_JSON__ ] },
+    { "outbound": "warp-out", "ip_is_private": true },
     { "outbound": "warp-out", "domain_suffix": [ "ip-api.com" ] },
     { "outbound": "block", "domain_regex": [ "^.*doubleclick\\.net$", "^.*googleadservices\\.com$" ], "domain": [ "category-ads-all" ] }
 ]
@@ -1040,7 +1039,6 @@ WantedBy=multi-user.target"
     if [[ ! -f "$SINGBOX_INSTALL_DIR/singbox.json" ]]; then
         local route_rules=$SINGBOX_DIRECT_ROUTE_RULES
         route_rules=${route_rules//__WARP_GEOSITE_LIST_JSON__/$WARP_GEOSITE_LIST_JSON}
-        route_rules=${route_rules//__WARP_GEOIP_LIST_JSON__/$WARP_GEOIP_LIST_JSON}
         local base_config=$SINGBOX_BASE_CONFIG_TEMPLATE
 
         # 选择 WARP outbound: WireGuard (首选) 或 SOCKS5 (备用)
@@ -2900,14 +2898,15 @@ main_menu(){
 }
 
 # =============================================================================
-# 21. 脚本执行入口
+# 21. 脚本执行入口 (仅在直接执行时运行, source 导入函数时不执行)
 # =============================================================================
-echo -e "\033[1;36m[INFO] 脚本启动... 当前版本: v${SCRIPT_VERSION}\033[0m"
-sleep 2
-
-# 捕获 Ctrl+C 信号，以便在脚本主体执行期间优雅退出
-trap 'echo -e "\n\n${yellow}操作被中断，退出脚本。${reset}"; trap - SIGINT; exit 1' SIGINT
-# 初始化检查和安装
-initial_check_and_install
-# 显示主菜单
-main_menu
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo -e "\033[1;36m[INFO] 脚本启动... 当前版本: v${SCRIPT_VERSION}\033[0m"
+    sleep 2
+    # 捕获 Ctrl+C 信号，以便在脚本主体执行期间优雅退出
+    trap 'echo -e "\n\n${yellow}操作被中断，退出脚本。${reset}"; trap - SIGINT; exit 1' SIGINT
+    # 初始化检查和安装
+    initial_check_and_install
+    # 显示主菜单
+    main_menu
+fi
