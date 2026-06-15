@@ -91,18 +91,8 @@ SS_DEFAULT_METHOD="2022-blake3-aes-256-gcm"           # Shadowsocks 默认加密
 # =============================================================================
 DEFAULT_WARP_SOCKS_ADDR="127.0.0.1" # WARP SOCKS5 服务的默认监听地址
 DEFAULT_WARP_SOCKS_PORT="40000"     # WARP SOCKS5 服务的默认端口
-# WARP 分流规则 (JSON 格式)
+# WARP 分流规则
 WARP_GEOSITE_LIST_JSON='"geosite:google","geosite:openai","geosite:perplexity"'
-# WARP 分流规则 (YAML 格式，用于 Hysteria2)
-WARP_GEOSITE_LIST_YAML='- warp(suffix:ip-api.com)
-    - warp(geosite:google)
-    - warp(geoip:google)
-    - warp(suffix:google.com)
-    - warp(geosite:openai)
-    - warp(suffix:openai.com)
-    - warp(suffix:chatgpt.com)
-    - warp(geosite:perplexity)
-    - warp(suffix:perplexity.com)'
 
 # =============================================================================
 # 7. Github 软件源配置
@@ -708,61 +698,6 @@ collect_kcptun_params() {
     echo "$mode|$crypt|$tcp_enabled|$mtu|$sndwnd|$rcvwnd"
 }
 
-# -----------------------------------------------------------------------------
-# 收集 WARP 配置
-# 参数: $1=服务类型 (hysteria2/singbox)
-# 返回: 替换好参数的配置块 (YAML 或 JSON)
-# -----------------------------------------------------------------------------
-collect_warp_config() {
-    local service_type=$1
-    read -p "是否启用 WARP SOCKS5 分流 (默认"否")？[y/N]: " enable_warp
-    
-    if [[ "$enable_warp" == "y" || "$enable_warp" == "Y" ]]; then
-        local warp_addr="$DEFAULT_WARP_SOCKS_ADDR"
-        read -p "请输入 WARP SOCKS5 端口 (默认: $DEFAULT_WARP_SOCKS_PORT): " warp_port
-        warp_port=${warp_port:-$DEFAULT_WARP_SOCKS_PORT}
-        while [[ ! "$warp_port" =~ ^[0-9]+$ || $warp_port -lt 1024 || $warp_port -gt 65535 ]]; do
-            red "端口必须是 1024-65535 之间的数字！" >&2
-            read -p "请输入 WARP SOCKS5 端口 (默认: $DEFAULT_WARP_SOCKS_PORT): " warp_port
-            warp_port=${warp_port:-$DEFAULT_WARP_SOCKS_PORT}
-        done
-        
-        local warp_config_block=""
-        if [[ "$service_type" == "hysteria2" ]]; then
-            warp_config_block="${HYSTERIA2_WARP_OUTBOUND_ACL_BLOCK//__WARP_SOCKS5_ADDR__/${warp_addr}:${warp_port}}"
-        else # sing-box SOCKS5 fallback
-            warp_config_block=$SINGBOX_WARP_SOCKS5_OUTBOUND
-            warp_config_block=${warp_config_block/__WARP_SOCKS5_ADDR__/$warp_addr}
-            warp_config_block=${warp_config_block/__WARP_SOCKS5_PORT__/$warp_port}
-        fi
-        
-        
-        # 功能检测 WARP SOCKS5 代理是否正常
-        local warp_test_result=$(curl -s --connect-timeout 5 --max-time 6 \
-            -x "socks5h://${warp_addr}:${warp_port}" \
-            -o /dev/null -w "%{http_code}" \
-            http://www.gstatic.com/generate_204 2>&1)
-        if [[ "$warp_test_result" == "204" ]]; then
-            green "✓ WARP 服务正常 (端口 ${warp_port}，返回 204)。" >&2
-        else
-            yellow "⚠ WARP 服务异常 (端口 ${warp_port}，curl 返回: ${warp_test_result:-超时/无响应})。" >&2
-            yellow "  请稍后通过主菜单 '14) 配置warp分流' 检查或重启 WARP。" >&2
-            yellow "  当前将继续生成启用 WARP 分流的配置。" >&2
-        fi
-
-
-        green "已启用 WARP SOCKS5 分流 (地址: ${warp_addr}:${warp_port})。" >&2
-        echo "$warp_config_block"
-    else
-        # 不启用 WARP，返回直连配置
-        if [[ "$service_type" == "hysteria2" ]]; then
-            echo "$HYSTERIA2_DIRECT_ACL_BLOCK"
-        else # sing-box
-            echo '{"type": "direct", "tag": "direct"}'
-        fi
-        yellow "已禁用 WARP SOCKS5 分流。" >&2
-    fi
-}
 
 # -----------------------------------------------------------------------------
 # WARP WireGuard 注册 (通过 Cloudflare API 自动获取密钥对与地址)
@@ -1081,9 +1016,6 @@ get_listen_info_from_conf() {
         fi
     elif [[ "$conf_path" == *".conf" ]]; then
         grep -Po '(?<=-l )[^ ]+' "$conf_path"
-    elif [[ "$conf_path" == *".yaml" ]]; then
-        local raw_listen=$(grep -Po '(?<=listen: ).*' "$conf_path" | tr -d '[:space:]')
-        if [[ "$raw_listen" == :* ]]; then echo "0.0.0.0$raw_listen"; else echo "$raw_listen"; fi
     fi
 }
 
@@ -1092,13 +1024,7 @@ get_listen_info_from_conf() {
 # -----------------------------------------------------------------------------
 get_warp_status_from_conf() {
     local conf_path=$1
-    if [[ "$conf_path" == *".yaml" ]]; then
-        if grep -q "name: warp" "$conf_path" 2>/dev/null; then echo "已启用WARP"; else echo "未启用WARP"; fi
-    elif [[ "$conf_path" == *".json" ]]; then
-        if jq -e '.outbounds[] | select(.tag == "warp" or .type == "socks")' "$conf_path" >/dev/null 2>&1; then echo "已启用WARP"; else echo "未启用WARP"; fi
-    else
-        echo ""
-    fi
+    if jq -e '.outbounds[] | select(.tag == "warp" or .type == "socks")' "$conf_path" >/dev/null 2>&1; then echo "已启用WARP"; else echo "未启用WARP"; fi
 }
 
 # -----------------------------------------------------------------------------
