@@ -233,7 +233,7 @@ yaml_prepare(){
     rm -rf /tmp/upload/*.yaml
 }
 
-# URL解析和处理函数
+# URL解析和处理函数（支持逐行解析、空行、注释）
 parse_and_process_urls() {
     local input_text="$1"
     local config_file="${2:-/koolshare/merlinclash/yaml_bak/${subscribe_name}/Custom.yaml}"
@@ -245,39 +245,50 @@ parse_and_process_urls() {
     local count=1
     local url name ua_tmp
     
-    # 临时保存IFS
-    local OLDIFS="$IFS"
-    IFS='|'
+    # 将 | 替换为换行，统一按行处理（使用临时文件避免 subshell 问题）
+    local tmpfile="/tmp/merlinclash_parse_$$.txt"
+    printf '%s\n' "$input_text" | tr '|' '\n' > "$tmpfile"
     
-    # 处理每个链接
-    for item in $input_text; do
-        # 清理和提取
-        item=$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    # 逐行处理
+    while IFS= read -r line; do
+        # 清理空白
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        # 跳过空行和注释行
+        [ -z "$line" ] && continue
+        echo "$line" | grep -q '^#' && continue
+        
         local file_name="AP${count}"
-        # 初始化 ua_tmp
         ua_tmp=""
+        
         # 提取 <xxx> 中的内容到 ua_tmp
-        if echo "$item" | grep -q '<'; then
-            ua_tmp=$(echo "$item" | sed 's/.*<\([^>]*\)>.*/\1/')
+        if echo "$line" | grep -q '<'; then
+            ua_tmp=$(echo "$line" | sed 's/.*<\([^>]*\)>.*/\1/')
         fi
-        if echo "$item" | grep -q '('; then
-            url=$(echo "$item" | sed 's/<[^>]*>//g;s/(.*)$//;s/[[:space:]]*$//')
-            name=$(echo "$item" | sed 's/.*(\([^)]*\)).*/\1/;s/^[[:space:]]*//')
+        # 提取 URL 和名称
+        if echo "$line" | grep -q '('; then
+            # 有 (name) 语法
+            url=$(echo "$line" | sed 's/<[^>]*>//g;s/(.*)$//;s/[[:space:]]*$//')
+            name=$(echo "$line" | sed 's/.*(\([^)]*\)).*/\1/;s/^[[:space:]]*//')
         else
-            url=$(echo "$item" | sed 's/<[^>]*>//g')
-            name="AP${count}"
+            url=$(echo "$line" | sed 's/<[^>]*>//g')
+            # 尝试从 #TAG 提取名称（URL 保持完整传递）
+            if echo "$url" | grep -q '#'; then
+                name=$(echo "$url" | sed 's/.*#//')
+            else
+                name="AP${count}"
+            fi
         fi
+        
+        [ -z "$url" ] && continue
         
         # 根据协议处理
         case "$url" in
             http://*|https://*)
-                # HTTP/HTTPS处理
                 echo_date "🟠识别到链接${count}为订阅链接，处理中~" >> $LOG_FILE
                 process_http_link "$url" "$name" "$ap_dir" "$file_name" "$ua_tmp"
                 ;;
             [a-zA-Z0-9]*://*)
-                # 其他协议处理
-                echo_date "🟠识别到链接${count}为节点链接，处理中~" >> $LOG_FILE
                 mkdir -p "$ap_dir"
                 process_other_link "$url" "$name" "$config_file"
                 ;;
@@ -287,9 +298,23 @@ parse_and_process_urls() {
         esac
         
         count=$((count + 1))
-    done
-    
-    IFS="$OLDIFS"
+    done < "$tmpfile"
+    rm -f "$tmpfile"
+
+    # 清理当前订阅不涉及的旧 CHAIN 目录
+    local tagfile="/tmp/merlinclash_chaintags_$$.txt"
+    if [ -f "$tagfile" ] && [ -d "/var/run/merlinclash/chain" ]; then
+        local current_tags="|$(cat "$tagfile" | tr '\n' '|')"
+        for d in /var/run/merlinclash/chain/*/; do
+            [ -d "$d" ] || continue
+            local old_tag=$(basename "$d")
+            echo "$current_tags" | grep -q "|${old_tag}|" || {
+                echo_date "清理旧链: $old_tag" >> $LOG_FILE
+                rm -rf "$d"
+            }
+        done
+    fi
+    rm -f "$tagfile"
     
     local total=$((count - 1))
     echo_date "🟢处理完成，共处理$total 个订阅" >> $LOG_FILE
@@ -346,17 +371,77 @@ process_http_link() {
     echo_date "🟢写入完成" >> $LOG_FILE
 }
 
-# 其他协议链接处理函数
+# 其他协议链接处理函数（支持 CHAIN://）
 process_other_link() {
     local url="$1"
     local name="$2"
     local config_file="$3"
-    echo_date "节点名称：$name" >> $LOG_FILE
-    echo_date "节点链接： $url" >> $LOG_FILE
-    echo_date "🟢节点写入完成" >> $LOG_FILE
     
-    # 写入链接
-    echo "$url" >> "$config_file"
+    case "$url" in
+        CHAIN://*)
+            local parse_out="/tmp/merlinclash_chain_$$.txt"
+            /koolshare/scripts/clash_chain.sh parse "$url" > "$parse_out" 2>>"$LOG_FILE"
+            local rc=$?
+            if [ $rc -ne 0 ]; then
+                echo_date "🔴 $name 解析失败 (exit=$rc)，请检查端口 1091-1191" >> $LOG_FILE
+                rm -f "$parse_out"
+                return 1
+            fi
+            local chain_result
+            chain_result=$(cat "$parse_out")
+            rm -f "$parse_out"
+            local tag="" entry_port="" proxy_url="" sidecar_count=0
+            local sc_idx=1
+            while IFS= read -r line; do
+                case "$line" in
+                    TAG=*) tag=$(echo "$line" | cut -d= -f2- | tr -d "'") ;;
+                    ENTRY_PORT=*) entry_port=$(echo "$line" | cut -d= -f2- | tr -d "'") ;;
+                    PROXY_URL=*) proxy_url=$(echo "$line" | cut -d= -f2- | tr -d "'") ;;
+                    SIDECAR_COUNT=*) sidecar_count=$(echo "$line" | cut -d= -f2- | tr -d "'") ;;
+                    SIDECAR_*) ;;
+                esac
+            done <<EOF
+$chain_result
+EOF
+            [ -z "$tag" ] && { echo_date "🔴 $name 解析失败: 未获取到 TAG" >> $LOG_FILE; return 1; }
+            [ -z "$proxy_url" ] && { echo_date "🔴 $name 解析失败: 未获取到代理 URL" >> $LOG_FILE; return 1; }
+            echo "${proxy_url}#${tag}" >> "$config_file"
+
+            # 解析 sidecar 详情，生成详细日志
+            local kcp_port="" udp_port="" udp_remote=""
+            sc_idx=1
+            while [ $sc_idx -le $sidecar_count ]; do
+                local sc_line
+                sc_line=$(echo "$chain_result" | grep "^SIDECAR_${sc_idx}=" | head -1)
+                [ -z "$sc_line" ] && { sc_idx=$((sc_idx + 1)); continue; }
+                local sc_val=$(echo "$sc_line" | cut -d= -f2- | tr -d "'")
+                local sc_type=$(echo "$sc_val" | sed 's/:\/\/.*//')
+                local sc_cmd=$(echo "$sc_val" | sed 's/^[^:]*:\/\///' | sed 's/--listen /-l /g; s/--target /-r /g')
+                case "$sc_type" in
+                    kcptun)
+                        kcp_port=$(echo "$sc_cmd" | grep -oE '\-l[[:space:]]+[^ ]+' | grep -oE '[0-9]+$' || echo "?")
+                        ;;
+                    udp2raw)
+                        udp_port=$(echo "$sc_cmd" | grep -oE '\-l[[:space:]]+[^ ]+' | grep -oE '[0-9]+$' || echo "?")
+                        udp_remote=$(echo "$sc_cmd" | grep -oE '\-r[[:space:]]+[^ ]+' | sed 's/^.*-r[[:space:]]*//' || echo "?")
+                        ;;
+                esac
+                sc_idx=$((sc_idx + 1))
+            done
+            local log_line="🟢$tag"
+            [ -n "$kcp_port" ] && log_line="$log_line kcptun:$kcp_port"
+            [ -n "$udp_port" ] && log_line="$log_line udp2raw:$udp_port"
+            [ -n "$udp_remote" ] && log_line="$log_line 外部:$udp_remote"
+            echo_date "$log_line" >> $LOG_FILE
+
+            # 记录当前 TAG 供后续清理旧链用
+            echo "$tag" >> "/tmp/merlinclash_chaintags_$$.txt"
+            ;;
+        *)
+            echo "$url" >> "$config_file"
+            echo_date "🟢 $name" >> $LOG_FILE
+            ;;
+    esac
 }
 
 # 机场规则链接处理
@@ -423,11 +508,11 @@ yaml_merge(){
 
     #写入自定节点provider
     if [ -f "$custom_file" ]; then
-        echo_date "🟠检测到节点链接文件，写入Custom Provider信息" >> $LOG_FILE
+        echo_date "检测到节点链接文件，写入Custom Provider信息" >> $LOG_FILE
         yq eval ".proxy-providers.Custom.type = \"file\"" -i "$yamltmp_file"
         yq eval ".proxy-providers.Custom.path = \"$custom_path\"" -i "$yamltmp_file"
         # yq eval ".proxy-providers.Custom.health-check.enable = false" -i "$yamltmp_file"
-        yq eval ".proxy-providers.Custom.override.additional-suffix = \" [Custom]\"" -i "$yamltmp_file"
+
             # 复写部分
         if [ "${merlinclash_sub_scv}" == "1" ]; then
             yq eval ".proxy-providers.Custom.override.skip-cert-verify = true" -i "$yamltmp_file"

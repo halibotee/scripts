@@ -2346,6 +2346,7 @@ stop_config(){
 	echo_date 触发脚本stop_config >> $LOG_FILE
 	echo_date ======================= Magic Catling ======================= >> $LOG_FILE
 	echo_date ---------------------- 🔴关闭相关程序 ---------------------- >> $LOG_FILE
+	stop_chain
 	kill_cron_job
 	clean_ipset
 	dbus set merlinclash_enable="0"
@@ -2356,11 +2357,22 @@ stop_config(){
 }
 
 ### 主流程
+# 停止所有 CHAIN 隧道进程（kill -9）
+stop_chain() {
+    /koolshare/scripts/clash_chain.sh stop_all
+}
+
+# 启动所有 CHAIN 隧道进程
+start_chain() {
+    /koolshare/scripts/clash_chain.sh start_all
+}
+
 apply_mc() {
 	echo_date ======================= Magic Catling ======================= >> $LOG_FILE
 	echo_date ------------------------ 🟠启动准备 ------------------------ >> $LOG_FILE
 	check_ss #兼容检查
 	clean_ipset	#清除ipset
+	stop_chain #关闭 CHAIN 隧道进程
 	kill_process #关闭进程
 	kill_cron_job #关闭定时任务
 	flush_nat #清除iptables规则
@@ -2377,6 +2389,8 @@ apply_mc() {
 	echo_date ---------------------- 📌创建ipset规则 --------------------- >> $LOG_FILE
 	creat_ipset	#创建相关ipset规则
 	set_sys	#启动增熵
+	echo_date ---------------------- 📌启动CHAIN隧道 ---------------------- >> $LOG_FILE
+	start_chain #启动 CHAIN 隧道进程
 	echo_date ---------------------- 📌启动Mihomo内核 --------------------- >> $LOG_FILE
 	start_clash	#启动内核
 	start_remark	#恢复记忆节点
