@@ -393,31 +393,15 @@ get_public_ip() {
 # -----------------------------------------------------------------------------
 # 统一检测与安装系统依赖和核心程序
 # -----------------------------------------------------------------------------
-install_dependencies_and_programs(){
-    echo ""
-    log "正在检测 系统依赖组件与核心程序..."
-    echo ""
-    
-    # ========== 第一阶段：检测系统依赖组件 ==========
-    local packages_to_install=()
-    local missing_deps=()
-    
-    # 定义需要检查的依赖列表
-    declare -A dep_map=(
-        ["curl"]="curl"
-        ["wget"]="wget"
-        ["tar"]="tar"
-        ["unzip"]="unzip"
-        ["jq"]="jq"
-        ["openssl"]="openssl"
-        ["uuidgen"]="uuid-runtime"
-        ["nano"]="nano"
-        ["iptables"]="iptables"
-        ["socat"]="socat"
-
+# 检查并安装系统依赖
+check_and_install_system_deps() {
+    local -A dep_map=(
+        ["curl"]="curl" ["wget"]="wget" ["tar"]="tar" ["unzip"]="unzip"
+        ["jq"]="jq" ["openssl"]="openssl" ["uuidgen"]="uuid-runtime"
+        ["nano"]="nano" ["iptables"]="iptables" ["socat"]="socat"
     )
     
-    # 检查 dig 命令 (DNS 工具)
+    # 检查 dig 命令
     if ! command -v dig &>/dev/null; then
         if command -v apt-get &>/dev/null; then
             dep_map["dig"]="dnsutils"
@@ -426,60 +410,51 @@ install_dependencies_and_programs(){
         fi
     fi
     
-    # 检测缺失的依赖
+    local packages_to_install=()
     for cmd in "${!dep_map[@]}"; do
         if ! command -v "$cmd" &>/dev/null; then
             packages_to_install+=("${dep_map[$cmd]}")
-            missing_deps+=("$cmd")
         fi
     done
     
-    # ========== 第二阶段：安装系统依赖组件 ==========
-    if [ ${#packages_to_install[@]} -gt 0 ]; then
-        echo ""
-        yellow "开始下载安装 系统依赖组件..."
-        echo ""
-        
-        # 逐个显示要安装的包
-        for pkg in "${packages_to_install[@]}"; do
-            cyan "  » 安装 $pkg"
-        done
-        echo ""
-        
-        # 执行实际安装
-        if (apt-get update && apt-get install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
-           (yum install -y epel-release && yum install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
-           (dnf install -y "${packages_to_install[@]}") >/dev/null 2>&1; then
-            green "✓ 系统依赖组件安装完成！"
-        else
-            red "✗ 部分系统依赖组件安装失败"
-            yellow "请手动执行: apt install ${packages_to_install[*]}"
-            return 1
-        fi
-    else
+    if [ ${#packages_to_install[@]} -eq 0 ]; then
         green "✓ 所有系统依赖组件已就绪"
-    fi
-    
-    # ========== 第三阶段：检测与下载核心程序 ==========
-    # 检查各核心程序文件是否存在
-    local need_download=false
-    local kcp_ok=true; if [[ ! -f "$KCP_INSTALL_DIR/kcptun_server" ]]; then kcp_ok=false; need_download=true; fi
-    local udp_ok=true; if [[ ! -f "$UDP2RAW_INSTALL_DIR/udp2raw" ]]; then udp_ok=false; need_download=true; fi
-    local singbox_ok=true; if [[ ! -f "$SINGBOX_INSTALL_DIR/sing-box" ]]; then singbox_ok=false; need_download=true; fi
-    
-    if [[ "$need_download" == false ]]; then
-        echo ""
-        green "✓ 所有核心程序已就绪"
-        echo ""
         return 0
     fi
     
-    # 只有需要下载时才显示此消息
     echo ""
-    yellow "开始下载安装 核心程序..." 
+    yellow "开始下载安装 系统依赖组件..."
+    for pkg in "${packages_to_install[@]}"; do
+        cyan "  » 安装 $pkg"
+    done
     echo ""
     
-    # 下载缺失的核心程序
+    if (apt-get update && apt-get install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
+       (yum install -y epel-release && yum install -y "${packages_to_install[@]}") >/dev/null 2>&1 || \
+       (dnf install -y "${packages_to_install[@]}") >/dev/null 2>&1; then
+        green "✓ 系统依赖组件安装完成！"
+    else
+        red "✗ 部分系统依赖组件安装失败"
+        yellow "请手动执行: apt install ${packages_to_install[*]}"
+        return 1
+    fi
+}
+
+# 检查并下载核心程序
+check_and_install_core_programs() {
+    local need_download=false
+    local kcp_ok=true; [[ ! -f "$KCP_INSTALL_DIR/kcptun_server" ]] && { kcp_ok=false; need_download=true; }
+    local udp_ok=true; [[ ! -f "$UDP2RAW_INSTALL_DIR/udp2raw" ]] && { udp_ok=false; need_download=true; }
+    local singbox_ok=true; [[ ! -f "$SINGBOX_INSTALL_DIR/sing-box" ]] && { singbox_ok=false; need_download=true; }
+    
+    if [[ "$need_download" == false ]]; then
+        green "✓ 所有核心程序已就绪"
+        return 0
+    fi
+    
+    echo ""
+    yellow "开始下载安装 核心程序..."
+    
     if [[ "$kcp_ok" == false || "$udp_ok" == false ]]; then
         cyan "  » 下载 KCPTUN/UDP2RAW"
         download_kcp_udp_binaries || { red "✗ KCPTUN/UDP2RAW 下载失败"; return 1; }
@@ -492,42 +467,50 @@ install_dependencies_and_programs(){
         green "    ✓ Sing-box 安装完成"
     fi
     
-    echo ""
     green "✓ 所有组件安装完成！"
-    echo ""
-    
-    # ========== 第四阶段：检测与下载辅助脚本（但不执行）==========
-    echo ""
-    yellow "检查辅助脚本..." 
-    echo ""
-    
-    # Derive script names from URLs
+}
+
+# 检查并下载辅助脚本
+check_and_install_helper_scripts() {
     AX_ACME_SCRIPT=$(basename "$AX_ACME_URL")
     AX_OPTZ_SCRIPT=$(basename "$AX_OPTZ_URL")
-
+    
     local script_download_needed=false
-    local acme_ok=true; if [[ ! -f "$AX_ACME_SCRIPT" ]]; then acme_ok=false; script_download_needed=true; fi
-    local optz_ok=true; if [[ ! -f "$AX_OPTZ_SCRIPT" ]]; then optz_ok=false; script_download_needed=true; fi
+    [[ ! -f "$AX_ACME_SCRIPT" ]] && script_download_needed=true
+    [[ ! -f "$AX_OPTZ_SCRIPT" ]] && script_download_needed=true
     
     if [[ "$script_download_needed" == false ]]; then
         green "✓ 所有辅助脚本已就绪"
-        echo ""
-    else
-        # 下载缺失的辅助脚本
-        if [[ "$acme_ok" == false ]]; then
-            cyan "  » 下载 $AX_ACME_SCRIPT"
-            download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 下载完成" || yellow "    ⚠ $AX_ACME_SCRIPT 下载失败"
-        fi
-        
-        if [[ "$optz_ok" == false ]]; then
-            cyan "  » 下载 $AX_OPTZ_SCRIPT"
-            download_with_retry "$AX_OPTZ_URL" "$AX_OPTZ_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_OPTZ_SCRIPT" && green "    ✓ $AX_OPTZ_SCRIPT 下载完成" || yellow "    ⚠ $AX_OPTZ_SCRIPT 下载失败"
-        fi
-        
-        echo ""
-        green "✓ 辅助脚本检查完成！"
-        echo ""
+        return 0
     fi
+    
+    echo ""
+    yellow "检查辅助脚本..."
+    
+    if [[ ! -f "$AX_ACME_SCRIPT" ]]; then
+        cyan "  » 下载 $AX_ACME_SCRIPT"
+        download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 下载完成" || yellow "    ⚠ $AX_ACME_SCRIPT 下载失败"
+    fi
+    
+    if [[ ! -f "$AX_OPTZ_SCRIPT" ]]; then
+        cyan "  » 下载 $AX_OPTZ_SCRIPT"
+        download_with_retry "$AX_OPTZ_URL" "$AX_OPTZ_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_OPTZ_SCRIPT" && green "    ✓ $AX_OPTZ_SCRIPT 下载完成" || yellow "    ⚠ $AX_OPTZ_SCRIPT 下载失败"
+    fi
+    
+    green "✓ 辅助脚本检查完成！"
+}
+
+install_dependencies_and_programs(){
+    echo ""
+    log "正在检测 系统依赖组件与核心程序..."
+    echo ""
+    
+    check_and_install_system_deps || return 1
+    echo ""
+    check_and_install_core_programs || return 1
+    echo ""
+    check_and_install_helper_scripts
+    echo ""
 }
 
 # -----------------------------------------------------------------------------
@@ -1170,12 +1153,63 @@ download_singbox_binary(){
 # 14. Systemd 服务管理与状态查询
 # =============================================================================
 
+# 更新 systemd 服务模板
+update_service_template() {
+    local content=$1 template_file=$2
+    local hash=$(hash_string "$content")
+    local existing_hash=$(hash_file "$template_file")
+    
+    if [[ "$hash" != "$existing_hash" ]]; then
+        echo "$content" > "$template_file"
+        return 0  # 需要 reload
+    fi
+    return 1  # 不需要 reload
+}
+
+# 创建初始 Sing-box 配置
+create_initial_singbox_config() {
+    mkdir -p "$SINGBOX_INSTALL_DIR"
+    
+    if [[ -f "$SINGBOX_INSTALL_DIR/singbox.json" ]]; then
+        return 1  # 已存在，不需要创建
+    fi
+    
+    local base_config=$SINGBOX_BASE_CONFIG_TEMPLATE
+    local endpoints_json='[]'
+    local route_rules=$SINGBOX_NO_WARP_ROUTE_RULES
+
+    # 自动注册 WARP WireGuard (首次安装时执行)
+    if command -v wg &>/dev/null && [[ ! -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
+        log "首次安装, 正在尝试自动注册 WARP WireGuard..."
+        if ! register_warp_wireguard; then
+            yellow "警告: WARP 自动注册失败, 将创建不带 WARP 的默认配置。可稍后手动重新注册。"
+        fi
+    fi
+    
+    if [[ -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
+        if ! local wg_ep=$(apply_warp_wireguard_config); then
+            yellow "警告: WARP 配置加载失败, 将创建不带 WARP 的默认配置。"
+        else
+            endpoints_json=$wg_ep
+            route_rules=$SINGBOX_DIRECT_ROUTE_RULES
+            route_rules=${route_rules//__WARP_GEOSITE_LIST_JSON__/$WARP_GEOSITE_LIST_JSON}
+        fi
+    fi
+    
+    base_config=${base_config/__ENDPOINTS__/$endpoints_json}
+    base_config=${base_config/__ROUTE_RULES__/$route_rules}
+    echo "$base_config" > "$SINGBOX_INSTALL_DIR/singbox.json"
+    log "已创建初始 Sing-box 基础配置文件: $SINGBOX_INSTALL_DIR/singbox.json"
+    return 0  # 已创建
+}
+
 # -----------------------------------------------------------------------------
 # 确保所有 Systemd 服务模板文件都已创建
 # -----------------------------------------------------------------------------
 ensure_template_files() {
     local need_reload=false
 
+    # KCPTUN 服务模板
     local kcp_content="[Unit]
 Description=KCPTUN Instance Server (Instance %i)
 After=network.target
@@ -1186,12 +1220,12 @@ Restart=always
 RestartSec=3
 [Install]
 WantedBy=multi-user.target"
-    local kcp_hash=$(hash_string "$kcp_content")
-    local existing_hash=$(hash_file "$KCPTUN_TEMPLATE_FILE")
-    if [[ "$kcp_hash" != "$existing_hash" ]]; then
-        echo "$kcp_content" > "$KCPTUN_TEMPLATE_FILE"; need_reload=true
+    
+    if update_service_template "$kcp_content" "$KCPTUN_TEMPLATE_FILE"; then
+        need_reload=true
     fi
 
+    # UDP2RAW 服务模板
     local udp_content="[Unit]
 Description=UDP2RAW Instance Server (Instance %i)
 After=network.target
@@ -1204,14 +1238,14 @@ Restart=always
 RestartSec=3
 [Install]
 WantedBy=multi-user.target"
-    local udp_hash=$(hash_string "$udp_content")
-    existing_hash=$(hash_file "$UDP2RAW_TEMPLATE_FILE")
-    if [[ "$udp_hash" != "$existing_hash" ]]; then
-        echo "$udp_content" > "$UDP2RAW_TEMPLATE_FILE"; need_reload=true
+    
+    if update_service_template "$udp_content" "$UDP2RAW_TEMPLATE_FILE"; then
+        need_reload=true
     fi
 
     generate_self_signed_cert
 
+    # Sing-box 服务模板
     local singbox_content="[Unit]
 Description=Sing-box Service
 After=network.target
@@ -1224,43 +1258,19 @@ Restart=always
 RestartSec=3
 [Install]
 WantedBy=multi-user.target"
-    local singbox_hash=$(hash_string "$singbox_content")
-    existing_hash=$(hash_file "$SINGBOX_TEMPLATE_FILE")
-    if [[ "$singbox_hash" != "$existing_hash" ]]; then
-        echo "$singbox_content" > "$SINGBOX_TEMPLATE_FILE"; need_reload=true
-    fi
-
-    # 创建初始 Sing-box 基础配置 (如果不存在)
-    mkdir -p "$SINGBOX_INSTALL_DIR"
-    if [[ ! -f "$SINGBOX_INSTALL_DIR/singbox.json" ]]; then
-        local base_config=$SINGBOX_BASE_CONFIG_TEMPLATE
-        local endpoints_json='[]'
-        local route_rules=$SINGBOX_NO_WARP_ROUTE_RULES
-
-        # 自动注册 WARP WireGuard (首次安装时执行, 失败会记录警告但不影响创建 singbox.json)
-        if command -v wg &>/dev/null && [[ ! -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
-            log "首次安装, 正在尝试自动注册 WARP WireGuard..."
-            if ! register_warp_wireguard; then
-                yellow "警告: WARP 自动注册失败, 将创建不带 WARP 的默认配置。可稍后手动重新注册。"
-            fi
-        fi
-        if [[ -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
-            if ! local wg_ep=$(apply_warp_wireguard_config); then
-                yellow "警告: WARP 配置加载失败, 将创建不带 WARP 的默认配置。"
-            else
-                endpoints_json=$wg_ep
-                route_rules=$SINGBOX_DIRECT_ROUTE_RULES
-                route_rules=${route_rules//__WARP_GEOSITE_LIST_JSON__/$WARP_GEOSITE_LIST_JSON}
-            fi
-        fi
-        base_config=${base_config/__ENDPOINTS__/$endpoints_json}
-        base_config=${base_config/__ROUTE_RULES__/$route_rules}
-        echo "$base_config" > "$SINGBOX_INSTALL_DIR/singbox.json"
-        log "已创建初始 Sing-box 基础配置文件: $SINGBOX_INSTALL_DIR/singbox.json"
+    
+    if update_service_template "$singbox_content" "$SINGBOX_TEMPLATE_FILE"; then
         need_reload=true
     fi
 
-    if [[ "$need_reload" == true ]]; then systemctl daemon-reload; fi
+    # 创建初始 Sing-box 配置
+    if create_initial_singbox_config; then
+        need_reload=true
+    fi
+
+    if [[ "$need_reload" == true ]]; then
+        systemctl daemon-reload
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1815,45 +1825,51 @@ create_new_instance() {
     esac
 }
 
+# 生成并保存 Reality 密钥对
+generate_and_save_reality_keypair() {
+    local tag=$1
+    log "正在生成 Reality 密钥对..."
+    local tmp_key=$("$SINGBOX_INSTALL_DIR/sing-box" generate reality-keypair 2>/dev/null)
+    
+    if [[ -z "$tmp_key" ]]; then
+        red "错误: sing-box generate reality-keypair 失败！请确保 sing-box 已正确安装。"
+        return 1
+    fi
+    
+    local private_key=$(echo "$tmp_key" | grep "PrivateKey" | awk '{print $2}')
+    local public_key=$(echo "$tmp_key" | grep "PublicKey" | awk '{print $2}')
+
+    if [[ -z "$private_key" || -z "$public_key" ]]; then
+        red "错误: 无法解析 Reality 密钥对！"
+        log "Sing-box 命令输出 (Debug): $tmp_key"
+        return 1
+    fi
+
+    save_reality_keypair "$tag" "$private_key" "$public_key"
+    echo "$private_key"
+}
+
 # -----------------------------------------------------------------------------
-# 添加一个新的 Sing-box inbound (Reality, Shadowsocks, Hysteria2)
-# -----------------------------------------------------------------------------
-# 添加一个新的 Sing-box inbound
+# 添加一个新的 Sing-box inbound (Reality, Hysteria2)
 # -----------------------------------------------------------------------------
 add_singbox_inbound() {
-    local type=$1; local next_id;
-    next_id=$(find_next_available_id "singbox")
+    local type=$1
+    local next_id=$(find_next_available_id "singbox")
+    
     prompt_custom_instance_name "$type" "$next_id"
     prompt_server_address "$type" "$next_id"
     
-    local inbound_json=""
-    local tag=""
-
+    local inbound_json="" tag=""
+    
     if [[ "$type" == "xray_reality" ]]; then
         tag="vless-reality-${next_id}"
         log "添加一个新的 VLESS+Reality inbound, tag: $tag"
         
-        local listen_port; read_valid_port "请输入监听端口 (留空则随机): " listen_port true
+        local listen_port
+        read_valid_port "请输入监听端口 (留空则随机): " listen_port true
         
         local uuid=$(generate_strong_password)
-        
-        log "正在生成 Reality 密钥对..."
-        local tmp_key=$("$SINGBOX_INSTALL_DIR/sing-box" generate reality-keypair 2>/dev/null)
-        if [[ -z "$tmp_key" ]]; then
-            red "错误: sing-box generate reality-keypair 失败！请确保 sing-box 已正确安装。"
-            return 1
-        fi
-        local private_key=$(echo "$tmp_key" | grep "PrivateKey" | awk '{print $2}')
-        local public_key=$(echo "$tmp_key" | grep "PublicKey" | awk '{print $2}')
-
-        if [[ -z "$private_key" || -z "$public_key" ]]; then
-            red "错误: 无法解析 Reality 密钥对！"
-            log "Sing-box 命令输出 (Debug): $tmp_key"
-            return 1
-        fi
-
-        save_reality_keypair "vless-reality-${next_id}" "$private_key" "$public_key"
-
+        local private_key=$(generate_and_save_reality_keypair "$tag") || return 1
         local short_id=$(openssl rand -hex 8)
         
         inbound_json=$SINGBOX_VLESS_REALITY_TEMPLATE
@@ -1869,7 +1885,8 @@ add_singbox_inbound() {
         tag="hy2-${next_id}"
         log "添加一个新的 Hysteria2 inbound, tag: $tag"
         
-        local listen_port; read_valid_port "请输入监听端口 (留空则随机): " listen_port true
+        local listen_port
+        read_valid_port "请输入监听端口 (留空则随机): " listen_port true
         local hy2_password=$(handle_password_input "hysteria2")
         
         inbound_json=$SINGBOX_HYSTERIA2_TEMPLATE
@@ -1881,7 +1898,10 @@ add_singbox_inbound() {
         inbound_json=${inbound_json/__CERT_PATH__/$HY2_CERT_PATH}
     fi
 
-    if [[ -z "$inbound_json" ]]; then red "错误: 未知的 inbound 类型 '$type'"; return 1; fi
+    if [[ -z "$inbound_json" ]]; then
+        red "错误: 未知的 inbound 类型 '$type'"
+        return 1
+    fi
 
     local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
     if [[ ! -f "$config_file" ]]; then
@@ -1895,18 +1915,24 @@ add_singbox_inbound() {
         return 1
     fi
 
-    sync; log "重启 Sing-box 服务..."; systemctl restart ax-singbox.service; sleep 1;
+    sync
+    log "重启 Sing-box 服务..."
+    systemctl restart ax-singbox.service
+    sleep 1
+    
     if ! systemctl is-active --quiet ax-singbox.service; then
         red "Sing-box 重启失败！请检查配置或日志。"
         log "journalctl -u ax-singbox.service -n 20"
         return 1
-    else
-        green "Inbound '$tag' 已添加！Sing-box 运行正常。"; echo
-        if [[ "$type" == "xray_reality" ]]; then
-            cyan "分享链接: $(generate_singbox_reality_link "$next_id")"
-        elif [[ "$type" == "hysteria2" ]]; then
-            cyan "分享链接: $(generate_singbox_hy2_link "$next_id")"
-        fi
+    fi
+    
+    green "Inbound '$tag' 已添加！Sing-box 运行正常。"
+    echo
+    
+    if [[ "$type" == "xray_reality" ]]; then
+        cyan "分享链接: $(generate_singbox_reality_link "$next_id")"
+    elif [[ "$type" == "hysteria2" ]]; then
+        cyan "分享链接: $(generate_singbox_hy2_link "$next_id")"
     fi
 }
 
@@ -2174,6 +2200,42 @@ view_chain_client_config_3() {
     echo
 }
 
+# 回滚串联实例创建失败
+rollback_chain_instance_3() {
+    local chain_id=$1
+    local kcp_conf_path="$KCP_INSTALL_DIR/kcptun_${chain_id}.json"
+    local udp_conf_path="$UDP2RAW_INSTALL_DIR/udp2raw_${chain_id}.conf"
+    
+    systemctl stop "ax-kcptun@${chain_id}.service" "ax-udp2raw@${chain_id}.service" 2>/dev/null
+    systemctl disable "ax-kcptun@${chain_id}.service" "ax-udp2raw@${chain_id}.service" >/dev/null 2>&1
+    remove_singbox_inbound "ss-${chain_id}" >/dev/null 2>&1
+    rm -f "$kcp_conf_path" "$udp_conf_path"
+}
+
+# 选择 SS 加密方式
+select_ss_method() {
+    cyan "--- SS 配置 ---"
+    echo "Shadowsocks 加密方式选项:"
+    echo "1) 2022-blake3-aes-256-gcm (推荐)"
+    echo "2) 2022-blake3-aes-128-gcm"
+    echo "3) 2022-blake3-chacha20-poly1305"
+    echo "4) aes-256-gcm"
+    echo "5) aes-128-gcm"
+    echo "6) chacha20-poly1305"
+    read -p "请选择加密方式 (默认 1): " ss_method_choice
+    ss_method_choice=${ss_method_choice:-1}
+    
+    case $ss_method_choice in
+        1) echo "2022-blake3-aes-256-gcm" ;;
+        2) echo "2022-blake3-aes-128-gcm" ;;
+        3) echo "2022-blake3-chacha20-poly1305" ;;
+        4) echo "aes-256-gcm" ;;
+        5) echo "aes-128-gcm" ;;
+        6) echo "chacha20-poly1305" ;;
+        *) echo "2022-blake3-aes-256-gcm" ;;
+    esac
+}
+
 # -----------------------------------------------------------------------------
 # 启动一个新的 3 组件串联实例 (SS+KCP+UDP)
 # -----------------------------------------------------------------------------
@@ -2195,30 +2257,9 @@ start_new_chain_instance_3() {
     green "已指定对外端口 (UDP2RAW): $udp2raw_listen_port"
     
     read_valid_port "请输入KCPTUN内联端口 (UDP2RAW->KCPTUN) (留空则随机生成): " kcptun_listen_port true
-    
     read_valid_port "请输入SS内联端口 (KCPTUN->SS) (留空则随机生成): " ss_listen_port true
     
-    cyan "--- SS 配置 ---"
-    echo "Shadowsocks 加密方式选项:"
-    echo "1) 2022-blake3-aes-256-gcm (推荐)"
-    echo "2) 2022-blake3-aes-128-gcm"
-    echo "3) 2022-blake3-chacha20-poly1305"
-    echo "4) aes-256-gcm"
-    echo "5) aes-128-gcm"
-    echo "6) chacha20-poly1305"
-    read -p "请选择加密方式 (默认 1): " ss_method_choice
-    ss_method_choice=${ss_method_choice:-1}
-    
-    local ss_method=""
-    case $ss_method_choice in
-        1) ss_method="2022-blake3-aes-256-gcm" ;;
-        2) ss_method="2022-blake3-aes-128-gcm" ;;
-        3) ss_method="2022-blake3-chacha20-poly1305" ;;
-        4) ss_method="aes-256-gcm" ;;
-        5) ss_method="aes-128-gcm" ;;
-        6) ss_method="chacha20-poly1305" ;;
-        *) ss_method="2022-blake3-aes-256-gcm" ;;
-    esac
+    local ss_method=$(select_ss_method)
     
     cyan "--- KCPTUN 配置 ---"
     local kcp_params=$(collect_kcptun_params)
@@ -2230,18 +2271,17 @@ start_new_chain_instance_3() {
     
     log "正在自动生成所有密码..."
     local udp2raw_password=$(generate_strong_password)
-    green "已自动生成 UDP2RAW 密码: $udp2raw_password"
-    
     local kcptun_password=$(generate_strong_password)
-    green "已自动生成 KCPTUN 密码: $kcptun_password"
-
+    
     if ! command -v openssl &>/dev/null; then 
         red "错误: openssl 未安装, 无法生成 SS 密钥！"; return 1; 
     fi
     local ss_password=$(openssl rand -base64 32)
+    green "已自动生成 UDP2RAW 密码: $udp2raw_password"
+    green "已自动生成 KCPTUN 密码: $kcptun_password"
     green "已自动生成 SS-2022 Base64 密钥: $ss_password"
     
-    # 创建 SS inbound in singbox.json
+    # 创建 SS inbound
     local ss_inbound=$SINGBOX_SHADOWSOCKS_TEMPLATE
     ss_inbound=${ss_inbound/__ID__/s3c${i}}
     ss_inbound=${ss_inbound/__LISTEN_PORT__/$ss_listen_port}
@@ -2253,6 +2293,7 @@ start_new_chain_instance_3() {
         return 1
     fi
     
+    # 生成 KCPTUN 配置
     local kcp_config="$KCPTUN_CONFIG_JSON_TEMPLATE"
     kcp_config=${kcp_config/__LISTEN__/127.0.0.1:${kcptun_listen_port}}
     kcp_config=${kcp_config/__TARGET__/127.0.0.1:${ss_listen_port}}
@@ -2266,6 +2307,7 @@ start_new_chain_instance_3() {
     kcp_config=${kcp_config/__NOCOMP__/true}
     local kcp_conf_path="$KCP_INSTALL_DIR/kcptun_${chain_id}.json"
     
+    # 生成 UDP2RAW 配置
     local udp_config="${UDP2RAW_CONFIG_TEMPLATE}"
     udp_config="${udp_config//__LISTEN_ADDR__/0.0.0.0:${udp2raw_listen_port}}"
     udp_config="${udp_config//__TARGET_ADDR__/127.0.0.1:${kcptun_listen_port}}"
@@ -2279,38 +2321,27 @@ start_new_chain_instance_3() {
     echo "$kcp_config" > "$kcp_conf_path"
     echo "$udp_config" > "$udp_conf_path"
 
-    # 启动服务并回滚检查
+    # 启动服务
     log "启动串联服务..."
-    local step="kcp"
     systemctl restart ax-singbox.service
 
-    step="kcp-enable"
     if ! systemctl enable --now "ax-kcptun@${chain_id}.service" 2>/dev/null; then
         red "KCPTUN 服务启动失败, 正在回滚..." >&2
-        remove_singbox_inbound "ss-${chain_id}" >/dev/null 2>&1
-        rm -f "$kcp_conf_path" "$udp_conf_path"
+        rollback_chain_instance_3 "$chain_id"
         return 1
     fi
 
-    step="udp-enable"
     if ! systemctl enable --now "ax-udp2raw@${chain_id}.service" 2>/dev/null; then
         red "UDP2RAW 服务启动失败, 正在回滚..." >&2
-        systemctl stop "ax-kcptun@${chain_id}.service" 2>/dev/null
-        systemctl disable "ax-kcptun@${chain_id}.service" >/dev/null 2>&1
-        remove_singbox_inbound "ss-${chain_id}" >/dev/null 2>&1
-        rm -f "$kcp_conf_path" "$udp_conf_path"
+        rollback_chain_instance_3 "$chain_id"
         return 1
     fi
 
     sleep 1
-    # 验证服务全部运行
     if ! systemctl is-active --quiet "ax-kcptun@${chain_id}.service" || \
        ! systemctl is-active --quiet "ax-udp2raw@${chain_id}.service"; then
         red "服务启动后状态检查失败, 正在回滚..." >&2
-        systemctl stop "ax-kcptun@${chain_id}.service" "ax-udp2raw@${chain_id}.service" 2>/dev/null
-        systemctl disable "ax-kcptun@${chain_id}.service" "ax-udp2raw@${chain_id}.service" >/dev/null 2>&1
-        remove_singbox_inbound "ss-${chain_id}" >/dev/null 2>&1
-        rm -f "$kcp_conf_path" "$udp_conf_path"
+        rollback_chain_instance_3 "$chain_id"
         return 1
     fi
 
@@ -2462,122 +2493,135 @@ view_chain_client_config() {
     echo
 }
 
+# 处理 ACME 证书或自签名证书
+setup_hysteria2_certificates() {
+    cyan "--- ACME证书 配置 ---"
+    read -p "是否使用 ACME证书? (否则将使用自签名证书) [y/N] (默认"N"): " use_acme
+    use_acme=${use_acme:-n}
+    
+    local cert_path="" key_path="" sni=""
+    
+    if [[ "$use_acme" == "y" || "$use_acme" == "Y" ]]; then
+        read -p "请输入您的域名 (DNS 必须指向本机): " domain_name
+        if [[ -z "$domain_name" ]]; then
+            red "域名不能为空！已取消创建。"
+            return 1
+        fi
+
+        if ! ensure_ax_script "$AX_ACME_SCRIPT" "$AX_ACME_URL"; then
+            red "无法获取 $AX_ACME_SCRIPT，已取消创建实例。"
+            return 1
+        fi
+        
+        if ! bash "$AX_ACME_SCRIPT" -n "$domain_name"; then
+            red "ACME 证书申请流程失败，已取消创建实例。"
+            return 1
+        fi
+        
+        if [ -f "$AX_CERT_DIR/$domain_name/fullchain.cer" ]; then
+            green "ACME 验证成功. Hysteria2 将使用 $domain_name"
+            cert_path="$AX_CERT_DIR/$domain_name/fullchain.cer"
+            key_path="$AX_CERT_DIR/$domain_name/private.key"
+            sni="$domain_name"
+        else
+            red "错误：未找到申请的证书文件，已取消创建实例。"
+            return 1
+        fi
+    else
+        generate_self_signed_cert
+        cert_path="$HY2_CERT_PATH"
+        key_path="$HY2_KEY_PATH"
+        sni="$HY2_SNI"
+    fi
+    
+    echo "$cert_path|$key_path|$sni"
+}
+
 # -----------------------------------------------------------------------------
-# 启动一个新的 2 组件串联实例 (hy2 或 vless)
+# 启动一个新的 2 组件串联实例 (hy2)
 # -----------------------------------------------------------------------------
 start_new_chain_instance() {
     local chain_type=$1
     local i=1 id_prefix="" title=""
+    
     if [[ "$chain_type" == "hy2" ]]; then
         id_prefix="c"; title="Hysteria2+UDP"
-        while true; do if ! jq -e --arg tag "hy2-c${i}" '.inbounds[] | select(.tag == $tag)' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then break; fi; i=$((i + 1)); done
+        while true; do 
+            if ! jq -e --arg tag "hy2-c${i}" '.inbounds[] | select(.tag == $tag)' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then 
+                break
+            fi
+            i=$((i + 1))
+        done
     else
-        yellow "不支持的串联类型"; return 1
+        yellow "不支持的串联类型"
+        return 1
     fi
     
     local chain_id="${id_prefix}${i}"
     log "启动一个新的 ${title} 串联实例..."
     green "新串联实例 #${i} (Hysteria2 + UDP2RAW 两层串联)"
+    
     local chain_display_type="hy2_chain"
     prompt_custom_instance_name "$chain_display_type" "$i"
     prompt_server_address "$chain_display_type" "$i"
     
-    # 先进行参数配置
     read_valid_port "请输入对外端口 (留空则随机生成): " udp2raw_listen_port true
-
     read_valid_port "请输入内联端口 (留空则随机生成): " internal_listen_port true
     
-    # 添加Hysteria2串联实例的配置选项
-    if [[ "$chain_type" == "hy2" ]]; then
-        cyan "--- Hysteria2 配置 ---"
-        read -p "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth
-        ignore_client_bandwidth=${ignore_client_bandwidth:-true}
+    cyan "--- Hysteria2 配置 ---"
+    read -p "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth
+    ignore_client_bandwidth=${ignore_client_bandwidth:-true}
+    
+    local hy2_password=$(generate_strong_password)
+    echo -n "已自动生成 Hysteria2 密码: "
+    green "$hy2_password"
+    
+    # 设置证书
+    local cert_info=$(setup_hysteria2_certificates) || return 1
+    IFS='|' read -r cert_path key_path sni <<< "$cert_info"
+    
+    # 创建 Hysteria2 inbound
+    local hy2_inbound=$(cat <<EOF
+{
+    "type": "hysteria2",
+    "tag": "hy2-c${i}",
+    "listen": "127.0.0.1",
+    "listen_port": ${internal_listen_port},
+    "up_mbps": 100,
+    "down_mbps": 100,
+    "users": [{"password": "${hy2_password}"}],
+    "tls": {
+        "enabled": true,
+        "server_name": "${sni}",
+        "key_path": "${key_path}",
+        "certificate_path": "${cert_path}"
+    }
+}
+EOF
+)
+    
+    local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    if [[ ! -f "$config_file" ]]; then
+        red "错误: 基础配置文件 $config_file 不存在！请先安装 Sing-box。"
+        return 1
     fi
     
-    if [[ "$chain_type" == "hy2" ]]; then
-        local hy2_password=$(generate_strong_password); echo -n "已自动生成 Hysteria2 密码: "; green "$hy2_password"
-        
-        cyan "--- ACME证书 配置 ---"
-        read -p "是否使用 ACME证书? (否则将使用自签名证书) [y/N] (默认"N"): " use_acme
-        use_acme=${use_acme:-n}
-        
-        local cert_path="" key_path="" sni=""
-        
-        if [[ "$use_acme" == "y" || "$use_acme" == "Y" ]]; then
-            read -p "请输入您的域名 (DNS 必须指向本机): " domain_name
-            if [[ -z "$domain_name" ]]; then
-                red "域名不能为空！已取消创建。"
-                return 1
-            fi
-
-            if ! ensure_ax_script "$AX_ACME_SCRIPT" "$AX_ACME_URL"; then
-                red "无法获取 $AX_ACME_SCRIPT，已取消创建实例。"
-                return 1
-            fi
-            
-            if ! bash "$AX_ACME_SCRIPT" -n "$domain_name"; then
-                red "ACME 证书申请流程失败，已取消创建实例。"
-                return 1
-            fi
-            
-            if [ -f "$AX_CERT_DIR/$domain_name/fullchain.cer" ]; then
-                green "ACME 验证成功. Hysteria2 将使用 $domain_name"
-                cert_path="$AX_CERT_DIR/$domain_name/fullchain.cer"
-                key_path="$AX_CERT_DIR/$domain_name/private.key"
-                sni="$domain_name"
-            else
-                red "错误：未找到申请的证书文件，已取消创建实例。"
-                return 1
-            fi
-        else
-            generate_self_signed_cert
-            cert_path="$HY2_CERT_PATH"
-            key_path="$HY2_KEY_PATH"
-            sni="$HY2_SNI"
-        fi
-        
-        # 将 Hysteria2 inbound 添加到 singbox.json
-        local hy2_inbound='{
-            "type": "hysteria2",
-            "tag": "hy2-c'"${i}"'",
-            "listen": "127.0.0.1",
-            "listen_port": '"${internal_listen_port}"',
-            "up_mbps": 100,
-            "down_mbps": 100,
-            "users": [{"password": "'"${hy2_password}"'"}],
-            "tls": {
-                "enabled": true,
-                "server_name": "'"${sni}"'",
-                "key_path": "'"${key_path}"'",
-                "certificate_path": "'"${cert_path}"'"
-            }
-        }'
-        local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
-        if [[ ! -f "$config_file" ]]; then
-            red "错误: 基础配置文件 $config_file 不存在！请先安装 Sing-box。"
-            return 1
-        fi
-        if ! safe_add_singbox_inbound "$hy2_inbound" "$config_file"; then
-            red "添加 Hysteria2 inbound 失败, 操作已回滚。" >&2
-            return 1
-        fi
+    if ! safe_add_singbox_inbound "$hy2_inbound" "$config_file"; then
+        red "添加 Hysteria2 inbound 失败, 操作已回滚。" >&2
+        return 1
     fi
 
-    # 添加UDP2RAW串联实例的配置选项
+    # UDP2RAW 配置
     cyan "--- UDP2RAW 配置 ---"
-    read -p "raw_mode [faketcp/udp/icmp] (默认 faketcp): " raw_mode
-    raw_mode=${raw_mode:-faketcp}
+    local udp_params=$(collect_udp2raw_params)
+    IFS='|' read -r raw_mode cipher_mode auth_mode <<< "$udp_params"
     
-    read -p "cipher_mode [aes128cbc/xor] (默认 aes128cbc): " cipher_mode
-    cipher_mode=${cipher_mode:-aes128cbc}
-    
-    read -p "auth_mode [hmac_sha1/simple] (默认 hmac_sha1): " auth_mode
-    auth_mode=${auth_mode:-hmac_sha1}
-    
-    # 然后生成密码
-    local udp2raw_password=$(generate_strong_password); echo -n "已自动生成 UDP2RAW 密码: "; green "$udp2raw_password"
+    local udp2raw_password=$(generate_strong_password)
+    echo -n "已自动生成 UDP2RAW 密码: "
+    green "$udp2raw_password"
 
-    log "生成 UDP2RAW 配置文件: udp2raw_${chain_id}.conf..."; local temp_udp_config="${UDP2RAW_CONFIG_TEMPLATE}"
+    log "生成 UDP2RAW 配置文件: udp2raw_${chain_id}.conf..."
+    local temp_udp_config="${UDP2RAW_CONFIG_TEMPLATE}"
     temp_udp_config="${temp_udp_config//__LISTEN_ADDR__/0.0.0.0:${udp2raw_listen_port}}"
     temp_udp_config="${temp_udp_config//__TARGET_ADDR__/127.0.0.1:${internal_listen_port}}"
     temp_udp_config="${temp_udp_config//__PASSWORD__/${udp2raw_password}}"
@@ -2588,11 +2632,14 @@ start_new_chain_instance() {
     local udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${chain_id}.conf"
     echo "$temp_udp_config" > "$udp2raw_conf"
     
-    sync; log "启动串联服务...";
+    sync
+    log "启动串联服务..."
     systemctl restart ax-singbox.service
     systemctl enable --now "ax-udp2raw@${chain_id}.service"
     
-    sleep 1; green "串联实例 ${chain_id} 已启动！"; echo
+    sleep 1
+    green "串联实例 ${chain_id} 已启动！"
+    echo
     view_chain_client_config "$chain_type" "$i"
 }
 
@@ -2911,19 +2958,15 @@ restart_all_services() {
     sleep 2
 }
 
-# -----------------------------------------------------------------------------
-# 检查并更新所有核心程序
-# -----------------------------------------------------------------------------
-check_for_updates(){
-    log "检查更新..."
-    echo ""
-
-     # 先停止所有服务
-    log "正在停止全部服务以进行组件更新..."
+# 停止所有服务
+stop_all_services() {
+    log "正在停止全部服务..."
     systemctl stop ax-singbox.service 2>/dev/null
+    
     for f in "$KCP_INSTALL_DIR"/kcptun_*.json "$UDP2RAW_INSTALL_DIR"/udp2raw_*.conf; do
         [[ -f "$f" ]] || continue
-        local base=$(basename "$f"); local srv=""
+        local base=$(basename "$f")
+        local srv=""
         case "$base" in
             kcptun_*.json)  srv="ax-kcptun@${base#kcptun_}"; srv="${srv%.json}" ;;
             udp2raw_*.conf) srv="ax-udp2raw@${base#udp2raw_}"; srv="${srv%.conf}" ;;
@@ -2931,8 +2974,39 @@ check_for_updates(){
         [[ -n "$srv" ]] && systemctl stop "$srv" 2>/dev/null
     done
     sleep 2
+}
+
+# 检查并更新辅助脚本
+update_helper_scripts() {
+    echo ""
+    cyan "正在检查辅助脚本更新..."
     
-    # ========== 第一部分：更新核心程序 ==========
+    local script_updated=false
+    
+    if [[ -f "$AX_ACME_SCRIPT" ]]; then
+        cyan "  » 更新 $AX_ACME_SCRIPT"
+        download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_ACME_SCRIPT 更新失败"
+    fi
+    
+    if [[ -f "$AX_OPTZ_SCRIPT" ]]; then
+        cyan "  » 更新 $AX_OPTZ_SCRIPT"
+        download_with_retry "$AX_OPTZ_URL" "$AX_OPTZ_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_OPTZ_SCRIPT" && green "    ✓ $AX_OPTZ_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_OPTZ_SCRIPT 更新失败"
+    fi
+    
+    if [[ "$script_updated" == false ]]; then
+        green "辅助脚本均已是最新版本。"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# 检查并更新所有核心程序
+# -----------------------------------------------------------------------------
+check_for_updates(){
+    log "检查更新..."
+    echo ""
+
+    stop_all_services
+    
     cyan "正在检查核心程序更新..."
     
     # 记录更新前的版本
@@ -2949,42 +3023,17 @@ check_for_updates(){
     local udp_after=$(cat "$UDP2RAW_INSTALL_DIR/version.txt" 2>/dev/null)
     local singbox_after=$(cat "$SINGBOX_INSTALL_DIR/version.txt" 2>/dev/null)
     
-    local has_updates=false
     if [[ "$kcp_before" != "$kcp_after" ]] || [[ "$udp_before" != "$udp_after" ]] || \
        [[ "$singbox_before" != "$singbox_after" ]]; then
-        has_updates=true
-    fi
-    
-    # 无论是否有更新，都要重启之前被停止的服务
-    if [[ "$has_updates" == true ]]; then
         green "核心程序已更新，重启服务中..."
     else
         green "核心程序均已是最新版本，重启服务中..."
     fi
+    
     restart_all_services
     sleep 2
     
-    # ========== 第二部分：更新辅助脚本 ==========
-    echo ""
-    cyan "正在检查辅助脚本更新..."
-    
-    local script_updated=false
-    
-    # 更新 ACME 证书管理脚本
-    if [[ -f "$AX_ACME_SCRIPT" ]]; then
-        cyan "  » 更新 $AX_ACME_SCRIPT"
-        download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_ACME_SCRIPT 更新失败"
-    fi
-    
-    # 更新 VPS 优化脚本
-    if [[ -f "$AX_OPTZ_SCRIPT" ]]; then
-        cyan "  » 更新 $AX_OPTZ_SCRIPT"
-        download_with_retry "$AX_OPTZ_URL" "$AX_OPTZ_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_OPTZ_SCRIPT" && green "    ✓ $AX_OPTZ_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_OPTZ_SCRIPT 更新失败"
-    fi
-    
-    if [[ "$script_updated" == false ]]; then
-        green "辅助脚本均已是最新版本。"
-    fi
+    update_helper_scripts
     
     echo ""
     green "✓ 所有更新检查完成！"
