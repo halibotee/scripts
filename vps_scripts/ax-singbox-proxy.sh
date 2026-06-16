@@ -1408,17 +1408,29 @@ get_instance_server_addr() {
 # 验证域名格式
 validate_domain() {
     local domain=$1
-    # IPv4
     if [[ "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then return 0; fi
-    # 域名
     if [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then return 0; fi
     return 1
+}
+
+check_domain_points_to_vps() {
+    local domain=$1 vps_ip=$2
+    if command -v dig &>/dev/null; then
+        dig +short "$domain" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1
+    elif command -v host &>/dev/null; then
+        host "$domain" 2>/dev/null | grep "has address" | head -1 | awk '{print $NF}'
+    elif command -v nslookup &>/dev/null; then
+        nslookup "$domain" 2>/dev/null | grep "Address:" | tail -1 | awk '{print $2}'
+    elif command -v getent &>/dev/null; then
+        getent ahosts "$domain" 2>/dev/null | head -1 | awk '{print $1}'
+    fi
 }
 
 prompt_server_address() {
     local type=$1 id=$2; local key="${type}_${id}"
     local global_addr=$(get_global_server_addr)
-    local default="${global_addr:-$(get_public_ip)}"
+    local vps_ip=$(get_public_ip)
+    local default="${global_addr:-$vps_ip}"
     local existing=$(get_custom_server_addr "$key")
     local prompt_default="${existing:-$default}"
     read -p "请输入域名或IP (留空则使用 ${prompt_default}): " user_addr
@@ -1427,12 +1439,29 @@ prompt_server_address() {
         green "使用地址: $prompt_default"
     else
         if validate_domain "$user_addr"; then
-            set_custom_server_addr "$key" "$user_addr"
-            set_global_server_addr "$user_addr"
-            green "使用地址: $user_addr"
+            if [[ "$user_addr" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                set_custom_server_addr "$key" "$user_addr"
+                set_global_server_addr "$user_addr"
+                green "使用地址: $user_addr"
+            else
+                local resolved
+                resolved=$(check_domain_points_to_vps "$user_addr" "$vps_ip")
+                if [[ -z "$resolved" ]]; then
+                    yellow "无法解析域名，将使用: $user_addr (请确认 DNS 已配置)"
+                    set_custom_server_addr "$key" "$user_addr"
+                    set_global_server_addr "$user_addr"
+                elif [[ "$resolved" == "$vps_ip" ]]; then
+                    set_custom_server_addr "$key" "$user_addr"
+                    set_global_server_addr "$user_addr"
+                    green "使用地址: $user_addr"
+                else
+                    red "域名 $user_addr 解析到 $resolved，与 VPS IP ($vps_ip) 不匹配！"
+                    set_custom_server_addr "$key" "$vps_ip"
+                fi
+            fi
         else
-            red "格式无效，使用默认地址: $default"
-            set_custom_server_addr "$key" "$default"
+            red "格式无效，使用默认地址: $vps_ip"
+            set_custom_server_addr "$key" "$vps_ip"
         fi
     fi
 }
