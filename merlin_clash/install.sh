@@ -422,14 +422,9 @@ install_now(){
 	dbus_nset merlinclash_set_dashboard_password "$secret"
 	dbus set merlinclash_linuxver="$LINUX_VER"
 	#设置版本号
-	CUR_VERSION=$(cat /koolshare/merlinclash/version)
-	if [ "${PKG_ARCH}" = "arm32" ]; then
-		dbus set merlinclash_version="$CUR_VERSION.A32"
-	else
-		dbus set merlinclash_version="$CUR_VERSION.A64"
-	fi
+	dbus set merlinclash_version="MC2_chian_1.2.2.A64"
 	dbus set softcenter_module_merlinclash_install="1"
-	dbus set softcenter_module_merlinclash_version="$CUR_VERSION"
+	dbus set softcenter_module_merlinclash_version="MC2_chian_1.2.2"
 	dbus set softcenter_module_merlinclash_title="Magic Catling2"
 	dbus set softcenter_module_merlinclash_description="Magic Catling2:一个基于规则的代理程序，支持多种协议~" 
 	#设置内核版本
