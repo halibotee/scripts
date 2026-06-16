@@ -2993,8 +2993,8 @@ main_menu(){
         local prompt="请选择 [0-11, 99"; if [[ $num_items -gt 0 ]]; then prompt+=", 21-${max_index}]"; else prompt+="]"; fi
         read -p "$prompt： " choice
         
-        if [[ -n "$choice" && -n "${QUICK_MANAGE_MAP_ID[$choice]}" ]]; then
-            local real_id="${QUICK_MANAGE_MAP_ID[$choice]}"; local type="${QUICK_MANAGE_MAP_TYPE[$choice]}"
+        if [[ -n "$choice" && -n "${QUICK_MANAGE_MAP_ID[$choice]-}" ]]; then
+            local real_id="${QUICK_MANAGE_MAP_ID[$choice]-}"; local type="${QUICK_MANAGE_MAP_TYPE[$choice]-}"
             case "$type" in
                 "ss_3_chain_chain") manage_chain_instance_3 "$real_id" ;;
                 "hy2_chain") manage_chain_instance "hy2" "$real_id" ;;
