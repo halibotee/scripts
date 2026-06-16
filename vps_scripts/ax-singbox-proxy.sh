@@ -2816,6 +2816,7 @@ show_global_tls_status() {
 # [新] 显示 WARP 状态
 # -----------------------------------------------------------------------------
 show_warp_status() {
+    echo "--- WARP 状态 ---"
     if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
         green "WARP 分流: 已启用"
     else
@@ -3145,7 +3146,7 @@ main_menu(){
         cyan "--- 组件管理 ---"
         echo " 5) UDP2RAW"
         echo " 6) KCPTUN"
-        echo " 7) WARP 分流"
+        echo " 7) WARP分流"
         echo "----------------------------------"
         cyan "--- 全局操作 ---"
         echo " 8) 查看全部配置"
