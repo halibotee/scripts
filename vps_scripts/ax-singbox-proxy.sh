@@ -993,32 +993,17 @@ download_kcp_udp_binaries(){
     mkdir -p "$KCP_INSTALL_DIR"
     mkdir -p "$UDP2RAW_INSTALL_DIR"
 
-    local kcp_arch; kcp_arch=$(get_kcptun_arch) || return 1
     local kcp_current=$(cat "$KCP_INSTALL_DIR/version.txt" 2>/dev/null)
     local udp_current=$(cat "$UDP2RAW_INSTALL_DIR/version.txt" 2>/dev/null)
-    local fixed_version_kcp="Fixed-Source-v1.0.2-${kcp_arch}"
+    local fixed_version_kcp="Fixed-Source-v1.0.2"
     local fixed_version_udp="Fixed-Source-v1.0.2"
 
-    # KCPTUN - 版本不匹配 / 文件缺失 / 二进制损坏 (非 ELF) 时重装
-    if [[ "$kcp_current" != "$fixed_version_kcp" ]] || ! is_elf_binary "$KCP_INSTALL_DIR/kcptun_server"; then
-        log "下载 KCPTUN for ${kcp_arch}..."
-        # 仅从 halibotee/scripts 仓库下载预编译 tarball (含 server_linux_${arch})
-        local kcp_url="https://raw.githubusercontent.com/halibotee/scripts/main/package/kcptun-linux-${kcp_arch}-${KCPTUN_FALLBACK_RELEASE}.tar.gz"
-        download_with_retry "$kcp_url" /tmp/kcptun.tar.gz || { red "KCPTUN 下载失败 (halibotee/scripts 仓库不可用)。"; return 1; }
-        if ! tar -xzf /tmp/kcptun.tar.gz -C /tmp "server_linux_${kcp_arch}"; then
-            rm -f /tmp/kcptun.tar.gz
-            red "KCPTUN tarball 解压失败 (期望包含 server_linux_${kcp_arch})。"; return 1
-        fi
-        mv "/tmp/server_linux_${kcp_arch}" "$KCP_INSTALL_DIR/kcptun_server"
-        rm -f /tmp/kcptun.tar.gz
-        if ! is_elf_binary "$KCP_INSTALL_DIR/kcptun_server"; then
-            rm -f "$KCP_INSTALL_DIR/kcptun_server"
-            red "下载的 KCPTUN 不是合法 ELF 可执行 (可能架构不匹配)。"; return 1
-        fi
-        chmod +x "$KCP_INSTALL_DIR/kcptun_server" \
-            && echo "$fixed_version_kcp" > "$KCP_INSTALL_DIR/version.txt" \
-            || { red "KCPTUN 安装失败。"; return 1; }
-        green "KCPTUN ${kcp_arch} 安装成功"
+    # KCPTUN - 只有版本不匹配或文件缺失才下载
+    if [[ "$kcp_current" != "$fixed_version_kcp" || ! -f "$KCP_INSTALL_DIR/kcptun_server" ]]; then
+        log "下载 KCPTUN (kcptun_server)..."
+        download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/kcptun_server" "$KCP_INSTALL_DIR/kcptun_server" && \
+        chmod +x "$KCP_INSTALL_DIR/kcptun_server" && \
+        echo "$fixed_version_kcp" > "$KCP_INSTALL_DIR/version.txt" || { red "KCPTUN 下载失败。"; return 1; }
     else
         green "KCPTUN 已是最新版本 ($kcp_current)"
     fi
