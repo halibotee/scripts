@@ -976,63 +976,60 @@ disable_warp_in_config() {
 }
 
 # -----------------------------------------------------------------------------
-# 交互式询问用户是否启用 WARP (在新建实例后调用)
-# -----------------------------------------------------------------------------
-prompt_warp_config() {
-    local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
-    if [[ -f "$warp_key_file" ]] && jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-        return 0
-    fi
-    if [[ ! -f "$warp_key_file" ]]; then
-        read -p "是否注册并启用 WARP 分流? (Google/OpenAI/Perplexity 走 WARP) [y/N]: " enable_warp
-        if [[ "$enable_warp" == "y" || "$enable_warp" == "Y" ]]; then
-            if ! register_warp_wireguard; then
-                yellow "WARP 注册失败，跳过启用。"; return 1
-            fi
-            enable_warp_in_config || return 1
-            sync; systemctl restart ax-singbox.service 2>/dev/null
-            green "WARP 已注册并启用！"
-        fi
-    else
-        read -p "是否启用 WARP 分流? (Google/OpenAI/Perplexity 走 WARP) [y/N]: " enable_warp
-        if [[ "$enable_warp" == "y" || "$enable_warp" == "Y" ]]; then
-            enable_warp_in_config || return 1
-            sync; systemctl restart ax-singbox.service 2>/dev/null
-            green "WARP 已启用！"
-        fi
-    fi
-}
-
-# -----------------------------------------------------------------------------
-# WARP 管理子菜单
+# WARP 管理子菜单 — 根据状态动态显示可用操作
 # -----------------------------------------------------------------------------
 warp_management_menu() {
     local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
     while true; do
-        local reg_status="未注册"; local cfg_status="未启用"
-        if [[ -f "$warp_key_file" ]]; then
-            local wg_private=$(jq -r '.private_key // empty' "$warp_key_file" 2>/dev/null)
-            [[ -n "$wg_private" ]] && reg_status="已注册"
-            if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-                cfg_status="已启用"
-            fi
+        local cfg_enabled=false
+        if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
+            cfg_enabled=true
         fi
-        echo "=================================="; echo "          WARP 管理"; echo "=================================="
-        echo "注册状态: $reg_status"
-        echo "配置状态: $cfg_status"
-        echo "----------------------------------"
-        echo " 1) 注册 WARP"
-        echo " 2) 启用 WARP (添加到配置)"
-        echo " 3) 禁用 WARP (从配置移除)"
+
+        echo "=================================="
+        echo "          WARP 管理"
+        echo "=================================="
+        if $cfg_enabled; then
+            green "当前状态: 已启用"
+            echo "----------------------------------"
+            echo " 1) 禁用 WARP 分流"
+        elif [[ -f "$warp_key_file" ]]; then
+            yellow "当前状态: 未启用"
+            echo "----------------------------------"
+            echo " 1) 启用 WARP 分流"
+        else
+            yellow "当前状态: 未启用"
+            echo "----------------------------------"
+            echo " 1) 注册并启用 WARP"
+        fi
         echo " 0) 返回"
         read -p "请选择: " warp_choice
-        case $warp_choice in
-            1) if register_warp_wireguard; then green "注册成功！"; else yellow "注册失败。"; fi; read -p $'\n按任意键继续...' -n1 -s;;
-            2) if enable_warp_in_config; then sync; systemctl restart ax-singbox.service 2>/dev/null; green "Sing-box 已重启。"; else yellow "启用失败。"; fi; read -p $'\n按任意键继续...' -n1 -s;;
-            3) if disable_warp_in_config; then sync; systemctl restart ax-singbox.service 2>/dev/null; green "Sing-box 已重启。"; else yellow "禁用失败。"; fi; read -p $'\n按任意键继续...' -n1 -s;;
-            0) break;;
-            *) red "无效选择!"; sleep 1;;
-        esac
+
+        if $cfg_enabled; then
+            case $warp_choice in
+                1) if disable_warp_in_config; then sync; systemctl restart ax-singbox.service 2>/dev/null; green "Sing-box 已重启。"; else yellow "禁用失败。"; fi; read -p $'\n按任意键继续...' -n1 -s;;
+                0) break;;
+                *) red "无效选择!"; sleep 1;;
+            esac
+        elif [[ -f "$warp_key_file" ]]; then
+            case $warp_choice in
+                1) if enable_warp_in_config; then sync; systemctl restart ax-singbox.service 2>/dev/null; green "Sing-box 已重启。"; else yellow "启用失败。"; fi; read -p $'\n按任意键继续...' -n1 -s;;
+                0) break;;
+                *) red "无效选择!"; sleep 1;;
+            esac
+        else
+            case $warp_choice in
+                1)
+                    if register_warp_wireguard; then
+                        enable_warp_in_config && { sync; systemctl restart ax-singbox.service 2>/dev/null; green "WARP 已注册并启用！"; } || yellow "启用失败。"
+                    else
+                        yellow "注册失败。"
+                    fi
+                    read -p $'\n按任意键继续...' -n1 -s;;
+                0) break;;
+                *) red "无效选择!"; sleep 1;;
+            esac
+        fi
     done
 }
 
@@ -1795,7 +1792,6 @@ add_singbox_inbound() {
         return 1
     else
         green "Inbound '$tag' 已添加！Sing-box 运行正常。"; echo
-        prompt_warp_config
         if [[ "$type" == "xray_reality" ]]; then
             cyan "分享链接: $(generate_singbox_reality_link "$next_id")"
         elif [[ "$type" == "hysteria2" ]]; then
@@ -2082,8 +2078,6 @@ start_new_chain_instance_3() {
     read_valid_port "请输入KCPTUN内联端口 (UDP2RAW->KCPTUN) (留空则随机生成): " kcptun_listen_port true
     
     read_valid_port "请输入SS内联端口 (KCPTUN->SS) (留空则随机生成): " ss_listen_port true
-    
-    prompt_warp_config
     
     cyan "--- SS 配置 ---"
     echo "Shadowsocks 加密方式选项:"
@@ -2372,18 +2366,12 @@ start_new_chain_instance() {
 
     read_valid_port "请输入内联端口 (留空则随机生成): " internal_listen_port true
     
-    prompt_warp_config
-    
     # 添加Hysteria2串联实例的配置选项
     if [[ "$chain_type" == "hy2" ]]; then
         cyan "--- Hysteria2 配置 ---"
         read -p "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth
         ignore_client_bandwidth=${ignore_client_bandwidth:-true}
     fi
-    
-    
-    local main_config="$main_conf_template"
-    local main_conf_path=""
     
     if [[ "$chain_type" == "hy2" ]]; then
         local hy2_password=$(generate_strong_password); echo -n "已自动生成 Hysteria2 密码: "; green "$hy2_password"
@@ -2745,27 +2733,14 @@ show_global_tls_status() {
 # [新] 显示 WARP 状态
 # -----------------------------------------------------------------------------
 show_warp_status() {
-    echo "--- WARP 状态 ---"
-    local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
-    local reg_status="未注册"
-    local cfg_status="未启用"
-    if [[ -f "$warp_key_file" ]]; then
-        local wg_private=$(jq -r '.private_key // empty' "$warp_key_file" 2>/dev/null)
-        if [[ -n "$wg_private" ]]; then
-            reg_status="已注册"
-        else
-            reg_status="文件损坏"
-        fi
-        if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-            cfg_status="已启用"
-        fi
+    local cfg_enabled=false
+    if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
+        cfg_enabled=true
     fi
-    if [[ "$reg_status" == "已注册" && "$cfg_status" == "已启用" ]]; then
-        green "[Sing-box WireGuard] 注册: ${reg_status} | 配置: ${cfg_status}"
-    elif [[ "$reg_status" == "未注册" ]]; then
-        yellow "WARP 未注册 — 首次安装时自动注册"
+    if $cfg_enabled; then
+        green "WARP 分流: 已启用"
     else
-        yellow "[Sing-box WireGuard] 注册: ${reg_status} | 配置: ${cfg_status}"
+        yellow "WARP 分流: 未启用"
     fi
 }
 
