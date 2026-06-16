@@ -1938,9 +1938,14 @@ safe_add_singbox_inbound() {
     tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
     inbound_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
     printf '%s\n' "$inbound_json" > "$inbound_tmp"
-    if ! jq --slurpfile inbound "$inbound_tmp" '.inbounds += $inbound' "$config_file" > "$tmpfile" 2>/dev/null; then
-        rm -f "$tmpfile" "$inbound_tmp"
+    if ! jq --slurpfile inbound "$inbound_tmp" '.inbounds += $inbound' "$config_file" > "$tmpfile" 2>&1; then
         red "错误: jq 合并失败，原文件未修改。备份在 $backup" >&2
+        echo "=== inbound JSON 内容 ===" >&2
+        cat "$inbound_tmp" >&2
+        echo "" >&2
+        echo "=== jq 输出 ===" >&2
+        cat "$tmpfile" >&2
+        rm -f "$tmpfile" "$inbound_tmp"
         return 1
     fi
     rm -f "$inbound_tmp"
