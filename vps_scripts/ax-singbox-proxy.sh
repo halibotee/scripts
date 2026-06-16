@@ -795,8 +795,8 @@ collect_kcptun_params() {
 
     # rcvwnd 校验 (16-65535)
     while true; do
-        read -p "rcvwnd (默认 512, 范围 16-65535): " rcvwnd >&2
-        rcvwnd=${rcvwnd:-512}
+        read -p "rcvwnd (默认 2048, 范围 16-65535): " rcvwnd >&2
+        rcvwnd=${rcvwnd:-2048}
         _validate_num_range "$rcvwnd" 16 65535 "rcvwnd" && break
     done
 
@@ -1122,13 +1122,8 @@ WantedBy=multi-user.target"
         local endpoints_json='[]'
         local route_rules=$SINGBOX_NO_WARP_ROUTE_RULES
 
-        # 自动注册 WARP WireGuard (首次安装时执行, 失败会记录警告但不影响创建 singbox.json)
-        if command -v wg &>/dev/null && [[ ! -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
-            log "首次安装, 正在尝试自动注册 WARP WireGuard..."
-            if ! register_warp_wireguard; then
-                yellow "警告: WARP 自动注册失败, 将创建不带 WARP 的默认配置。可稍后手动重新注册。"
-            fi
-        fi
+        # WARP 默认不启用，用户可通过菜单手动注册
+        # 已注释: 首次安装自动注册 WARP
         if [[ -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
             if ! local wg_ep=$(apply_warp_wireguard_config); then
                 yellow "警告: WARP 配置加载失败, 将创建不带 WARP 的默认配置。"
