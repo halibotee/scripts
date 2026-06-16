@@ -47,9 +47,13 @@ package_plugin(){
 	fi
 
 	echo_date "打包二进制文件..." >> $LOG_FILE
-	# 打包 bin64（路由器上从 /koolshare/bin 取；本地从 bin64/ 取）
-	if [ -d "$SRC_BIN" ] && [ -n "$(ls -A "$SRC_BIN" 2>/dev/null)" ]; then
-		mkdir -p "$MC_DIR/bin64"
+	mkdir -p "$MC_DIR/bin64"
+	if [ "$SRC_ROOT" = "/koolshare" ]; then
+		# 路由器上只取 merlinclash 专属二进制，避免混入其他插件
+		for _f in clash jq yq haveged kcptun udp2raw; do
+			cp -f "$SRC_BIN/$_f" "$MC_DIR/bin64/" 2>/dev/null
+		done
+	else
 		cp -f "$SRC_BIN/"* "$MC_DIR/bin64/" 2>/dev/null
 	fi
 
