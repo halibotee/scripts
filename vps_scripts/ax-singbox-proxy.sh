@@ -2925,13 +2925,12 @@ install_sys_opt() {
 # 卸载所有 (REFACTORED: 修复软卸载路径)
 # -----------------------------------------------------------------------------
 uninstall_all() {
-    read -p "确认要卸载吗？(默认“否”) [y/N]: " confirm
+    read -p "确认要卸载吗（将删除所有配置文件）？ (默认“否”) [y/N]: " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then 
         yellow "操作已取消。"
         return 1
     fi
     
-    read -p "是否要执行彻底清理（删除所有配置文件，保留证书）？(默认“否”) [y/N]: " nuke_choice
     log "开始卸载流程..."
     log "步骤 1: 停止并禁用所有相关服务..."
     systemctl stop ax-singbox.service 2>/dev/null; systemctl disable ax-singbox.service 2>/dev/null
@@ -2942,32 +2941,25 @@ uninstall_all() {
           "$UDP2RAW_TEMPLATE_FILE" \
           "$SINGBOX_TEMPLATE_FILE"
     green "Systemd 服务文件已删除。"
-    if [[ "$nuke_choice" == "y" || "$nuke_choice" == "Y" ]]; then
-        log "步骤 3: 执行彻底清理..."
-        rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$SINGBOX_INSTALL_DIR"
-        green "程序和配置文件目录已删除 (证书已保留)。"
+    log "步骤 3: 删除程序和配置文件..."
+    rm -rf "$KCP_INSTALL_DIR" "$UDP2RAW_INSTALL_DIR" "$SINGBOX_INSTALL_DIR"
+    green "程序和配置文件目录已删除 (证书已保留)。"
 
-        # 步骤 4: 清理证书客户端（完全卸载模式）
-        if [ -d "/root/.acme.sh" ]; then
-            log "正在清理 $AX_ACME_SCRIPT 证书客户端..."
-            if [ ! -f "$AX_ACME_SCRIPT" ]; then
-                if ! ensure_ax_script "$AX_ACME_SCRIPT" "$AX_ACME_URL"; then
-                    yellow "无法下载 $AX_ACME_SCRIPT，将跳过 ACME 卸载。"
-                fi
+    # 步骤 4: 清理证书客户端
+    if [ -d "/root/.acme.sh" ]; then
+        log "正在清理 $AX_ACME_SCRIPT 证书客户端..."
+        if [ ! -f "$AX_ACME_SCRIPT" ]; then
+            if ! ensure_ax_script "$AX_ACME_SCRIPT" "$AX_ACME_URL"; then
+                yellow "无法下载 $AX_ACME_SCRIPT，将跳过 ACME 卸载。"
             fi
-            if [ -f "$AX_ACME_SCRIPT" ] && bash "$AX_ACME_SCRIPT" -u; then
-                green "$AX_ACME_SCRIPT 证书客户端已删除。"
-            else
-                yellow "警告: $AX_ACME_SCRIPT 卸载可能未完全成功。"
-            fi
+        fi
+        if [ -f "$AX_ACME_SCRIPT" ] && bash "$AX_ACME_SCRIPT" -u; then
+            green "$AX_ACME_SCRIPT 证书客户端已删除。"
         else
-            log "未检测到 $AX_ACME_SCRIPT 客户端，跳过清理。"
+            yellow "警告: $AX_ACME_SCRIPT 卸载可能未完全成功。"
         fi
     else
-        log "步骤 3: 执行软卸载 (仅删除二进制文件和 dat 文件)..."
-        rm -f "$KCP_INSTALL_DIR/kcptun_server" "$UDP2RAW_INSTALL_DIR/udp2raw"
-        rm -f "$SINGBOX_INSTALL_DIR/sing-box" "$SINGBOX_INSTALL_DIR/.reality_keys.json"
-        green "程序文件已删除。"
+        log "未检测到 $AX_ACME_SCRIPT 客户端，跳过清理。"
     fi
     log "步骤 4: 清理残留的程序和数据..."
     rm -f /usr/local/bin/hysteria
