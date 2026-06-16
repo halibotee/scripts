@@ -1755,74 +1755,108 @@ manage_instance_menu() {
     done
 }
 
-# -----------------------------------------------------------------------------
-# 创建一个新的独立实例 (Hysteria2, UDP2RAW, KCPTUN)
-# -----------------------------------------------------------------------------
-create_new_instance() {
-    local type=$1; local next_id; local SERVICE_PREFIX FILE_EXT TITLE CONFIG_TEMPLATE SYSTEMD_SERVICE_NAME
-    declare -A replacements
-
+# 收集 UDP2RAW/KCPTUN 通用配置
+collect_common_instance_config() {
+    local type=$1
+    local next_id=$(find_next_available_id "$type")
+    
     case "$type" in
-        udp2raw) TITLE="UDP2RAW"; SERVICE_PREFIX="udp2raw"; SYSTEMD_SERVICE_NAME="ax-udp2raw"; FILE_EXT="conf"; CONFIG_TEMPLATE="$UDP2RAW_CONFIG_TEMPLATE" 
-            log "启动一个新的 ${TITLE} 实例..."; next_id=$(find_next_available_id "$type")
-            green "新实例将被创建为: ax-${SYSTEMD_SERVICE_NAME}@${next_id}.service"
-            prompt_custom_instance_name "$type" "$next_id"
-            read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input; listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
-            read_valid_port "请输入监听端口 (留空则随机生成): " listen_port true
-            replacements["__LISTEN_ADDR__"]="${listen_addr}:${listen_port}"
-            read -p "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host; target_host=${target_host:-$DEFAULT_TARGET_ADDR}
-            read_valid_port "请输入目标端口 (留空则随机生成): " target_port true
-            replacements["__TARGET_ADDR__"]="${target_host}:${target_port}"
-            
-            # 收集UDP2RAW配置参数
-            local udp_params=$(collect_udp2raw_params)
-            IFS='|' read -r raw_mode cipher_mode auth_mode <<< "$udp_params"
-            replacements["__RAW_MODE__"]="$raw_mode"
-            replacements["__CIPHER_MODE__"]="$cipher_mode"
-            replacements["__AUTH_MODE__"]="$auth_mode"
-            
-            # 生成密码
-            local password=$(handle_password_input "$type"); replacements["__PASSWORD__"]="$password"
+        udp2raw) 
+            TITLE="UDP2RAW"
+            SERVICE_PREFIX="udp2raw"
+            SYSTEMD_SERVICE_NAME="ax-udp2raw"
+            FILE_EXT="conf"
+            CONFIG_TEMPLATE="$UDP2RAW_CONFIG_TEMPLATE"
             ;;
-            
-        kcptun) TITLE="KCPTUN"; SERVICE_PREFIX="kcptun"; SYSTEMD_SERVICE_NAME="ax-kcptun"; FILE_EXT="json"; CONFIG_TEMPLATE="$KCPTUN_CONFIG_JSON_TEMPLATE"
-            log "启动一个新的 ${TITLE} 实例..."; next_id=$(find_next_available_id "$type")
-            green "新实例将被创建为: ax-${SYSTEMD_SERVICE_NAME}@${next_id}.service"
-            prompt_custom_instance_name "$type" "$next_id"
-            read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input; listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
-            read_valid_port "请输入监听端口 (留空则随机生成): " listen_port true
-            replacements["__LISTEN__"]="${listen_addr}:${listen_port}"
-            read -p "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host; target_host=${target_host:-$DEFAULT_TARGET_ADDR}
-            read_valid_port "请输入目标端口 (留空则随机生成): " target_port true
-            replacements["__TARGET__"]="${target_host}:${target_port}"
-            
-            # 收集KCPTUN配置参数
-            local kcp_params=$(collect_kcptun_params)
-            IFS='|' read -r mode crypt tcp_enabled mtu sndwnd rcvwnd <<< "$kcp_params"
-            replacements["__MODE__"]="$mode"
-            replacements["__CRYPT__"]="$crypt"
-            replacements["__TCP__"]="$tcp_enabled"
-            replacements["__MTU__"]="$mtu"
-            replacements["__SNDWND__"]="$sndwnd"
-            replacements["__RCVWND__"]="$rcvwnd"
-            replacements["__NOCOMP__"]="true"
-            
-            # 生成密码
-            local password=$(handle_password_input "$type"); replacements["__KEY__"]="$password"
+        kcptun)
+            TITLE="KCPTUN"
+            SERVICE_PREFIX="kcptun"
+            SYSTEMD_SERVICE_NAME="ax-kcptun"
+            FILE_EXT="json"
+            CONFIG_TEMPLATE="$KCPTUN_CONFIG_JSON_TEMPLATE"
             ;;
-            
-        *) red "内部错误: 无效的实例类型 '$type'"; return 1 ;;
+        *)
+            red "内部错误: 无效的实例类型 '$type'"
+            return 1
+            ;;
     esac
-
-    log "生成配置文件..."; local temp_config="$CONFIG_TEMPLATE"; local conf_path="${INSTALL_DIR}/${SERVICE_PREFIX}_${next_id}.${FILE_EXT}"
-    for placeholder in "${!replacements[@]}"; do temp_config="${temp_config//${placeholder}/${replacements[${placeholder}]}}"; done
+    
+    log "启动一个新的 ${TITLE} 实例..."
+    green "新实例将被创建为: ax-${SYSTEMD_SERVICE_NAME}@${next_id}.service"
+    
+    prompt_custom_instance_name "$type" "$next_id"
+    prompt_server_address "$type" "$next_id"
+    
+    # 收集通用配置
+    declare -A replacements
+    
+    read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input
+    listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
+    read_valid_port "请输入监听端口 (留空则随机生成): " listen_port true
+    
+    read -p "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host
+    target_host=${target_host:-$DEFAULT_TARGET_ADDR}
+    read_valid_port "请输入目标端口 (留空则随机生成): " target_port true
+    
+    if [[ "$type" == "udp2raw" ]]; then
+        replacements["__LISTEN_ADDR__"]="${listen_addr}:${listen_port}"
+        replacements["__TARGET_ADDR__"]="${target_host}:${target_port}"
+        
+        local udp_params=$(collect_udp2raw_params)
+        IFS='|' read -r raw_mode cipher_mode auth_mode <<< "$udp_params"
+        replacements["__RAW_MODE__"]="$raw_mode"
+        replacements["__CIPHER_MODE__"]="$cipher_mode"
+        replacements["__AUTH_MODE__"]="$auth_mode"
+        
+        local password=$(handle_password_input "$type")
+        replacements["__PASSWORD__"]="$password"
+    else
+        replacements["__LISTEN__"]="${listen_addr}:${listen_port}"
+        replacements["__TARGET__"]="${target_host}:${target_port}"
+        
+        local kcp_params=$(collect_kcptun_params)
+        IFS='|' read -r mode crypt tcp_enabled mtu sndwnd rcvwnd <<< "$kcp_params"
+        replacements["__MODE__"]="$mode"
+        replacements["__CRYPT__"]="$crypt"
+        replacements["__TCP__"]="$tcp_enabled"
+        replacements["__MTU__"]="$mtu"
+        replacements["__SNDWND__"]="$sndwnd"
+        replacements["__RCVWND__"]="$rcvwnd"
+        replacements["__NOCOMP__"]="true"
+        
+        local password=$(handle_password_input "$type")
+        replacements["__KEY__"]="$password"
+    fi
+    
+    # 生成配置文件
+    log "生成配置文件..."
+    local temp_config="$CONFIG_TEMPLATE"
+    local conf_path="${INSTALL_DIR}/${SERVICE_PREFIX}_${next_id}.${FILE_EXT}"
+    
+    for placeholder in "${!replacements[@]}"; do
+        temp_config="${temp_config//${placeholder}/${replacements[${placeholder}]}}"
+    done
     echo "$temp_config" > "$conf_path"
 
-    sync; log "启动服务..."; systemctl enable --now "${SYSTEMD_SERVICE_NAME}@${next_id}.service"; sleep 1; green "实例 ${next_id} 已启动！"; echo
+    sync
+    log "启动服务..."
+    systemctl enable --now "${SYSTEMD_SERVICE_NAME}@${next_id}.service"
+    sleep 1
+    green "实例 ${next_id} 已启动！"
+    echo
+    
     case "$type" in
         udp2raw) view_udp2raw_client_config "$next_id" ;;
         kcptun) view_kcptun_client_config "$next_id" ;;
     esac
+}
+
+# -----------------------------------------------------------------------------
+# 创建一个新的独立实例 (Hysteria2, UDP2RAW, KCPTUN)
+# -----------------------------------------------------------------------------
+create_new_instance() {
+    local type=$1
+    collect_common_instance_config "$type"
 }
 
 # 生成并保存 Reality 密钥对
