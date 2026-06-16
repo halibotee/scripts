@@ -1856,7 +1856,7 @@ add_singbox_inbound() {
         inbound_json=${inbound_json/__LISTEN_PORT__/$listen_port}
         inbound_json=${inbound_json/__UUID__/$uuid}
         inbound_json=${inbound_json/__REALITY_FLOW__/$SINGBOX_REALITY_DEFAULT_FLOW}
-        inbound_json=${inbound_json/__SNI__/$SINGBOX_REALITY_DEFAULT_SNI}
+        inbound_json=${inbound_json//__SNI__/$SINGBOX_REALITY_DEFAULT_SNI}
         inbound_json=${inbound_json/__PRIVATE_KEY__/$private_key}
         inbound_json=${inbound_json/__SHORT_ID__/$short_id}
         
