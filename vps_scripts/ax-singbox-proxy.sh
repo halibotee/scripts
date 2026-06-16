@@ -2925,7 +2925,7 @@ install_sys_opt() {
 # 卸载所有 (REFACTORED: 修复软卸载路径)
 # -----------------------------------------------------------------------------
 uninstall_all() {
-    read -p "确认要卸载吗（将删除所有配置文件）？ (默认“否”) [y/N]: " confirm
+    read -p "确认要卸载吗（将删除所有配置文件，证书保留）？ (默认“否”) [y/N]: " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then 
         yellow "操作已取消。"
         return 1
