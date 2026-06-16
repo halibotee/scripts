@@ -954,10 +954,9 @@ enable_warp_in_config() {
     echo "$wg_ep" > "$ep_tmp"
     echo "$route_rules" > "$rules_tmp"
     if ! jq --slurpfile endpoints "$ep_tmp" --slurpfile rules "$rules_tmp" \
-        '.endpoints = $endpoints | .route.rules = $rules' "$config_file" > "$tmpfile" 2>/tmp/jq_err; then
-        rm -f "$tmpfile" "$ep_tmp" "$rules_tmp"; red "jq 合并失败: $(cat /tmp/jq_err 2>/dev/null)" >&2; rm -f /tmp/jq_err; return 1
+        '.endpoints = $endpoints | .route.rules = $rules' "$config_file" > "$tmpfile" 2>/dev/null; then
+        rm -f "$tmpfile" "$ep_tmp" "$rules_tmp"; red "jq 合并失败。" >&2; return 1
     fi
-    rm -f /tmp/jq_err
     rm -f "$ep_tmp" "$rules_tmp"
     if ! jq empty "$tmpfile" 2>/dev/null; then rm -f "$tmpfile"; red "输出 JSON 不合法。" >&2; return 1; fi
     mv "$tmpfile" "$config_file"
@@ -1934,18 +1933,17 @@ safe_add_singbox_inbound() {
     # 备份原文件
     local backup="${config_file}.bak.$(date +%s)"
     cp -p "$config_file" "$backup" 2>/dev/null || cp "$config_file" "$backup"
-    # 将 inbound JSON 写入临时文件，使用 jq input 函数合并
+    # 写入临时 JSON 文件并执行合并
     local tmpfile inbound_tmp
     tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
     inbound_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
-    printf '%s' "$inbound_json" > "$inbound_tmp"
-    if ! jq --slurpfile new_inbound "$inbound_tmp" '.inbounds += $new_inbound' "$config_file" > "$tmpfile" 2>/tmp/jq_err; then
+    printf '%s\n' "$inbound_json" > "$inbound_tmp"
+    if ! jq --slurpfile inbound "$inbound_tmp" '.inbounds += $inbound' "$config_file" > "$tmpfile" 2>&1; then
         rm -f "$tmpfile" "$inbound_tmp"
-        red "错误: jq 合并失败: $(cat /tmp/jq_err 2>/dev/null)。备份在 $backup" >&2
-        rm -f /tmp/jq_err
+        red "错误: jq 合并失败，原文件未修改。备份在 $backup" >&2
         return 1
     fi
-    rm -f "$inbound_tmp" /tmp/jq_err
+    rm -f "$inbound_tmp"
     # 预校验输出 JSON 合法性
     if ! jq empty "$tmpfile" 2>/dev/null; then
         rm -f "$tmpfile"
