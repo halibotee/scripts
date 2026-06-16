@@ -1658,7 +1658,7 @@ get_standalone_instances() {
             ;;
         "hysteria2")
             if [[ -f "$config_file" ]]; then
-                local ids=$(jq -r '.inbounds[] | select(.type == "hysteria2") | .tag | split("-")[1]' "$config_file" 2>/dev/null)
+                local ids=$(jq -r '.inbounds[] | select(.type == "hysteria2") | .tag | split("-")[1] | select(test("^[0-9]+$"))' "$config_file" 2>/dev/null)
                 echo "$ids"
             fi
             return
