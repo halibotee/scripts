@@ -1387,6 +1387,14 @@ remove_custom_server_addr() {
     echo "$tmp" > "$SERVER_ADDR_FILE"
 }
 
+get_global_server_addr() {
+    get_custom_server_addr "_default"
+}
+
+set_global_server_addr() {
+    set_custom_server_addr "_default" "$1"
+}
+
 get_instance_server_addr() {
     local type=$1 id=$2; local key="${type}_${id}"
     local custom=$(get_custom_server_addr "$key")
@@ -1409,7 +1417,8 @@ validate_domain() {
 
 prompt_server_address() {
     local type=$1 id=$2; local key="${type}_${id}"
-    local default=$(get_public_ip)
+    local global_addr=$(get_global_server_addr)
+    local default="${global_addr:-$(get_public_ip)}"
     local existing=$(get_custom_server_addr "$key")
     local prompt_default="${existing:-$default}"
     read -p "请输入域名或IP (留空则使用 ${prompt_default}): " user_addr
@@ -1419,6 +1428,7 @@ prompt_server_address() {
     else
         if validate_domain "$user_addr"; then
             set_custom_server_addr "$key" "$user_addr"
+            set_global_server_addr "$user_addr"
             green "使用地址: $user_addr"
         else
             red "格式无效，使用默认地址: $default"
@@ -2806,11 +2816,7 @@ show_global_tls_status() {
 # [新] 显示 WARP 状态
 # -----------------------------------------------------------------------------
 show_warp_status() {
-    local cfg_enabled=false
     if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-        cfg_enabled=true
-    fi
-    if $cfg_enabled; then
         green "WARP 分流: 已启用"
     else
         yellow "WARP 分流: 未启用"
@@ -3139,15 +3145,15 @@ main_menu(){
         cyan "--- 组件管理 ---"
         echo " 5) UDP2RAW"
         echo " 6) KCPTUN"
+        echo " 7) WARP 分流"
         echo "----------------------------------"
         cyan "--- 全局操作 ---"
-        echo " 7) 查看全部配置"
-        echo " 8) 重启全部服务"
-        echo " 9) 检查更新程序" 
+        echo " 8) 查看全部配置"
+        echo " 9) 重启全部服务"
+        echo " 10) 检查更新程序" 
         cyan "--- 工具管理 ---"
-        echo " 10) 运行VPS优化脚本"
-        echo " 11) ACME证书管理"
-        echo " 12) WARP 管理"
+        echo " 11) 运行VPS优化脚本"
+        echo " 12) ACME证书管理"
         echo "----------------------------------"   
         echo " 99) 卸载"
         echo "----------------------------------"   
@@ -3181,14 +3187,14 @@ main_menu(){
             2) chain_manager_menu "hy2" ;;
             3) main_manager_loop "xray_reality" ;;
             4) main_manager_loop "hysteria2" ;;
-            5) main_manager_loop "udp2raw" ;;
+             5) main_manager_loop "udp2raw" ;;
             6) main_manager_loop "kcptun" ;;
-            7) view_all_configs; read -p $'\n按任意键返回...' -n1 -s;;
-            8) restart_all_services ;;
-            9) check_for_updates; read -p "按任意键继续..." -n1 -s ;;
-            10) clear; install_sys_opt; read -p $'\n按任意键返回...' -n1 -s ;;
-            11) clear; run_local_script "$AX_ACME_SCRIPT" "ACME 证书管理" "$AX_ACME_URL"; read -p $'\n按任意键返回...' -n1 -s ;;
-            12) clear; warp_management_menu; read -p $'\n按任意键返回...' -n1 -s ;;
+            7) clear; warp_management_menu; read -p $'\n按任意键返回...' -n1 -s ;;
+            8) view_all_configs; read -p $'\n按任意键返回...' -n1 -s;;
+            9) restart_all_services ;;
+            10) check_for_updates; read -p "按任意键继续..." -n1 -s ;;
+            11) clear; install_sys_opt; read -p $'\n按任意键返回...' -n1 -s ;;
+            12) clear; run_local_script "$AX_ACME_SCRIPT" "ACME 证书管理" "$AX_ACME_URL"; read -p $'\n按任意键返回...' -n1 -s ;;
             99) uninstall_all; if [[ $? -eq 0 ]]; then exit 0; fi ;;
             0) trap - SIGINT; exit 0 ;; 
             *) red "无效选择!"; sleep 1 ;;
