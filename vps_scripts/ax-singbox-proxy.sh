@@ -1083,7 +1083,7 @@ set_custom_instance_name() {
     if [[ -f "$INSTANCE_NAMES_FILE" ]]; then
         tmp=$(jq -c --arg k "$key" --arg v "$name" '.[$k] = $v' "$INSTANCE_NAMES_FILE" 2>/dev/null)
     else
-        tmp=$(jq -c -n --arg k "$key" --arg v "$name" '{$k: $v}')
+        tmp=$(jq -c -n --arg k "$key" --arg v "$name" '{($k): $v}')
     fi
     echo "$tmp" > "$INSTANCE_NAMES_FILE"
     green "实例名称已设置为: $name"
