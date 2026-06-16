@@ -856,14 +856,12 @@ register_warp_wireguard() {
     
     # 调用 Cloudflare WARP API 注册
     local api_result=$(curl -s --connect-timeout 10 \
-        "https://api.cloudflareclient.com/v0a$(printf '%04d' $((RANDOM % 10000)))reg" \
+        "https://api.cloudflareclient.com/v0a$(printf '%04d' $((RANDOM % 10000)))/reg" \
         -H "Content-Type: application/json" \
         -d "{\"key\": \"${wg_public}\", \"install_id\": \"\", \"fcm_token\": \"\", \"warp_enabled\": false, \"locale\": \"zh_CN\"}")
     
-    local client_id=$(echo "$api_result" | jq -r '.client_id // empty' 2>/dev/null)
+    local client_id=$(echo "$api_result" | jq -r '.id // empty' 2>/dev/null)
     local wg_private_key=$(echo "$api_result" | jq -r '.config.interface.private_key // empty' 2>/dev/null)
-    # 处理 v4 地址：API 返回的可能是 null/空，使用 jq 的 // 仅对 null 生效，
-    # 额外检查空字符串
     local wg_address_v4=$(echo "$api_result" | jq -r '.config.interface.addresses.v4 // empty' 2>/dev/null)
     if [[ -z "$wg_address_v4" || "$wg_address_v4" == "null" ]]; then
         wg_address_v4="172.16.0.2"
