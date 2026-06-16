@@ -924,6 +924,111 @@ apply_warp_wireguard_config() {
 }
 
 # -----------------------------------------------------------------------------
+# 在 singbox.json 中添加 WARP 端点和路由规则
+# -----------------------------------------------------------------------------
+enable_warp_in_config() {
+    local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    if [[ ! -f "$config_file" ]]; then red "错误: singbox.json 不存在。" >&2; return 1; fi
+    if ! command -v jq &>/dev/null; then red "错误: jq 未安装。" >&2; return 1; fi
+    if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$config_file" >/dev/null 2>&1; then
+        green "WARP 已在配置中启用，无需重复操作。"; return 0
+    fi
+    local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
+    if [[ ! -f "$warp_key_file" ]]; then
+        red "错误: WARP 密钥文件不存在，请先注册 WARP。" >&2; return 1
+    fi
+    local wg_ep; wg_ep=$(apply_warp_wireguard_config) || return 1
+    local route_rules=$SINGBOX_DIRECT_ROUTE_RULES
+    route_rules=${route_rules//__WARP_GEOSITE_LIST_JSON__/$WARP_GEOSITE_LIST_JSON}
+    local tmpfile; tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    if ! jq --argjson endpoints "$wg_ep" --argjson rules "$route_rules" \
+        '.endpoints = $endpoints | .route.rules = $rules' "$config_file" > "$tmpfile" 2>/dev/null; then
+        rm -f "$tmpfile"; red "jq 合并失败。" >&2; return 1
+    fi
+    if ! jq empty "$tmpfile" 2>/dev/null; then rm -f "$tmpfile"; red "输出 JSON 不合法。" >&2; return 1; fi
+    mv "$tmpfile" "$config_file"
+    green "✓ WARP 已启用 (分流: Google/OpenAI/Perplexity)"
+}
+
+# -----------------------------------------------------------------------------
+# 从 singbox.json 中移除 WARP 端点和路由规则
+# -----------------------------------------------------------------------------
+disable_warp_in_config() {
+    local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    if [[ ! -f "$config_file" ]]; then red "错误: singbox.json 不存在。" >&2; return 1; fi
+    if ! jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$config_file" >/dev/null 2>&1; then
+        yellow "WARP 未启用，无需操作。"; return 0
+    fi
+    local tmpfile; tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    if ! jq '.endpoints = [] | .route.rules = []' "$config_file" > "$tmpfile" 2>/dev/null; then
+        rm -f "$tmpfile"; red "jq 移除失败。" >&2; return 1
+    fi
+    mv "$tmpfile" "$config_file"
+    green "✓ WARP 已禁用"
+}
+
+# -----------------------------------------------------------------------------
+# 交互式询问用户是否启用 WARP (在新建实例后调用)
+# -----------------------------------------------------------------------------
+prompt_warp_config() {
+    local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
+    if [[ -f "$warp_key_file" ]] && jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ ! -f "$warp_key_file" ]]; then
+        read -p "是否注册并启用 WARP 分流? (Google/OpenAI/Perplexity 走 WARP) [y/N]: " enable_warp
+        if [[ "$enable_warp" == "y" || "$enable_warp" == "Y" ]]; then
+            if ! register_warp_wireguard; then
+                yellow "WARP 注册失败，跳过启用。"; return 1
+            fi
+            enable_warp_in_config || return 1
+            sync; systemctl restart ax-singbox.service 2>/dev/null
+            green "WARP 已注册并启用！"
+        fi
+    else
+        read -p "是否启用 WARP 分流? (Google/OpenAI/Perplexity 走 WARP) [y/N]: " enable_warp
+        if [[ "$enable_warp" == "y" || "$enable_warp" == "Y" ]]; then
+            enable_warp_in_config || return 1
+            sync; systemctl restart ax-singbox.service 2>/dev/null
+            green "WARP 已启用！"
+        fi
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# WARP 管理子菜单
+# -----------------------------------------------------------------------------
+warp_management_menu() {
+    local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
+    while true; do
+        local reg_status="未注册"; local cfg_status="未启用"
+        if [[ -f "$warp_key_file" ]]; then
+            local wg_private=$(jq -r '.private_key // empty' "$warp_key_file" 2>/dev/null)
+            [[ -n "$wg_private" ]] && reg_status="已注册"
+            if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
+                cfg_status="已启用"
+            fi
+        fi
+        echo "=================================="; echo "          WARP 管理"; echo "=================================="
+        echo "注册状态: $reg_status"
+        echo "配置状态: $cfg_status"
+        echo "----------------------------------"
+        echo " 1) 注册 WARP"
+        echo " 2) 启用 WARP (添加到配置)"
+        echo " 3) 禁用 WARP (从配置移除)"
+        echo " 0) 返回"
+        read -p "请选择: " warp_choice
+        case $warp_choice in
+            1) if register_warp_wireguard; then green "注册成功！"; else yellow "注册失败。"; fi; read -p $'\n按任意键继续...' -n1 -s;;
+            2) if enable_warp_in_config; then sync; systemctl restart ax-singbox.service 2>/dev/null; green "Sing-box 已重启。"; else yellow "启用失败。"; fi; read -p $'\n按任意键继续...' -n1 -s;;
+            3) if disable_warp_in_config; then sync; systemctl restart ax-singbox.service 2>/dev/null; green "Sing-box 已重启。"; else yellow "禁用失败。"; fi; read -p $'\n按任意键继续...' -n1 -s;;
+            0) break;;
+            *) red "无效选择!"; sleep 1;;
+        esac
+    done
+}
+
+# -----------------------------------------------------------------------------
 # 读取并校验端口 (1024-65535)
 # 参数: $1=提示文字, $2=变量名, $3=是否随机生成 (true/false)
 # -----------------------------------------------------------------------------
@@ -1687,6 +1792,7 @@ add_singbox_inbound() {
         elif [[ "$type" == "hysteria2" ]]; then
             cyan "分享链接: $(generate_singbox_hy2_link "$next_id")"
         fi
+        prompt_warp_config
     fi
 }
 
@@ -2087,6 +2193,7 @@ start_new_chain_instance_3() {
 
     green "串联实例 ${chain_id} 已启动！"; echo
     view_chain_client_config_3 "$i"
+    prompt_warp_config
 }
 
 # -----------------------------------------------------------------------------
@@ -2367,6 +2474,7 @@ start_new_chain_instance() {
     
     sleep 1; green "串联实例 ${chain_id} 已启动！"; echo
     view_chain_client_config "$chain_type" "$i"
+    prompt_warp_config
 }
 
 # -----------------------------------------------------------------------------
@@ -2989,6 +3097,7 @@ main_menu(){
         cyan "--- 工具管理 ---"
         echo " 10) 运行VPS优化脚本"
         echo " 11) ACME证书管理"
+        echo " 12) WARP 管理"
         echo "----------------------------------"   
         echo " 99) 卸载"
         echo "----------------------------------"   
@@ -3001,7 +3110,7 @@ main_menu(){
         show_status_summary
         local num_items=${#QUICK_MANAGE_MAP_ID[@]}; local max_index=$((20 + num_items))
         echo "----------------------------------"
-        local prompt="请选择 [0-11, 99"; if [[ $num_items -gt 0 ]]; then prompt+=", 21-${max_index}]"; else prompt+="]"; fi
+        local prompt="请选择 [0-12, 99"; if [[ $num_items -gt 0 ]]; then prompt+=", 21-${max_index}]"; else prompt+="]"; fi
         read -p "$prompt： " choice
         
         if [[ -n "$choice" && -n "${QUICK_MANAGE_MAP_ID[$choice]-}" ]]; then
@@ -3029,6 +3138,7 @@ main_menu(){
             9) check_for_updates; read -p "按任意键继续..." -n1 -s ;;
             10) clear; install_sys_opt; read -p $'\n按任意键返回...' -n1 -s ;;
             11) clear; run_local_script "$AX_ACME_SCRIPT" "ACME 证书管理" "$AX_ACME_URL"; read -p $'\n按任意键返回...' -n1 -s ;;
+            12) clear; warp_management_menu; read -p $'\n按任意键返回...' -n1 -s ;;
             99) uninstall_all; if [[ $? -eq 0 ]]; then exit 0; fi ;;
             0) trap - SIGINT; exit 0 ;; 
             *) red "无效选择!"; sleep 1 ;;
