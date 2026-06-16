@@ -19,55 +19,78 @@ package_plugin(){
 	local PKG_DIR="/tmp/clash_package"
 	local MC_DIR="${PKG_DIR}/merlinclash"
 	rm -rf "$PKG_DIR" /tmp/mc_package.tar.gz /tmp/upload/mc_package.tar.gz
-	mkdir -p "$MC_DIR/bin64" "$MC_DIR/clash" "$MC_DIR/conf" "$MC_DIR/dashboard" "$MC_DIR/res" "$MC_DIR/scripts" "$MC_DIR/webs" "$MC_DIR/yaml_basic" "$MC_DIR/yaml_dns" "$MC_DIR/rule_configs/Providers/Other" "$MC_DIR/rule_configs/Providers/Ruleset"
+	mkdir -p "$MC_DIR/clash" "$MC_DIR/conf" \
+	         "$MC_DIR/dashboard" "$MC_DIR/res" "$MC_DIR/scripts" "$MC_DIR/webs" \
+	         "$MC_DIR/yaml_basic" "$MC_DIR/yaml_dns" \
+	         "$MC_DIR/rule_configs/Providers/Other" "$MC_DIR/rule_configs/Providers/Ruleset"
+
+	# ── 检测源目录：本地开发 vs 路由器已安装 ──
+	local SRC_ROOT
+	if [ -d "/koolshare" ]; then
+		# 路由器已安装环境
+		SRC_ROOT="/koolshare"
+		local SRC_MC="/koolshare/merlinclash"
+		local SRC_BIN="/koolshare/bin"
+		local SRC_SCRIPTS="/koolshare/scripts"
+		local SRC_WEBS="/koolshare/webs"
+		local SRC_RES="/koolshare/res"
+	else
+		# 本地开发环境：根据脚本位置找到 workspace 根目录
+		local SELF
+		SELF="$(cd "$(dirname "$0")" && pwd)"
+		SRC_ROOT="${SELF%/scripts}"
+		local SRC_MC="$SRC_ROOT"
+		local SRC_BIN="$SRC_ROOT/bin64"
+		local SRC_SCRIPTS="$SRC_ROOT/scripts"
+		local SRC_WEBS="$SRC_ROOT/webs"
+		local SRC_RES="$SRC_ROOT/res"
+	fi
 
 	echo_date "打包二进制文件..." >> $LOG_FILE
-	cp -f /koolshare/bin/clash "$MC_DIR/bin64/" 2>/dev/null
-	cp -f /koolshare/bin/jq "$MC_DIR/bin64/" 2>/dev/null
-	cp -f /koolshare/bin/yq "$MC_DIR/bin64/" 2>/dev/null
-	cp -f /koolshare/bin/haveged "$MC_DIR/bin64/" 2>/dev/null
-	cp -f /koolshare/bin/kcptun "$MC_DIR/bin64/" 2>/dev/null
-	cp -f /koolshare/bin/udp2raw "$MC_DIR/bin64/" 2>/dev/null
+	# 打包 bin64（路由器上从 /koolshare/bin 取；本地从 bin64/ 取）
+	if [ -d "$SRC_BIN" ] && [ -n "$(ls -A "$SRC_BIN" 2>/dev/null)" ]; then
+		mkdir -p "$MC_DIR/bin64"
+		cp -f "$SRC_BIN/"* "$MC_DIR/bin64/" 2>/dev/null
+	fi
+
 
 	echo_date "打包核心数据文件..." >> $LOG_FILE
-	cp -f /koolshare/merlinclash/GeoIP.dat "$MC_DIR/clash/" 2>/dev/null
-	cp -f /koolshare/merlinclash/GeoSite.dat "$MC_DIR/clash/" 2>/dev/null
-	cp -f /koolshare/merlinclash/Shanghai "$MC_DIR/clash/" 2>/dev/null
-	cp -f /koolshare/merlinclash/version "$MC_DIR/" 2>/dev/null
+	cp -f "$SRC_MC/GeoIP.dat"   "$MC_DIR/clash/" 2>/dev/null || cp -f "$SRC_ROOT/clash/GeoIP.dat"   "$MC_DIR/clash/" 2>/dev/null
+	cp -f "$SRC_MC/GeoSite.dat" "$MC_DIR/clash/" 2>/dev/null || cp -f "$SRC_ROOT/clash/GeoSite.dat" "$MC_DIR/clash/" 2>/dev/null
+	cp -f "$SRC_MC/Shanghai"    "$MC_DIR/clash/" 2>/dev/null || cp -f "$SRC_ROOT/clash/Shanghai"    "$MC_DIR/clash/" 2>/dev/null
+	cp -f "$SRC_MC/version"     "$MC_DIR/"       2>/dev/null || cp -f "$SRC_ROOT/version"          "$MC_DIR/"       2>/dev/null
 
 	echo_date "打包配置文件..." >> $LOG_FILE
-	cp -rf /koolshare/merlinclash/conf/* "$MC_DIR/conf/" 2>/dev/null
-	cp -rf /koolshare/merlinclash/yaml_basic/*.yaml "$MC_DIR/yaml_basic/" 2>/dev/null
-	cp -rf /koolshare/merlinclash/yaml_dns/*.yaml "$MC_DIR/yaml_dns/" 2>/dev/null
+	cp -rf "$SRC_MC/conf/"*        "$MC_DIR/conf/"       2>/dev/null
+	cp -rf "$SRC_MC/yaml_basic/"*.yaml "$MC_DIR/yaml_basic/" 2>/dev/null
+	cp -rf "$SRC_MC/yaml_dns/"*.yaml  "$MC_DIR/yaml_dns/"  2>/dev/null
 
 	echo_date "打包面板..." >> $LOG_FILE
-	cp -rf /koolshare/merlinclash/dashboard/* "$MC_DIR/dashboard/" 2>/dev/null
+	cp -rf "$SRC_MC/dashboard/"*   "$MC_DIR/dashboard/"  2>/dev/null
 
 	echo_date "打包规则配置..." >> $LOG_FILE
-	cp -rf /koolshare/merlinclash/rule_configs/* "$MC_DIR/rule_configs/" 2>/dev/null
+	cp -rf "$SRC_MC/rule_configs/"* "$MC_DIR/rule_configs/" 2>/dev/null
 
 	echo_date "打包脚本..." >> $LOG_FILE
-	cp -f /koolshare/scripts/clash_*.sh "$MC_DIR/scripts/" 2>/dev/null
-	cp -f /koolshare/scripts/merlinclash_install.sh "$MC_DIR/install.sh" 2>/dev/null
-	cp -f /koolshare/scripts/uninstall_merlinclash.sh "$MC_DIR/uninstall.sh" 2>/dev/null
+	cp -f "$SRC_SCRIPTS/clash_"*.sh  "$MC_DIR/scripts/"   2>/dev/null
+	cp -f "$SRC_SCRIPTS/merlinclash_install.sh"  "$MC_DIR/install.sh"   2>/dev/null || cp -f "$SRC_ROOT/install.sh"  "$MC_DIR/install.sh"   2>/dev/null
+	cp -f "$SRC_SCRIPTS/uninstall_merlinclash.sh" "$MC_DIR/uninstall.sh" 2>/dev/null || cp -f "$SRC_ROOT/uninstall.sh" "$MC_DIR/uninstall.sh" 2>/dev/null
 
 	echo_date "打包网页资源..." >> $LOG_FILE
-	cp -f /koolshare/webs/Module_merlinclash* "$MC_DIR/webs/" 2>/dev/null
-	cp -f /koolshare/res/icon-merlinclash.png "$MC_DIR/res/" 2>/dev/null
-	cp -f /koolshare/res/merlinclash.css "$MC_DIR/res/" 2>/dev/null
-	cp -f /koolshare/res/mc-menu.js "$MC_DIR/res/" 2>/dev/null
+	cp -f "$SRC_WEBS/Module_merlinclash"*    "$MC_DIR/webs/" 2>/dev/null
+	cp -rf "$SRC_RES/"*                      "$MC_DIR/res/"  2>/dev/null
 
 	echo "merlinclash" > "$MC_DIR/.valid"
 
 	echo_date "打包完成，压缩中..." >> $LOG_FILE
-	cd /tmp && tar -czf /tmp/mc_package.tar.gz -C "$PKG_DIR" merlinclash
-	if [ -s "/tmp/mc_package.tar.gz" ]; then
+	tar -czf /tmp/mc_package.tar.gz -C "$PKG_DIR" merlinclash
+	if gzip -t /tmp/mc_package.tar.gz 2>/dev/null && [ -s "/tmp/mc_package.tar.gz" ]; then
 		echo_date "压缩完成，导出..." >> $LOG_FILE
 		mv -f /tmp/mc_package.tar.gz /tmp/upload/mc_package.tar.gz
 		rm -rf "$PKG_DIR"
 	else
-		echo_date "打包失败，内容为空！" >> $LOG_FILE
-		rm -rf "$PKG_DIR" /tmp/mc_package.tar.gz
+		echo_date "打包失败，压缩包损坏或为空！" >> $LOG_FILE
+		rm -rf "$PKG_DIR" /tmp/mc_package.tar.gz /tmp/upload/mc_package.tar.gz
 		echo BBABBBBC >> $LOG_FILE
 		exit 1
 	fi
