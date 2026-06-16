@@ -2372,7 +2372,7 @@ get_chain_instances() {
     local chain_type=$1
     local instances1="" instances2=""
     if [[ "$chain_type" == "hy2" ]]; then
-        instances1=$(jq -r '.inbounds[] | select(.tag | startswith("hy2-c")) | .tag | split("-")[1]' "$SINGBOX_INSTALL_DIR/singbox.json" 2>/dev/null)
+        instances1=$(jq -r '.inbounds[] | select(.tag | startswith("hy2-c")) | .tag | capture("hy2-c(?<id>[0-9]+)") | .id' "$SINGBOX_INSTALL_DIR/singbox.json" 2>/dev/null)
         instances2=$(ls -1 "$UDP2RAW_INSTALL_DIR"/udp2raw_c*.conf 2>/dev/null | sed -E 's/.*_c([0-9]+).*/\1/')
     fi
     echo "$instances1 $instances2" | tr ' ' '\n' | sort -un
