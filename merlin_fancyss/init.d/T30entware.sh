@@ -1,0 +1,1 @@
+/koolshare/scripts/entware_config.sh

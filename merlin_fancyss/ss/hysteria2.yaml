@@ -1,0 +1,20 @@
+server: 127.0.0.1:1093
+auth: 3b08da8f-184c-43ad-b8e2-f14bff8354c1
+tls:
+  sni: bing.com
+  insecure: true
+fastOpen: true
+bandwidth:
+  up: 20 mbps
+  down: 100 mbps
+obfs:
+  type: salamander
+  salamander:
+    password: __HYSTERIA2_PASSWORD__
+socks5:
+  listen: 127.0.0.1:23456
+tcpRedirect:
+  listen: :3333
+udpTProxy:
+  listen: :3333
+  timeout: 20s

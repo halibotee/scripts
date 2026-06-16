@@ -1,0 +1,1 @@
+create lan_mac_whitelist hash:mac hashsize 1024 maxelem 65536
