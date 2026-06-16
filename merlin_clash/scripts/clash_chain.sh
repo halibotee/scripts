@@ -392,7 +392,9 @@ parse_chain_url() {
         return 1
     fi
 
-    # 提取 udp2raw 外部地址（保留 VPS 地址不变）
+    # 提取 udp2raw 外部地址（保留原始域名/IP，不做替换）
+    # 域名→IP 的替换延迟到 start_chain_node 中实际启动 udp2raw 时再处理
+    # 这样订阅配置文件（meta/YAML）始终保留用户原始的域名格式
     local udp_ext=""
     local rest_e="$components"
     while [ -n "$rest_e" ]; do
@@ -402,14 +404,6 @@ parse_chain_url() {
         case "$ce" in
             udp2raw://*)
                 udp_ext=$(echo "$ce" | grep -oE -- '-r[[:space:]]+[^ ]+' | head -1 | sed -E 's/^.*-r[[:space:]]+//')
-                # 域名替换为 IP（udp2raw 内部 Go DNS 无法解析）
-                if [ -n "$udp_ext" ] && ! echo "$udp_ext" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$'; then
-                    local ext_host=$(echo "$udp_ext" | cut -d: -f1)
-                    local resolved_ip=$(ping -n -c 1 "$ext_host" 2>/dev/null | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
-                    if [ -n "$resolved_ip" ] && [ "$resolved_ip" != "$ext_host" ]; then
-                        udp_ext=$(echo "$udp_ext" | sed "s|^$ext_host|$resolved_ip|")
-                    fi
-                fi
                 ;;
         esac
     done

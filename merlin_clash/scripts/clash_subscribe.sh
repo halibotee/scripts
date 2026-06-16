@@ -309,7 +309,7 @@ parse_and_process_urls() {
     done < "$tmpfile"
     rm -f "$tmpfile"
 
-    # 清理当前订阅不涉及的旧 CHAIN 目录
+    # 清理当前订阅不涉及的旧 CHAIN 目录（先 stop 释放端口，再删目录）
     local tagfile="/tmp/merlinclash_chaintags_$$.txt"
     if [ -f "$tagfile" ] && [ -d "/var/run/merlinclash/chain" ]; then
         local current_tags="|$(cat "$tagfile" | tr '\n' '|')"
@@ -318,6 +318,9 @@ parse_and_process_urls() {
             local old_tag=$(basename "$d")
             echo "$current_tags" | grep -q "|${old_tag}|" || {
                 echo_date "清理旧链: $old_tag" >> $LOG_FILE
+                # 先停止链进程（释放端口和 pid 文件）
+                /koolshare/scripts/clash_chain.sh stop "$old_tag" >> $LOG_FILE 2>&1
+                # 再删除目录
                 rm -rf "$d"
             }
         done
