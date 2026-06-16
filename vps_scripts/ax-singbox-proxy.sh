@@ -3056,8 +3056,9 @@ uninstall_all() {
     rm -f /usr/local/bin/hysteria
     rm -rf /etc/xray /etc/hysteria2
     green "残留程序和数据已清理。"
-    log "步骤 5: 清理临时文件..."
+    log "步骤 5: 清理临时文件和元数据..."
     rm -f /tmp/kcptun.tar.gz /tmp/udp2raw.tar.gz /tmp/singbox.tar.gz
+    rm -f "$INSTANCE_NAMES_FILE" "$SERVER_ADDR_FILE"
     log "步骤 6: 重载 systemd 并清理状态..."
     systemctl daemon-reload; systemctl reset-failed
     green "Systemd 已重载并清理。"
