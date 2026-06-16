@@ -1000,7 +1000,7 @@ warp_management_menu() {
         else
             yellow "当前状态: 未启用"
             echo "----------------------------------"
-            echo " 1) 注册并启用 WARP"
+            echo " 1) 启用 WARP"
         fi
         echo " 0) 返回"
         read -p "请选择: " warp_choice
@@ -1021,7 +1021,7 @@ warp_management_menu() {
             case $warp_choice in
                 1)
                     if register_warp_wireguard; then
-                        enable_warp_in_config && { sync; systemctl restart ax-singbox.service 2>/dev/null; green "WARP 已注册并启用！"; } || yellow "启用失败。"
+                        enable_warp_in_config && { sync; systemctl restart ax-singbox.service 2>/dev/null; green "WARP 已启用！"; } || yellow "启用失败。"
                     else
                         yellow "注册失败。"
                     fi
@@ -1545,8 +1545,6 @@ cleanup_warp_secrets_if_orphan() {
 
 generate_instance_display_name() {
     local type=$1 id=$2
-generate_instance_display_name() {
-    local type=$1 id=$2
     local ip=$(get_instance_server_addr "$type" "$id")
     case "$type" in
         udp2raw) echo "UDP2RAW_${ip}_${id}" ;;
@@ -1557,7 +1555,6 @@ generate_instance_display_name() {
         ss_3_chain_chain) echo "SS_KCP_UDP_${ip}_${id}" ;;
         *) echo "${type}_${id}" ;;
     esac
-}
 }
 
 get_instance_display_name() {
