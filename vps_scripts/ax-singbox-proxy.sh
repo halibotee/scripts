@@ -693,12 +693,12 @@ collect_kcptun_params() {
 
     read -p "MTU (默认 1200): " mtu >&2
     mtu=${mtu:-1200}
-    
-    read -p "sndwnd (默认 512): " sndwnd >&2
-    sndwnd=${sndwnd:-512}
-    
-    read -p "rcvwnd (默认 2048): " rcvwnd >&2
-    rcvwnd=${rcvwnd:-2048}
+
+    read -p "sndwnd (默认 2048): " sndwnd >&2
+    sndwnd=${sndwnd:-2048}
+
+    read -p "rcvwnd (默认 512): " rcvwnd >&2
+    rcvwnd=${rcvwnd:-512}
     read -p "mode [fast/fast2/fast3/normal/manual] (默认 $KCPTUN_DEFAULT_MODE): " mode >&2
     mode=${mode:-$KCPTUN_DEFAULT_MODE}
     
@@ -1586,10 +1586,17 @@ view_udp2raw_client_config(){
 view_kcptun_client_config(){
     local id=$1; local conf="$KCP_INSTALL_DIR/kcptun_${id}.json"; if [[ ! -s "$conf" ]]; then red "错误: 未找到实例 $id 的配置文件或文件为空。"; return; fi
     if ! command -v jq &>/dev/null; then red "错误: jq 未安装，无法解析配置。"; return; fi
-    local ip=$(get_public_ip); local server_listen=$(jq -r '.listen' "$conf"); local server_port=$(echo "$server_listen" | awk -F':' '{print $NF}'); cyan "--- KCPTUN 实例 ${id} 客户端配置 ---"; echo
-    yellow "方法一: 使用 JSON 配置文件 (推荐)"; yellow "将以下内容保存为客户端的 config.json (本地监听地址 ${CLIENT_KCPTUN_LISTEN_ADDR} 可自行修改):"; green "$(jq --arg listen "${CLIENT_KCPTUN_LISTEN_ADDR}" --arg target "${ip}:${server_port}" '.listen = $listen | .target = $target' "$conf")"; echo
+    local ip=$(get_public_ip); local server_listen=$(jq -r '.listen' "$conf"); local server_port=$(echo "$server_listen" | awk -F':' '{print $NF}')
+    # KCPTUN 客户端 sndwnd/rcvwnd 需与服务器互换 (server.sndwnd <-> client.rcvwnd)
+    local server_sndwnd=$(jq -r '.sndwnd' "$conf"); local server_rcvwnd=$(jq -r '.rcvwnd' "$conf")
+    cyan "--- KCPTUN 实例 ${id} 客户端配置 ---"; echo
+    yellow "方法一: 使用 JSON 配置文件 (推荐)"; yellow "将以下内容保存为客户端的 config.json (本地监听地址 ${CLIENT_KCPTUN_LISTEN_ADDR} 可自行修改):"; green "$(jq --arg listen "${CLIENT_KCPTUN_LISTEN_ADDR}" --arg target "${ip}:${server_port}" --argjson sndwnd "$server_rcvwnd" --argjson rcvwnd "$server_sndwnd" '.listen = $listen | .target = $target | .sndwnd = $sndwnd | .rcvwnd = $rcvwnd' "$conf")"; echo
     yellow "方法二: 使用命令行参数"; yellow "在客户端使用以下命令行参数 (本地监听地址 ${CLIENT_KCPTUN_LISTEN_ADDR} 可自行修改):";local args="--listen ${CLIENT_KCPTUN_LISTEN_ADDR} --target ${ip}:${server_port}"
-    for key in $(jq -r 'keys_unsorted | .[]' "$conf"); do if [[ "$key" != "listen" && "$key" != "target" ]]; then local value=$(jq -r --arg k "$key" '.[$k]' "$conf"); args+=" --${key} ${value}"; fi; done; green "$args"; echo
+    for key in $(jq -r 'keys_unsorted | .[]' "$conf"); do
+        if [[ "$key" == "sndwnd" ]]; then args+=" --${key} ${server_rcvwnd}"
+        elif [[ "$key" == "rcvwnd" ]]; then args+=" --${key} ${server_sndwnd}"
+        elif [[ "$key" != "listen" && "$key" != "target" ]]; then local value=$(jq -r --arg k "$key" '.[$k]' "$conf"); args+=" --${key} ${value}"; fi
+    done; green "$args"; echo
 }
 
 # =============================================================================
@@ -1642,9 +1649,13 @@ view_chain_client_config_3() {
     yellow " (它会监听 ${CLIENT_SS_3_CHAIN_SS_TARGET}, 作为 SS 的目标)"
 
     local kcp_args="--listen ${CLIENT_SS_3_CHAIN_SS_TARGET} --target ${CLIENT_SS_3_CHAIN_KCP_TARGET}"
+    # KCPTUN 客户端 sndwnd/rcvwnd 需与服务器互换 (server.sndwnd <-> client.rcvwnd)
+    local server_sndwnd=$(jq -r '.sndwnd' "$kcptun_conf_path"); local server_rcvwnd=$(jq -r '.rcvwnd' "$kcptun_conf_path")
     # 解析 JSON 并将所有其他键附加为参数
     for key in $(jq -r 'keys_unsorted | .[]' "$kcptun_conf_path"); do
-        if [[ "$key" != "listen" && "$key" != "target" ]]; then
+        if [[ "$key" == "sndwnd" ]]; then kcp_args+=" --${key} ${server_rcvwnd}"
+        elif [[ "$key" == "rcvwnd" ]]; then kcp_args+=" --${key} ${server_sndwnd}"
+        elif [[ "$key" != "listen" && "$key" != "target" ]]; then
             local value=$(jq -r --arg k "$key" '.[$k]' "$kcptun_conf_path")
             kcp_args+=" --${key} ${value}"
         fi
