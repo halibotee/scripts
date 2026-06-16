@@ -873,8 +873,8 @@
 						get_realtime_log();
 						setTimeout(function() {
 							var downloadA = document.createElement('a');
-							downloadA.href = "http://" + window.location.hostname + "/_temp/mc_package.tar.gz";
-							downloadA.download = "mc_package.tar.gz";
+							downloadA.href = "http://" + window.location.hostname + "/_temp/MC2_chian_1.2.2_ARM64.tar.gz";
+							downloadA.download = "MC2_chian_1.2.2_ARM64.tar.gz";
 							downloadA.click();
 							window.URL.revokeObjectURL(downloadA.href);
 						}, 3000);

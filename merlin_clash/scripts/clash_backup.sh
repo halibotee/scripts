@@ -18,7 +18,7 @@ package_plugin(){
 	echo_date "============= 开始打包插件 =============" >> $LOG_FILE
 	local PKG_DIR="/tmp/clash_package"
 	local MC_DIR="${PKG_DIR}/merlinclash"
-	rm -rf "$PKG_DIR" /tmp/mc_package.tar.gz /tmp/upload/mc_package.tar.gz
+	rm -rf "$PKG_DIR" /tmp/MC2_chian_1.2.2_ARM64.tar.gz /tmp/upload/MC2_chian_1.2.2_ARM64.tar.gz
 	mkdir -p "$MC_DIR/clash" "$MC_DIR/conf" \
 	         "$MC_DIR/dashboard" "$MC_DIR/res" "$MC_DIR/scripts" "$MC_DIR/webs" \
 	         "$MC_DIR/yaml_basic" "$MC_DIR/yaml_dns" \
@@ -83,14 +83,14 @@ package_plugin(){
 	echo "merlinclash" > "$MC_DIR/.valid"
 
 	echo_date "打包完成，压缩中..." >> $LOG_FILE
-	tar -czf /tmp/mc_package.tar.gz -C "$PKG_DIR" merlinclash
-	if gzip -t /tmp/mc_package.tar.gz 2>/dev/null && [ -s "/tmp/mc_package.tar.gz" ]; then
+	tar -czf /tmp/MC2_chian_1.2.2_ARM64.tar.gz -C "$PKG_DIR" merlinclash
+	if gzip -t /tmp/MC2_chian_1.2.2_ARM64.tar.gz 2>/dev/null && [ -s "/tmp/MC2_chian_1.2.2_ARM64.tar.gz" ]; then
 		echo_date "压缩完成，导出..." >> $LOG_FILE
-		mv -f /tmp/mc_package.tar.gz /tmp/upload/mc_package.tar.gz
+		mv -f /tmp/MC2_chian_1.2.2_ARM64.tar.gz /tmp/upload/MC2_chian_1.2.2_ARM64.tar.gz
 		rm -rf "$PKG_DIR"
 	else
 		echo_date "打包失败，压缩包损坏或为空！" >> $LOG_FILE
-		rm -rf "$PKG_DIR" /tmp/mc_package.tar.gz /tmp/upload/mc_package.tar.gz
+		rm -rf "$PKG_DIR" /tmp/MC2_chian_1.2.2_ARM64.tar.gz /tmp/upload/MC2_chian_1.2.2_ARM64.tar.gz
 		echo BBABBBBC >> $LOG_FILE
 		exit 1
 	fi
