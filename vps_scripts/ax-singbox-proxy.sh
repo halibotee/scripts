@@ -2024,7 +2024,7 @@ generate_singbox_reality_link() {
     if [[ -z "$port" || "$port" == "null" || -z "$uuid" || "$uuid" == "null" ]]; then echo "N/A"; return; fi
     local pbk=$(get_reality_public_key "$tag")
     if [[ -z "$pbk" || "$pbk" == "null" ]]; then pbk="MISSING_KEY"; fi
-    local link="vless://${uuid}@${ip}:${port}?type=tcp&security=reality&sni=${sni}&pbk=${pbk}&flow=${flow}&sid=${sid}&fp=chrome#Singbox_Reality_${ip}_${id}"
+    local link="vless://${uuid}@${ip}:${port}?type=tcp&security=reality&sni=${sni}&pbk=${pbk}&flow=${flow}&sid=${sid}&fp=chrome#Reality_${ip}_${id}"
     echo "$link"
 }
 
@@ -2040,7 +2040,7 @@ generate_singbox_hy2_link() {
     local password=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .users[0].password' "$conf")
     local sni=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .tls.server_name' "$conf")
     if [[ -z "$port" || "$port" == "null" || -z "$password" || "$password" == "null" ]]; then echo "N/A"; return; fi
-    local link="hysteria2://${password}@${ip}:${port}?sni=${sni}&insecure=1#Singbox_HY2_${ip}_${id}"
+    local link="hysteria2://${password}@${ip}:${port}?sni=${sni}&insecure=1#HY2_${ip}_${id}"
     echo "$link"
 }
 
