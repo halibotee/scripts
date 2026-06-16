@@ -13,6 +13,9 @@ fi
 find /koolshare/init.d/ -name "*clash*" | xargs rm -rf
 rm -rf /koolshare/bin/clash
 rm -rf /koolshare/bin/yq >/dev/null 2>&1
+rm -rf /koolshare/bin/jq >/dev/null 2>&1
+rm -rf /koolshare/bin/kcptun >/dev/null 2>&1
+rm -rf /koolshare/bin/udp2raw >/dev/null 2>&1
 rm -rf /koolshare/bin/haveged >/dev/null 2>&1
 rm -rf /tmp/upload/yamls.txt >/dev/null 2>&1
 rm -rf /tmp/upload/clash_* >/dev/null 2>&1

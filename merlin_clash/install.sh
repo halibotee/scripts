@@ -250,6 +250,9 @@ install_now(){
 	rm -rf /koolshare/merlinclash/dashboard/
 	rm -rf /koolshare/bin/clash
 	rm -rf /koolshare/bin/yq
+	rm -rf /koolshare/bin/jq >/dev/null 2>&1
+	rm -rf /koolshare/bin/kcptun >/dev/null 2>&1
+	rm -rf /koolshare/bin/udp2raw >/dev/null 2>&1
 	rm -rf /koolshare/res/icon-merlinclash.png
 	rm -rf /koolshare/res/clash*
 	rm -rf /koolshare/res/merlinclash.css
@@ -381,6 +384,8 @@ install_now(){
 	chmod 755 /koolshare/bin/yq
 	chmod 755 /koolshare/bin/jq >/dev/null 2>&1	
 	chmod 755 /koolshare/bin/haveged >/dev/null 2>&1
+	chmod 755 /koolshare/bin/kcptun >/dev/null 2>&1
+	chmod 755 /koolshare/bin/udp2raw >/dev/null 2>&1
 	chmod 755 /koolshare/merlinclash/yaml_basic/*
 	chmod 755 /koolshare/merlinclash/yaml_dns/*
 	chmod 755 /koolshare/merlinclash/rule_configs/*

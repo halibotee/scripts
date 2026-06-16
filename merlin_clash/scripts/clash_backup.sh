@@ -53,7 +53,6 @@ package_plugin(){
 		cp -f "$SRC_BIN/"* "$MC_DIR/bin64/" 2>/dev/null
 	fi
 
-
 	echo_date "打包核心数据文件..." >> $LOG_FILE
 	cp -f "$SRC_MC/GeoIP.dat"   "$MC_DIR/clash/" 2>/dev/null || cp -f "$SRC_ROOT/clash/GeoIP.dat"   "$MC_DIR/clash/" 2>/dev/null
 	cp -f "$SRC_MC/GeoSite.dat" "$MC_DIR/clash/" 2>/dev/null || cp -f "$SRC_ROOT/clash/GeoSite.dat" "$MC_DIR/clash/" 2>/dev/null
@@ -78,7 +77,14 @@ package_plugin(){
 
 	echo_date "打包网页资源..." >> $LOG_FILE
 	cp -f "$SRC_WEBS/Module_merlinclash"*    "$MC_DIR/webs/" 2>/dev/null
-	cp -rf "$SRC_RES/"*                      "$MC_DIR/res/"  2>/dev/null
+	if [ "$SRC_ROOT" = "/koolshare" ]; then
+		# 路由器上只取 merlinclash 专属文件，避免混入其他插件资源
+		for _f in icon-merlinclash.png merlinclash.css mc-menu.js; do
+			cp -f "$SRC_RES/$_f" "$MC_DIR/res/" 2>/dev/null
+		done
+	else
+		cp -rf "$SRC_RES/"* "$MC_DIR/res/" 2>/dev/null
+	fi
 
 	echo "merlinclash" > "$MC_DIR/.valid"
 
