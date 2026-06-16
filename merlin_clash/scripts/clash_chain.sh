@@ -738,7 +738,7 @@ status_all_chains() {
 
 case $1 in
 parse)
-    parse_chain_url "$2"
+    parse_chain_url "$2" "${3:-0}"
     ;;
 start)
     [ -z "$2" ] && { echo_date "用法: clash_chain.sh start <TAG>" >> $LOG_FILE; exit 1; }
