@@ -15,20 +15,16 @@ VPS 一键脚本集，支持 VLESS+Reality / Hysteria2 / Shadowsocks 隧道（UD
 │   ├── CFwarp.sh            # WARP 配置工具
 │   └── ...
 ├── package/                 # 二进制包/依赖
-├── merlin_fancyss/          # 路由器 koolshare 软件中心 (fancyss 科学上网)
+├── merlin_fancyss/          # 路由器 koolshare 完整备份 (~150M)
 │   ├── scripts/             # 插件脚本 (75个 .sh)
 │   ├── ss/                  # 科学上网配置 (SS/Xray/Hysteria2)
 │   ├── webs/                # WebUI (ASP 页面)
-│   ├── bin/                 # 二进制工具 (xray, clash, hysteria2, sslocal...)
+│   ├── bin/                 # 二进制工具 (xray, clash, hysteria2...)
 │   ├── init.d/              # 开机启动脚本
 │   ├── res/                 # 前端资源
 │   └── merlinclash/         # Magic Catling 子目录
-├── merlin_Mihomo/           # 路由器 Magic Catling (MerlinClash / Clash Meta)
-│   ├── conf/                # Clash 核心配置
-│   ├── yaml_basic/          # YAML 基础模板
-│   ├── yaml_dns/            # DNS 配置模板
-│   ├── rule_configs/        # 规则/策略组配置
-│   ├── rule_custom/         # 自定义规则
-│   ├── dashboard/           # Clash 面板 (zashboard)
-│   └── yaml_use/            # 当前使用配置
+├── merlin_Mihomo/           # Magic Catling (MerlinClash) 独立备份 (~6M)
+├── merlinclash/             # Magic Catling 独立安装包 (~17M)
+├── shadowsocks/             # 科学上网 (fancyss) 独立安装包 (~73M)
+└── package/                 # 二进制/依赖包
 ```
