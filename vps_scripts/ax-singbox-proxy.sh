@@ -2027,7 +2027,7 @@ view_chain_client_config_3() {
     local server_sndwnd=$(jq -r '.sndwnd' "$kcptun_conf_path"); local server_rcvwnd=$(jq -r '.rcvwnd' "$kcptun_conf_path")
     # 解析 JSON 并将所有其他键附加为参数
     for key in $(jq -r 'keys_unsorted | .[]' "$kcptun_conf_path"); do
-        if [[ "$key" == "sndwnd" ]]; then kcp_args+=" --${key} ${server_rcvwnd}"
+        if [[ "$key" == "sndwnd" ]]; then kcp_args+=" --${key} 512"
         elif [[ "$key" == "rcvwnd" ]]; then kcp_args+=" --${key} ${server_sndwnd}"
         elif [[ "$key" != "listen" && "$key" != "target" ]]; then
             local value=$(jq -r --arg k "$key" '.[$k]' "$kcptun_conf_path")
