@@ -414,6 +414,7 @@ install_dependencies_and_programs(){
         ["nano"]="nano"
         ["iptables"]="iptables"
         ["socat"]="socat"
+
     )
     
     # 检查 dig 命令 (DNS 工具)
@@ -833,16 +834,25 @@ collect_kcptun_params() {
 # 输出: 将 WARP 密钥写入 $SINGBOX_INSTALL_DIR/.warp_wireguard.json
 # -----------------------------------------------------------------------------
 register_warp_wireguard() {
-    if ! command -v wg &>/dev/null; then
-        red "错误: wireguard-tools 未安装，无法生成 WARP WireGuard 密钥。"
-        return 1
-    fi
     local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
     mkdir -p "$SINGBOX_INSTALL_DIR"
     
-    # 生成 WireGuard 密钥对
-    local wg_private=$(wg genkey)
-    local wg_public=$(echo "$wg_private" | wg pubkey)
+    # 生成 WireGuard 密钥对 (使用 sing-box 内置功能，无需 wireguard-tools)
+    local wg_private wg_public
+    if command -v wg &>/dev/null; then
+        wg_private=$(wg genkey)
+        wg_public=$(echo "$wg_private" | wg pubkey)
+    elif [[ -f "$SINGBOX_INSTALL_DIR/sing-box" ]]; then
+        local wg_keypair=$("$SINGBOX_INSTALL_DIR/sing-box" generate wg-keypair 2>/dev/null)
+        wg_private=$(echo "$wg_keypair" | grep "PrivateKey" | awk '{print $2}')
+        wg_public=$(echo "$wg_keypair" | grep "PublicKey" | awk '{print $2}')
+        if [[ -z "$wg_private" || -z "$wg_public" ]]; then
+            red "错误: sing-box 密钥生成失败。"; return 1
+        fi
+    else
+        red "错误: 无可用的 WireGuard 密钥生成工具。请安装 wireguard-tools 或 sing-box。"
+        return 1
+    fi
     
     # 调用 Cloudflare WARP API 注册
     local api_result=$(curl -s --connect-timeout 10 \
