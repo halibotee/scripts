@@ -2876,9 +2876,12 @@ view_all_configs() {
 restart_all_services() {
     log "正在重启所有正在运行的实例..."
     local count=0
-    # Singleton sing-box service
+    # Singleton sing-box service (仅在有 inbound 时重启)
     if systemctl is-active --quiet ax-singbox.service 2>/dev/null; then
-        systemctl restart ax-singbox.service 2>/dev/null && count=$((count + 1))
+        local inbound_count=$(jq -r '.inbounds | length' "$SINGBOX_INSTALL_DIR/singbox.json" 2>/dev/null)
+        if [[ -n "$inbound_count" && "$inbound_count" -gt 0 ]]; then
+            systemctl restart ax-singbox.service 2>/dev/null && count=$((count + 1))
+        fi
     fi
     # Per-instance services (KCPTUN, UDP2RAW)
     for f in "$KCP_INSTALL_DIR"/kcptun_*.json "$UDP2RAW_INSTALL_DIR"/udp2raw_*.conf; do
@@ -2891,7 +2894,7 @@ restart_all_services() {
         esac
         [[ -n "$srv" ]] && systemctl restart "$srv" 2>/dev/null && count=$((count + 1))
     done
-    green "已重启 ${count} 个实例"
+    green "已重启 ${count} 个服务"
     sleep 2
 }
 
