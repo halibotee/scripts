@@ -345,6 +345,7 @@ parse_chain_url() {
     # ---------------------------------------------------------------------
 
     # 自动探测 chain_idx（如果未传入）：基于当前已注册链数 + 1
+    # 注：仅当调用方没有传入 chain_idx 时使用，否则以传入值为准
     if [ "$chain_idx" = "0" ] || [ -z "$chain_idx" ]; then
         # 用 ports.db 中已有的最大 idx 估算
         local used_max=0
@@ -356,6 +357,7 @@ parse_chain_url() {
             fi
         fi
         chain_idx=$((used_max + 1))
+        echo "CHAIN_PORT_WARN: chain_idx not passed, auto-detect=$chain_idx (subscribe.sh should pass it)" >&2
     fi
 
     # chain_idx 范围校验
@@ -448,8 +450,9 @@ parse_chain_url() {
                 # 第 2 个组件（kcp 或 udp）：监听 entry_port
                 cur_port=$entry_port
                 # target = 第 3 个组件的 listen（如果有）或 VPS ext
+                # 第 3 个组件（udp）监听在 kcp_port（因为 udp 占用第二层）
                 if [ $comp_count -ge 3 ]; then
-                    my_target="127.0.0.1:$udp_port"
+                    my_target="127.0.0.1:$kcp_port"
                 elif [ -n "$udp_ext" ]; then
                     my_target="$udp_ext"
                 fi
