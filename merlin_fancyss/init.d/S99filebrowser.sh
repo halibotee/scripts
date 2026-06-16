@@ -1,1 +1,0 @@
-/koolshare/scripts/filebrowser_config.sh

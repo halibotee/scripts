@@ -1,1 +1,0 @@
-/koolshare/scripts/clash_config.sh

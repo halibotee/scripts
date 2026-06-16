@@ -1,1 +1,0 @@
-create macwhitelist_dns hash:mac hashsize 1024 maxelem 65536

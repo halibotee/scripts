@@ -1,9 +1,0 @@
-2026/06/12 12:21:16 No config file used
-2026/06/12 12:21:16 WARNING: filebrowser.db can't be found. Initialing in /koolshare/configs/filebrowser/
-2026/06/12 12:21:16 Using database: /koolshare/configs/filebrowser/filebrowser.db
-2026/06/12 12:21:16 Performing quick setup
-2026/06/12 12:21:16 User 'admin' initialized with randomly generated password: __FILEBROWSER_PASSWORD__
-2026/06/12 12:21:16 Listening on 127.0.0.1:8080
-2026/06/12 12:21:25 Got signal: terminated
-2026/06/12 12:21:25 Stopped serving new connections.
-2026/06/12 12:21:25 Graceful shutdown complete.

@@ -1,7 +1,0 @@
-#!/bin/sh
-/koolshare/scripts/base.sh
-if test ${1} = 'start' ; then
-exec ddnsgo -l :9876 -f 300 -cacheTimes 5  -c /koolshare/configs/ddnsgo/default.yaml
-fi
-exit 0
-

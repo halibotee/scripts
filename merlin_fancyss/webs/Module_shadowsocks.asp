@@ -1235,7 +1235,7 @@
 			elem.display(elem.parentElem('ss_basic_v2ray_mux_enable', 'tr'), (v2ray_on && v_json_off)); //
 			elem.display(elem.parentElem('ss_basic_v2ray_mux_concurrency', 'tr'), (v2ray_on && v_json_off && v_mux_enabled)); //
 			elem.display(elem.parentElem('ss_basic_v2ray_json', 'tr'), (v2ray_on && v_json_on)); //
-			//elem.display('v2ray_binary_update_tr', v2ray_on); //
+			elem.display('v2ray_binary_update_tr', v2ray_on); //
 			if (v_grpc_on) {
 				$('#ss_basic_v2ray_network_path_tr > th > a').html('* serviceName'); //
 			} else {
@@ -1272,7 +1272,6 @@
 			elem.display(elem.parentElem('ss_basic_xray_spiderx', 'tr'), (xray_on && x_json_off && x_real_on)); //
 			elem.display(elem.parentElem('ss_basic_xray_json', 'tr'), (xray_on && x_json_on)); //
 			elem.display('xray_binary_update_tr', xray_on); //
-			elem.display('hysteria2_binary_update_tr', true); //
 			if (x_grpc_on) {
 				$('#ss_basic_xray_network_path_tr > th > a').html('* serviceName'); //
 			} else {
@@ -5616,14 +5615,14 @@
 				push_data("ss_online_update.sh", action, dbus_post);
 			}
 		}
-		function hysteria2_binary_update() {
+		function v2ray_binary_update() {
 			var dbus_post = {};
 			db_ss["ss_basic_action"] = "15";
-			layer.confirm('<li>确定从GitHub下载最新Hysteria2吗？</li>', {
+			layer.confirm('<li>为了避免不必要的问题，请保证路由器和服务器上的v2ray版本一致！</li><br /><li>你确定要更新v2ray二进制吗？</li>', {
 				shade: 0.8,
 			}, function (index) {
 				$("#log_content3").attr("rows", "20");
-				push_data("ss_hysteria2_update.sh", 1, dbus_post);
+				push_data("ss_v2ray.sh", 1, dbus_post);
 				layer.close(index);
 				return true;
 			}, function (index) {
@@ -5634,16 +5633,29 @@
 		function xray_binary_update() {
 			var dbus_post = {};
 			db_ss["ss_basic_action"] = "15";
-			layer.confirm('<li>确定从GitHub下载最新Xray吗？</li>', {
+			note = "<li>v1.7.5：security支持TLS和XTLS，不支持REALITY，选此会将Xray二进制切换到此版本！</li>";
+			note += "<li>v1.8.X：security支持TLS和REALITY，不支持XTLS，选此会将Xray二进制更新到1.8.x最新版本！</li>";
+			note += "<li>切换/更新文件将从github上下载，请确保当前代理工作正常，不然将无法下载或下载及其缓慢！</li>";
+			note += "<li>更多信息，请查看<a style='color:#22ab39;' href='https://github.com/XTLS/Xray-core/releases' target='_blank'>Xray releases页面</a>。</li>";
+			layer.open({
+				type: 0,
+				skin: 'layui-layer-lan',
 				shade: 0.8,
-			}, function (index) {
-				$("#log_content3").attr("rows", "20");
-				push_data("ss_xray_update.sh", 1, dbus_post);
-				layer.close(index);
-				return true;
-			}, function (index) {
-				layer.close(index);
-				return false;
+				title: '请选择你需要的Xray版本！',
+				time: 0,
+				area: '670px',
+				offset: '350px',
+				btnAlign: 'c',
+				maxmin: true,
+				content: note,
+				btn: ['v1.7.5', 'v1.8.x'],
+				btn1: function () {
+					push_data("ss_xray.sh", 1, dbus_post);
+					layer.closeAll();
+				},
+				btn2: function () {
+					push_data("ss_xray.sh", 2, dbus_post);
+				}
 			});
 		}
 		function ssrust_binary_update() {
@@ -6260,8 +6272,8 @@
 															{ title: '* shortId', id: 'ss_basic_xray_shortid', type: 'text', ph: '没有请留空' },
 															{ title: '* spiderX', id: 'ss_basic_xray_spiderx', type: 'text', ph: '没有请留空' },
 															{ title: 'xray json', id: 'ss_basic_xray_json', type: 'textarea', rows: '36', ph: ph_xray },
-															{ title: '其它', rid: 'hysteria2_binary_update_tr', prefix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="hysteria2_binary_update(2)">更新Hysteria2程序</a>' },
-															{ title: '其它', rid: 'xray_binary_update_tr', prefix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="xray_binary_update(2)">更新xray程序</a>'},
+															{ title: '其它', rid: 'v2ray_binary_update_tr', prefix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="v2ray_binary_update(2)">更新v2ray程序</a>' },
+															{ title: '其它', rid: 'xray_binary_update_tr', prefix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="xray_binary_update(2)">更新/切换xray程序</a>' },
 															{ title: 'trojan 密码', id: 'ss_basic_trojan_uuid', type: 'password', maxlen: '300', style: 'width:280px;', peekaboo: '1' },
 															{
 																title: '跳过证书验证 (AllowInsecure)', id: 'ss_basic_trojan_ai_tr', multi: [
@@ -7109,9 +7121,9 @@
 															},
 															{
 																title: '二进制更新', multi: [
-																	{ suffix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="hysteria2_binary_update(2)">更新Hysteria2程序</a>&nbsp;' },
-																	{ suffix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="xray_binary_update(2)">更新xray程序</a>&nbsp;' },
-																	{ suffix: '<!--ss-rust隐藏--><a type="button" class="ss_btn" style="cursor:pointer;display:none" onclick="ssrust_binary_update(2)">更新ss-rust程序</a>' },
+																	{ suffix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="v2ray_binary_update(2)">更新v2ray程序</a>&nbsp;' },
+																	{ suffix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="xray_binary_update(2)">更新/切换xray程序</a>&nbsp;' },
+																	{ suffix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="ssrust_binary_update(2)">更新ss-rust程序</a>' },
 																]
 															},
 														]);
@@ -7189,10 +7201,10 @@
 													border="1" align="center" cellpadding="4" cellspacing="0"
 													bordercolor="#6b8fa3" class="FormTable">
 													<script type="text/javascript">
-														var ph1 = "填入以 vless:// 或 hysteria2:// 或 ss:// 或 ssr:// 或 CHAIN://(串联方式) 开头的链接，多个链接请分行填写";
+														var ph1 = "填入以 vless:// 或 hysteria2:// 或 ss:// 或 ssr:// 或 chain##(串联方式) 开头的链接，多个链接请分行填写";
 														$('#table_subscribe').forms([
-															{ title: '通过 vless / hysteria2 / ss / ssr / CHAIN://(串联方式) 添加节点', thead: '1' },
-															{ title: 'vless/hysteria2/ss/ssr/CHAIN:// (串联方式)链接', id: 'ss_base64_links', type: 'textarea', hint: 117, rows: '11', ph: ph1 },
+															{ title: '通过 vless / hysteria2 / ss / ssr / chain##(串联方式) 添加节点', thead: '1' },
+															{ title: 'vless/hysteria2/ss/ssr/chain## (串联方式)链接', id: 'ss_base64_links', type: 'textarea', hint: 117, rows: '11', ph: ph1 },
 															{ title: '操作', suffix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="get_online_nodes(4)">解析并保存为节点</a>' },
 														]);
 													</script>

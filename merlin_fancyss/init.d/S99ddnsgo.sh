@@ -1,1 +1,0 @@
-/koolshare/scripts/ddnsgo_config.sh
