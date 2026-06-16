@@ -243,24 +243,25 @@ parse_and_process_urls() {
     rm -rf "$ap_dir" >/dev/null 2>&1
     # 计数器
     local count=1
+    local chain_count=0   # 链节点专用计数器（仅对 CHAIN:// 递增）
     local url name ua_tmp
-    
+
     # 将 | 替换为换行，统一按行处理（使用临时文件避免 subshell 问题）
     local tmpfile="/tmp/merlinclash_parse_$$.txt"
     printf '%s\n' "$input_text" | tr '|' '\n' > "$tmpfile"
-    
+
     # 逐行处理
     while IFS= read -r line; do
         # 清理空白
         line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
+
         # 跳过空行和注释行
         [ -z "$line" ] && continue
         echo "$line" | grep -q '^#' && continue
-        
+
         local file_name="AP${count}"
         ua_tmp=""
-        
+
         # 提取 <xxx> 中的内容到 ua_tmp
         if echo "$line" | grep -q '<'; then
             ua_tmp=$(echo "$line" | sed 's/.*<\([^>]*\)>.*/\1/')
@@ -279,9 +280,16 @@ parse_and_process_urls() {
                 name="AP${count}"
             fi
         fi
-        
+
         [ -z "$url" ] && continue
-        
+
+        # CHAIN:// 专用：递增 chain_count 作为 base+i 的 i
+        case "$url" in
+            CHAIN://*)
+                chain_count=$((chain_count + 1))
+                ;;
+        esac
+
         # 根据协议处理
         case "$url" in
             http://*|https://*)
@@ -290,13 +298,13 @@ parse_and_process_urls() {
                 ;;
             [a-zA-Z0-9]*://*)
                 mkdir -p "$ap_dir"
-                process_other_link "$url" "$name" "$config_file"
+                process_other_link "$url" "$name" "$config_file" "$chain_count"
                 ;;
             *)
                 echo_date "🔴订阅链接${count}，无法识别，略过~" >> $LOG_FILE
                 ;;
         esac
-        
+
         count=$((count + 1))
     done < "$tmpfile"
     rm -f "$tmpfile"
@@ -376,14 +384,15 @@ process_other_link() {
     local url="$1"
     local name="$2"
     local config_file="$3"
+    local chain_idx="${4:-0}"
     
     case "$url" in
         CHAIN://*)
             local parse_out="/tmp/merlinclash_chain_$$.txt"
-            /koolshare/scripts/clash_chain.sh parse "$url" > "$parse_out" 2>>"$LOG_FILE"
+            /koolshare/scripts/clash_chain.sh parse "$url" "$chain_idx" > "$parse_out" 2>>"$LOG_FILE"
             local rc=$?
             if [ $rc -ne 0 ]; then
-                echo_date "🔴 $name 解析失败 (exit=$rc)，请检查端口 1091-1191" >> $LOG_FILE
+                echo_date "🔴 $name 解析失败 (exit=$rc)，请检查端口 1191-1489" >> $LOG_FILE
                 rm -f "$parse_out"
                 return 1
             fi
@@ -428,7 +437,14 @@ EOF
                 esac
                 sc_idx=$((sc_idx + 1))
             done
-            local log_line="🟢$tag"
+            # 提取 proxy 类型作为链类型标识
+            local chain_type=""
+            case "$proxy_url" in
+                ss://*)    chain_type="ss+kcptun+udp2raw" ;;
+                hysteria2://*) chain_type="hy2+udp2raw" ;;
+                *)        chain_type="chain" ;;
+            esac
+            local log_line="🟢$tag [${chain_type}] entry:$entry_port"
             [ -n "$kcp_port" ] && log_line="$log_line kcptun:$kcp_port"
             [ -n "$udp_port" ] && log_line="$log_line udp2raw:$udp_port"
             [ -n "$udp_remote" ] && log_line="$log_line 外部:$udp_remote"
@@ -438,6 +454,58 @@ EOF
             echo "$tag" >> "/tmp/merlinclash_chaintags_$$.txt"
             ;;
         *)
+            local resolved_url
+            resolved_url=$(echo "$url" | awk '
+            BEGIN { domain_pat = "([a-zA-Z0-9][a-zA-Z0-9-]*\\.)+[a-zA-Z]{2,}" }
+            /^vless:\/\/[^@]+@/ {
+                gsub(/@/, " ")
+                for (i=1;i<=NF;i++) {
+                    if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$/) { next }
+                    if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) { next }
+                    if ($i ~ ":" domain_pat ":") {
+                        host = $i
+                        gsub(/:/, " ", host)
+                        h = ""
+                        for (j=1;j<=NF;j++) {
+                            if (j==i) {
+                                h = h " " $i
+                            } else {
+                                h = h " " $j
+                            }
+                        }
+                        break
+                    }
+                }
+            }
+            ' 2>/dev/null)
+
+            if echo "$url" | grep -qE '^vless://[^@]+@[^:]+:[0-9]+\?'; then
+                local vless_url="$url"
+                local vless_host_port=$(echo "$vless_url" | sed -n 's|^vless://[^@]\+@\([^?]\+\).*|\1|p')
+                local vless_host=$(echo "$vless_host_port" | cut -d: -f1)
+                local vless_port=$(echo "$vless_host_port" | cut -d: -f2)
+                if ! echo "$vless_host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+                    local resolved_ip
+                    resolved_ip=$(ping -n -c 1 "$vless_host" 2>/dev/null | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
+                    if [ -n "$resolved_ip" ]; then
+                        url=$(echo "$url" | sed "s|://\([^@]\+@\)$vless_host\(:\)|\1://$resolved_ip\2|")
+                    fi
+                fi
+            fi
+
+            if echo "$url" | grep -qE '^trojan://[^@]+@[^:]+:[0-9]+\?'; then
+                local trojan_host_port=$(echo "$url" | sed -n 's|^trojan://[^@]\+@\([^?]\+\).*|\1|p')
+                local trojan_host=$(echo "$trojan_host_port" | cut -d: -f1)
+                local trojan_port=$(echo "$trojan_host_port" | cut -d: -f2)
+                if ! echo "$trojan_host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+                    local resolved_ip
+                    resolved_ip=$(ping -n -c 1 "$trojan_host" 2>/dev/null | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
+                    if [ -n "$resolved_ip" ]; then
+                        url=$(echo "$url" | sed "s|://\([^@]\+@\)$trojan_host\(:\)|\1://$resolved_ip\2|")
+                    fi
+                fi
+            fi
+
             echo "$url" >> "$config_file"
             echo_date "🟢 $name" >> $LOG_FILE
             ;;
