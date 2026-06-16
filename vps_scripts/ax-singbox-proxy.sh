@@ -1362,6 +1362,70 @@ get_3_chain_status_tuple() {
 }
 
 INSTANCE_NAMES_FILE="/etc/ax-instance-names.json"
+SERVER_ADDR_FILE="/etc/ax-server-addr.json"
+
+get_custom_server_addr() {
+    local key=$1
+    [[ ! -f "$SERVER_ADDR_FILE" ]] && echo "" && return
+    jq -r --arg k "$key" '.[$k] // ""' "$SERVER_ADDR_FILE" 2>/dev/null
+}
+
+set_custom_server_addr() {
+    local key=$1 addr=$2; local tmp
+    if [[ -f "$SERVER_ADDR_FILE" ]]; then
+        tmp=$(jq -c --arg k "$key" --arg v "$addr" '.[$k] = $v' "$SERVER_ADDR_FILE" 2>/dev/null)
+    else
+        tmp=$(jq -c -n --arg k "$key" --arg v "$addr" '{($k): $v}')
+    fi
+    echo "$tmp" > "$SERVER_ADDR_FILE"
+}
+
+remove_custom_server_addr() {
+    local key=$1
+    [[ ! -f "$SERVER_ADDR_FILE" ]] && return
+    local tmp=$(jq -c "del(.\"$key\")" "$SERVER_ADDR_FILE" 2>/dev/null)
+    echo "$tmp" > "$SERVER_ADDR_FILE"
+}
+
+get_instance_server_addr() {
+    local type=$1 id=$2; local key="${type}_${id}"
+    local custom=$(get_custom_server_addr "$key")
+    if [[ -n "$custom" ]]; then
+        echo "$custom"
+    else
+        get_public_ip
+    fi
+}
+
+# 验证域名格式
+validate_domain() {
+    local domain=$1
+    # IPv4
+    if [[ "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then return 0; fi
+    # 域名
+    if [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then return 0; fi
+    return 1
+}
+
+prompt_server_address() {
+    local type=$1 id=$2; local key="${type}_${id}"
+    local default=$(get_public_ip)
+    local existing=$(get_custom_server_addr "$key")
+    local prompt_default="${existing:-$default}"
+    read -p "请输入域名或IP (留空则使用 ${prompt_default}): " user_addr
+    if [[ -z "$user_addr" ]]; then
+        set_custom_server_addr "$key" "$prompt_default"
+        green "使用地址: $prompt_default"
+    else
+        if validate_domain "$user_addr"; then
+            set_custom_server_addr "$key" "$user_addr"
+            green "使用地址: $user_addr"
+        else
+            red "格式无效，使用默认地址: $default"
+            set_custom_server_addr "$key" "$default"
+        fi
+    fi
+}
 
 get_custom_instance_name() {
     local key=$1
@@ -1442,7 +1506,9 @@ cleanup_warp_secrets_if_orphan() {
 
 generate_instance_display_name() {
     local type=$1 id=$2
-    local ip=$(get_public_ip)
+generate_instance_display_name() {
+    local type=$1 id=$2
+    local ip=$(get_instance_server_addr "$type" "$id")
     case "$type" in
         udp2raw) echo "UDP2RAW_${ip}_${id}" ;;
         kcptun) echo "KCP_${ip}_${id}" ;;
@@ -1452,6 +1518,7 @@ generate_instance_display_name() {
         ss_3_chain_chain) echo "SS_KCP_UDP_${ip}_${id}" ;;
         *) echo "${type}_${id}" ;;
     esac
+}
 }
 
 get_instance_display_name() {
@@ -1618,6 +1685,7 @@ manage_instance_menu() {
                     fi
                     cleanup_instance_secrets "$type" "$id"
                     remove_custom_instance_name "${type}_${id}"
+                    remove_custom_server_addr "${type}_${id}"
                     cleanup_warp_secrets_if_orphan
                     systemctl daemon-reload
                     green "实例 ${id} 已删除！"; break
@@ -1715,6 +1783,7 @@ add_singbox_inbound() {
     local type=$1; local next_id;
     next_id=$(find_next_available_id "singbox")
     prompt_custom_instance_name "$type" "$next_id"
+    prompt_server_address "$type" "$next_id"
     
     local inbound_json=""
     local tag=""
@@ -1908,7 +1977,7 @@ get_reality_public_key() {
 # -----------------------------------------------------------------------------
 generate_singbox_reality_link() {
     local id=$1; local tag="vless-reality-${id}"
-    local ip=$(get_public_ip)
+    local ip=$(get_instance_server_addr "xray_reality" "$id")
     local conf="$SINGBOX_INSTALL_DIR/singbox.json"
     if [[ ! -s "$conf" ]]; then echo "N/A"; return; fi
     local port=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .listen_port' "$conf")
@@ -1928,7 +1997,7 @@ generate_singbox_reality_link() {
 # -----------------------------------------------------------------------------
 generate_singbox_hy2_link() {
     local id=$1; local tag="hy2-${id}"
-    local ip=$(get_public_ip)
+    local ip=$(get_instance_server_addr "hysteria2" "$id")
     local conf="$SINGBOX_INSTALL_DIR/singbox.json"
     if [[ ! -s "$conf" ]]; then echo "N/A"; return; fi
     local port=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .listen_port' "$conf")
@@ -1944,7 +2013,7 @@ generate_singbox_hy2_link() {
 # -----------------------------------------------------------------------------
 view_udp2raw_client_config(){
     local id=$1; local conf="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"; if [[ ! -s "$conf" ]]; then red "错误: 未找到实例 $id 的配置文件或文件为空。"; return; fi
-    local ip=$(get_public_ip); local port=$(get_listen_info_from_conf "$conf" | awk -F':' '{print $NF}'); local password=$(grep -Po '(?<=-k )[^ ]+' "$conf")
+    local ip=$(get_instance_server_addr "udp2raw" "$id"); local port=$(get_listen_info_from_conf "$conf" | awk -F':' '{print $NF}'); local password=$(grep -Po '(?<=-k )[^ ]+' "$conf")
     
     cyan "--- UDP2RAW 实例 ${id} 客户端配置 ---";  echo
     green "${UDP2RAW_CLIENT_BASE_ARGS} -r ${ip}:${port} -l ${CLIENT_UDP2RAW_LISTEN_ADDR} -k ${password}"
@@ -1956,7 +2025,7 @@ view_udp2raw_client_config(){
 view_kcptun_client_config(){
     local id=$1; local conf="$KCP_INSTALL_DIR/kcptun_${id}.json"; if [[ ! -s "$conf" ]]; then red "错误: 未找到实例 $id 的配置文件或文件为空。"; return; fi
     if ! command -v jq &>/dev/null; then red "错误: jq 未安装，无法解析配置。"; return; fi
-    local ip=$(get_public_ip); local server_listen=$(jq -r '.listen' "$conf"); local server_port=$(echo "$server_listen" | awk -F':' '{print $NF}')
+    local ip=$(get_instance_server_addr "kcptun" "$id"); local server_listen=$(jq -r '.listen' "$conf"); local server_port=$(echo "$server_listen" | awk -F':' '{print $NF}')
     # KCPTUN 客户端 sndwnd/rcvwnd 需与服务器互换 (server.sndwnd <-> client.rcvwnd)
     local server_sndwnd=$(jq -r '.sndwnd' "$conf"); local server_rcvwnd=$(jq -r '.rcvwnd' "$conf")
     cyan "--- KCPTUN 实例 ${id} 客户端配置 ---"; echo
@@ -2003,7 +2072,7 @@ view_chain_client_config_3() {
     local ss_password=$(jq -r --arg tag "$ss_tag" '.inbounds[] | select(.tag == $tag) | .password' "$config_file" 2>/dev/null)
     if [[ -z "$ss_method" || "$ss_method" == "null" ]]; then red "SS inbound $ss_tag 未在 singbox.json 中找到。"; return; fi
     
-    local ip=$(get_public_ip)
+    local ip=$(get_instance_server_addr "ss_3_chain_chain" "$id_num")
     local udp2raw_port=$(get_listen_info_from_conf "$udp2raw_conf_path" | awk -F':' '{print $NF}')
     local udp2raw_password=$(grep -Po '(?<=-k )[^ ]+' "$udp2raw_conf_path")
     local kcptun_password=$(jq -r '.key' "$kcptun_conf_path")
@@ -2071,6 +2140,7 @@ start_new_chain_instance_3() {
     log "启动一个新的 SS+KCP+UDP 串联实例..."
     green "新串联实例 #${i} (SS + KCPTUN + UDP2RAW 三层串联)"
     prompt_custom_instance_name "ss_3_chain_chain" "$i"
+    prompt_server_address "ss_3_chain_chain" "$i"
     
     read_valid_port "请输入UDP2RAW对外端口 (留空则随机): " udp2raw_listen_port true
     green "已指定对外端口 (UDP2RAW): $udp2raw_listen_port"
@@ -2244,6 +2314,7 @@ manage_chain_instance_3() {
                 rm -f "$conf2_path" "$conf3_path";
                 cleanup_instance_secrets "$manage_type" "$id_num"
                 remove_custom_instance_name "${manage_type}_${id_num}"
+                remove_custom_server_addr "${manage_type}_${id_num}"
                 cleanup_warp_secrets_if_orphan
                 systemctl daemon-reload; green "已删除。"; break;
                 fi;;
@@ -2286,7 +2357,7 @@ view_chain_client_config() {
     local udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"
     if [[ ! -f "$udp2raw_conf" ]]; then red "串联实例 ${id} 的 UDP2RAW 配置文件不完整。"; return; fi
     
-    local ip=$(get_public_ip)
+    local ip=$(get_instance_server_addr "hy2_chain" "$id_num")
     local udp2raw_port=$(get_listen_info_from_conf "$udp2raw_conf" | awk -F':' '{print $NF}')
     local udp2raw_password=$(grep -Po '(?<=-k )[^ ]+' "$udp2raw_conf")
     
@@ -2360,6 +2431,7 @@ start_new_chain_instance() {
     green "新串联实例 #${i} (Hysteria2 + UDP2RAW 两层串联)"
     local chain_display_type="hy2_chain"
     prompt_custom_instance_name "$chain_display_type" "$i"
+    prompt_server_address "$chain_display_type" "$i"
     
     # 先进行参数配置
     read_valid_port "请输入对外端口 (留空则随机生成): " udp2raw_listen_port true
@@ -2534,6 +2606,7 @@ manage_chain_instance() {
                 rm -f "$udp2raw_conf_path";
                 cleanup_instance_secrets "$manage_type" "$id_num"
                 remove_custom_instance_name "${manage_type}_${id_num}"
+                remove_custom_server_addr "${manage_type}_${id_num}"
                 cleanup_warp_secrets_if_orphan
                 systemctl daemon-reload; green "已删除。"; break;
                 fi;;
