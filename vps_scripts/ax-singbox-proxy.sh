@@ -1122,8 +1122,13 @@ WantedBy=multi-user.target"
         local endpoints_json='[]'
         local route_rules=$SINGBOX_NO_WARP_ROUTE_RULES
 
-        # WARP 默认不启用，用户可通过菜单手动注册
-        # 已注释: 首次安装自动注册 WARP
+        # 自动注册 WARP WireGuard (首次安装时执行, 失败会记录警告但不影响创建 singbox.json)
+        if command -v wg &>/dev/null && [[ ! -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
+            log "首次安装, 正在尝试自动注册 WARP WireGuard..."
+            if ! register_warp_wireguard; then
+                yellow "警告: WARP 自动注册失败, 将创建不带 WARP 的默认配置。可稍后手动重新注册。"
+            fi
+        fi
         if [[ -f "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" ]]; then
             if ! local wg_ep=$(apply_warp_wireguard_config); then
                 yellow "警告: WARP 配置加载失败, 将创建不带 WARP 的默认配置。"
@@ -2624,14 +2629,25 @@ show_global_tls_status() {
 show_warp_status() {
     echo "--- WARP 状态 ---"
     local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
+    local reg_status="未注册"
+    local cfg_status="未启用"
     if [[ -f "$warp_key_file" ]]; then
         local wg_private=$(jq -r '.private_key // empty' "$warp_key_file" 2>/dev/null)
         if [[ -n "$wg_private" ]]; then
-            green "[Sing-box WireGuard] WARP 已注册"
-            echo "账户类型: Free"
+            reg_status="已注册"
+        else
+            reg_status="文件损坏"
         fi
+        if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
+            cfg_status="已启用"
+        fi
+    fi
+    if [[ "$reg_status" == "已注册" && "$cfg_status" == "已启用" ]]; then
+        green "[Sing-box WireGuard] 注册: ${reg_status} | 配置: ${cfg_status}"
+    elif [[ "$reg_status" == "未注册" ]]; then
+        yellow "WARP 未注册 — 首次安装时自动注册"
     else
-        yellow "WARP 未配置 — 首次安装时自动注册 Sing-box WireGuard WARP"
+        yellow "[Sing-box WireGuard] 注册: ${reg_status} | 配置: ${cfg_status}"
     fi
 }
 
