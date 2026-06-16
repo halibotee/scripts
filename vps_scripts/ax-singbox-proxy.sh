@@ -949,10 +949,15 @@ enable_warp_in_config() {
     local route_rules=$SINGBOX_DIRECT_ROUTE_RULES
     route_rules=${route_rules//__WARP_GEOSITE_LIST_JSON__/$WARP_GEOSITE_LIST_JSON}
     local tmpfile; tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
-    if ! jq --argjson endpoints "$wg_ep" --argjson rules "$route_rules" \
+    local ep_tmp; ep_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
+    local rules_tmp; rules_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile" "$ep_tmp"; return 1; }
+    echo "$wg_ep" > "$ep_tmp"
+    echo "$route_rules" > "$rules_tmp"
+    if ! jq --slurpfile endpoints "$ep_tmp" --slurpfile rules "$rules_tmp" \
         '.endpoints = $endpoints | .route.rules = $rules' "$config_file" > "$tmpfile" 2>/dev/null; then
-        rm -f "$tmpfile"; red "jq 合并失败。" >&2; return 1
+        rm -f "$tmpfile" "$ep_tmp" "$rules_tmp"; red "jq 合并失败。" >&2; return 1
     fi
+    rm -f "$ep_tmp" "$rules_tmp"
     if ! jq empty "$tmpfile" 2>/dev/null; then rm -f "$tmpfile"; red "输出 JSON 不合法。" >&2; return 1; fi
     mv "$tmpfile" "$config_file"
     green "✓ WARP 已启用 (分流: Google/OpenAI/Perplexity)"
@@ -1928,14 +1933,18 @@ safe_add_singbox_inbound() {
     # 备份原文件
     local backup="${config_file}.bak.$(date +%s)"
     cp -p "$config_file" "$backup" 2>/dev/null || cp "$config_file" "$backup"
-    # 执行合并
+    # 写入临时 JSON 文件并执行合并
     local tmpfile
     tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
-    if ! jq --argjson inbound "$inbound_json" '.inbounds += [$inbound]' "$config_file" > "$tmpfile" 2>/dev/null; then
-        rm -f "$tmpfile"
+    local inbound_tmp
+    inbound_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
+    echo "$inbound_json" > "$inbound_tmp"
+    if ! jq --slurpfile inbound "$inbound_tmp" '.inbounds += $inbound' "$config_file" > "$tmpfile" 2>/dev/null; then
+        rm -f "$tmpfile" "$inbound_tmp"
         red "错误: jq 合并失败，原文件未修改。备份在 $backup" >&2
         return 1
     fi
+    rm -f "$inbound_tmp"
     # 预校验输出 JSON 合法性
     if ! jq empty "$tmpfile" 2>/dev/null; then
         rm -f "$tmpfile"
