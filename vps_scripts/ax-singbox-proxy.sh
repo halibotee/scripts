@@ -1933,18 +1933,14 @@ safe_add_singbox_inbound() {
     # 备份原文件
     local backup="${config_file}.bak.$(date +%s)"
     cp -p "$config_file" "$backup" 2>/dev/null || cp "$config_file" "$backup"
-    # 写入临时 JSON 文件并执行合并
+    # 使用 --argjson 直接传递 JSON 对象，避免临时文件序列化问题
     local tmpfile
     tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
-    local inbound_tmp
-    inbound_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
-    echo "$inbound_json" > "$inbound_tmp"
-    if ! jq --slurpfile inbound "$inbound_tmp" '.inbounds += $inbound' "$config_file" > "$tmpfile" 2>/dev/null; then
-        rm -f "$tmpfile" "$inbound_tmp"
+    if ! jq --argjson inbound_obj "$(printf '%s' "$inbound_json" | jq -c .)" '.inbounds += [$inbound_obj]' "$config_file" > "$tmpfile" 2>/dev/null; then
+        rm -f "$tmpfile"
         red "错误: jq 合并失败，原文件未修改。备份在 $backup" >&2
         return 1
     fi
-    rm -f "$inbound_tmp"
     # 预校验输出 JSON 合法性
     if ! jq empty "$tmpfile" 2>/dev/null; then
         rm -f "$tmpfile"
