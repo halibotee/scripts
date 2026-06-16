@@ -116,32 +116,32 @@ restart_dnsmasq() {
 	local LOCAL_DNSISP_DNS1=$(nvram get wan0_dns | sed 's/ /\n/g' | grep -v 0.0.0.0 | grep -v 127.0.0.1 | sed -n 1p | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}|:")
     local LOCAL_DNSISP_DNS2=$(nvram get wan0_dns | sed 's/ /\n/g' | grep -v 0.0.0.0 | grep -v 127.0.0.1 | sed -n 2p | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}|:")
 	local LOCAL_DNSISP_DNSv6=$(nvram get ipv6_get_dns | awk '{print $1}' | grep -v '^::$' | grep -v '^::1$' | head -1)
-	if [ "$mcenable" = "1" ] && [ "$dnsinclash" = "1" ] && [ "${clash_process_started}" = "1" ]; then
-		# 代理路由dns
-		if [ "$dnsplan" = "rh" ]; then
-			echo "nameserver 127.0.0.1" > /etc/resolv.conf
-		elif [ -n "$LOCAL_DNSISP_DNS1" ] || [ -n "$LOCAL_DNSISP_DNS2" ] || [ -n "$LOCAL_DNSISP_DNSv6" ]; then
-			# 有任何一个 DNS 变量非空 → 写入所有非空的
-			{
-				[ -n "$LOCAL_DNSISP_DNS1" ] && echo "nameserver $LOCAL_DNSISP_DNS1"
-				[ -n "$LOCAL_DNSISP_DNS2" ] && echo "nameserver $LOCAL_DNSISP_DNS2"
-				[ -n "$LOCAL_DNSISP_DNSv6" ] && echo "nameserver $LOCAL_DNSISP_DNSv6"
-			} > /etc/resolv.conf
-		else
-			# 三个 DNS 变量都为空 → 使用阿里备用 DNS
-			echo "nameserver 223.5.5.5" > /etc/resolv.conf
-		fi
-	elif [ -n "$LOCAL_DNSISP_DNS1" ] || [ -n "$LOCAL_DNSISP_DNS2" ] || [ -n "$LOCAL_DNSISP_DNSv6" ]; then
-		# 非代理路由dns，且有至少一个 DNS 变量非空
-		{
-			[ -n "$LOCAL_DNSISP_DNS1" ] && echo "nameserver $LOCAL_DNSISP_DNS1"
-			[ -n "$LOCAL_DNSISP_DNS2" ] && echo "nameserver $LOCAL_DNSISP_DNS2"
-			[ -n "$LOCAL_DNSISP_DNSv6" ] && echo "nameserver $LOCAL_DNSISP_DNSv6"
-		} > /etc/resolv.conf
-	else
-		# 非代理路由dns，且三个 DNS 变量都为空
-		echo "nameserver 223.5.5.5" > /etc/resolv.conf
-	fi
+	# if [ "$mcenable" = "1" ] && [ "$dnsinclash" = "1" ] && [ "${clash_process_started}" = "1" ]; then
+	# 	# 代理路由dns
+	# 	if [ "$dnsplan" = "rh" ]; then
+	# 		echo "nameserver 127.0.0.1" > /etc/resolv.conf
+	# 	elif [ -n "$LOCAL_DNSISP_DNS1" ] || [ -n "$LOCAL_DNSISP_DNS2" ] || [ -n "$LOCAL_DNSISP_DNSv6" ]; then
+	# 		# 有任何一个 DNS 变量非空 → 写入所有非空的
+	# 		{
+	# 			[ -n "$LOCAL_DNSISP_DNS1" ] && echo "nameserver $LOCAL_DNSISP_DNS1"
+	# 			[ -n "$LOCAL_DNSISP_DNS2" ] && echo "nameserver $LOCAL_DNSISP_DNS2"
+	# 			[ -n "$LOCAL_DNSISP_DNSv6" ] && echo "nameserver $LOCAL_DNSISP_DNSv6"
+	# 		} > /etc/resolv.conf
+	# 	else
+	# 		# 三个 DNS 变量都为空 → 使用阿里备用 DNS
+	# 		echo "nameserver 223.5.5.5" > /etc/resolv.conf
+	# 	fi
+	# elif [ -n "$LOCAL_DNSISP_DNS1" ] || [ -n "$LOCAL_DNSISP_DNS2" ] || [ -n "$LOCAL_DNSISP_DNSv6" ]; then
+	# 	# 非代理路由dns，且有至少一个 DNS 变量非空
+	# 	{
+	# 		[ -n "$LOCAL_DNSISP_DNS1" ] && echo "nameserver $LOCAL_DNSISP_DNS1"
+	# 		[ -n "$LOCAL_DNSISP_DNS2" ] && echo "nameserver $LOCAL_DNSISP_DNS2"
+	# 		[ -n "$LOCAL_DNSISP_DNSv6" ] && echo "nameserver $LOCAL_DNSISP_DNSv6"
+	# 	} > /etc/resolv.conf
+	# else
+	# 	# 非代理路由dns，且三个 DNS 变量都为空
+	# 	echo "nameserver 223.5.5.5" > /etc/resolv.conf
+	# fi
 	echo_date "创建dnsmasq.postconf软链接" >> $LOG_FILE
 	local link_dns_target=$(readlink "/jffs/scripts/dnsmasq.postconf")
 	local link_sdn_target=$(readlink "/jffs/scripts/dnsmasq-sdn.postconf")

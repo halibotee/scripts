@@ -2083,6 +2083,8 @@ start_new_chain_instance_3() {
     
     read_valid_port "请输入SS内联端口 (KCPTUN->SS) (留空则随机生成): " ss_listen_port true
     
+    prompt_warp_config
+    
     cyan "--- SS (Sing-box) 配置 ---"
     echo "Shadowsocks 加密方式选项:"
     echo "1) 2022-blake3-aes-256-gcm (推荐)"
@@ -2201,7 +2203,6 @@ start_new_chain_instance_3() {
 
     green "串联实例 ${chain_id} 已启动！"; echo
     view_chain_client_config_3 "$i"
-    prompt_warp_config
 }
 
 # -----------------------------------------------------------------------------
@@ -2371,6 +2372,8 @@ start_new_chain_instance() {
 
     read_valid_port "请输入内联端口 (留空则随机生成): " internal_listen_port true
     
+    prompt_warp_config
+    
     # 添加Hysteria2串联实例的配置选项
     if [[ "$chain_type" == "hy2" ]]; then
         cyan "--- Hysteria2 配置 ---"
@@ -2482,7 +2485,6 @@ start_new_chain_instance() {
     
     sleep 1; green "串联实例 ${chain_id} 已启动！"; echo
     view_chain_client_config "$chain_type" "$i"
-    prompt_warp_config
 }
 
 # -----------------------------------------------------------------------------

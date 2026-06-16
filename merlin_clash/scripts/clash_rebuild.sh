@@ -13,16 +13,16 @@ restart_dnsmasq() {
 	rm -rf /jffs/configs/dnsmasq.d/dns_custom.conf >/dev/null 2>&1
 	local LOCAL_DNSISP_DNS1=$(nvram get wan0_dns | sed 's/ /\n/g' | grep -v 0.0.0.0 | grep -v 127.0.0.1 | sed -n 1p | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}|:")
     #local LOCAL_DNSISP_DNS2=$(nvram get wan0_dns | sed 's/ /\n/g' | grep -v 0.0.0.0 | grep -v 127.0.0.1 | sed -n 2p | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}|:")
-	if [ -n "$LOCAL_DNSISP_DNS1" ]; then
-		cat >/etc/resolv.conf <<-EOF
-			nameserver $LOCAL_DNSISP_DNS1
-		EOF
-	else
-		cat >/etc/resolv.conf <<-EOF
-			nameserver 223.5.5.5
-		EOF
-
-	fi
+	# if [ -n "$LOCAL_DNSISP_DNS1" ]; then
+	# 	cat >/etc/resolv.conf <<-EOF
+	# 		nameserver $LOCAL_DNSISP_DNS1
+	# 	EOF
+	# else
+	# 	cat >/etc/resolv.conf <<-EOF
+	# 		nameserver 223.5.5.5
+	# 	EOF
+	# 
+	# fi
 	# Restart dnsmasq
 	echo_date "重启dnsmasq服务..."
 	service restart_dnsmasq >/dev/null 2>&1 &
@@ -37,12 +37,12 @@ restart_dnsmasq() {
 
 prepare_dnsmasq(){
 	rm -rf /jffs/scripts/dnsmasq.postconf
-	[ -n "`cat /etc/dnsmasq.conf|grep no-resolv`" ] && sed -i '/no-resolv/d' /etc/dnsmasq.conf
-	[ -n "`cat /etc/dnsmasq.conf|grep servers-file`" ] && sed -i '/servers-file/d' /etc/dnsmasq.conf
-	[ -n "`cat /etc/dnsmasq.conf|grep dhcp-option-force=br1`" ] && sed -i '/dhcp-option-force=br1/d' /etc/dnsmasq.conf
-	[ -n "`cat /etc/dnsmasq.conf|grep dhcp-option-force=br2`" ] && sed -i '/dhcp-option-force=br2/d' /etc/dnsmasq.conf
-	sed -i '$a no-resolv' /etc/dnsmasq.conf
-    sed -i '$a servers-file=/tmp/resolv.dnsmasq' /etc/dnsmasq.conf
+	# [ -n "`cat /etc/dnsmasq.conf|grep no-resolv`" ] && sed -i '/no-resolv/d' /etc/dnsmasq.conf
+	# [ -n "`cat /etc/dnsmasq.conf|grep servers-file`" ] && sed -i '/servers-file/d' /etc/dnsmasq.conf
+	# [ -n "`cat /etc/dnsmasq.conf|grep dhcp-option-force=br1`" ] && sed -i '/dhcp-option-force=br1/d' /etc/dnsmasq.conf
+	# [ -n "`cat /etc/dnsmasq.conf|grep dhcp-option-force=br2`" ] && sed -i '/dhcp-option-force=br2/d' /etc/dnsmasq.conf
+	# sed -i '$a no-resolv' /etc/dnsmasq.conf
+    # sed -i '$a servers-file=/tmp/resolv.dnsmasq' /etc/dnsmasq.conf
 }
 
 start_rebuild(){
