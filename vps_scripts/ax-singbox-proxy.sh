@@ -1101,23 +1101,38 @@ EOF
 edit_warp_domains() {
     local domain_file="$SINGBOX_INSTALL_DIR/.warp_domain_list"
     [[ -f "$domain_file" ]] || get_warp_domain_list > /dev/null
-    cp "$domain_file" "$domain_file.bak" 2>/dev/null
-    nano "$domain_file"
-    local count=0
-    while IFS= read -r line; do
-        line="${line%%#*}"
-        line="${line//[[:space:]]/}"
-        [[ -z "$line" ]] && continue
-        ((count++))
-    done < "$domain_file"
-    green "当前域名: $count 个"
-    yellow "正在更新配置并重启..."
-    if update_warp_domains; then
-        sync
-        systemctl restart ax-singbox.service 2>/dev/null
-        green "Sing-box 已重启，新域名已生效。"
+    # 先规范化一次：去注释/空格/空行，去重排序
+    local tmpfile; tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    awk '{ sub(/[[:space:]]*#.*$/,""); gsub(/[[:space:]]/,""); if ($0!="") print tolower($0) }' "$domain_file" | sort -u > "$tmpfile"
+    if [[ -s "$tmpfile" ]]; then
+        mv "$tmpfile" "$domain_file"
     else
-        yellow "域名已保存，但未能更新配置。请稍后手动重启。"
+        rm -f "$tmpfile"; red "域名列表为空！" >&2; return 1
+    fi
+    local before_hash; before_hash=$(hash_file "$domain_file")
+    nano "$domain_file"
+    # 编辑后再规范化
+    tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    awk '{ sub(/[[:space:]]*#.*$/,""); gsub(/[[:space:]]/,""); if ($0!="") print tolower($0) }' "$domain_file" | sort -u > "$tmpfile"
+    if [[ -s "$tmpfile" ]]; then
+        mv "$tmpfile" "$domain_file"
+    else
+        rm -f "$tmpfile"; red "域名列表为空！" >&2; return 1
+    fi
+    local after_hash; after_hash=$(hash_file "$domain_file")
+    if [[ "$before_hash" != "$after_hash" ]]; then
+        local count; count=$(wc -l < "$domain_file")
+        green "域名已更新: $count 个"
+        yellow "正在更新配置并重启..."
+        if update_warp_domains; then
+            sync
+            systemctl restart ax-singbox.service 2>/dev/null
+            green "Sing-box 已重启，新域名已生效。"
+        else
+            yellow "域名已保存，但未能更新配置。请稍后手动重启。"
+        fi
+    else
+        yellow "域名列表无变化，无需重启。"
     fi
 }
 
