@@ -3139,14 +3139,10 @@ uninstall_all() {
     else
         log "未检测到 $AX_ACME_SCRIPT 客户端，跳过清理。"
     fi
-    log "步骤 4: 清理残留的程序和数据..."
-    rm -f /usr/local/bin/hysteria
-    rm -rf /etc/xray /etc/hysteria2
-    green "残留程序和数据已清理。"
-    log "步骤 5: 清理临时文件和元数据..."
+    log "步骤 4: 清理临时文件和元数据..."
     rm -f /tmp/kcptun.tar.gz /tmp/udp2raw.tar.gz /tmp/singbox.tar.gz
     rm -f "$INSTANCE_NAMES_FILE" "$SERVER_ADDR_FILE" "$PUBLIC_IP_CACHE"
-    log "步骤 6: 清理脚本文件和残留..."
+    log "步骤 5: 清理脚本文件和残留..."
     rm -rf /root/scripts /root/ax-singbox-proxy.sh /root/ax-acme.sh /root/ax-optz.sh
     log "步骤 6: 重载 systemd 并清理状态..."
     systemctl daemon-reload; systemctl reset-failed
