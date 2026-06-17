@@ -331,11 +331,32 @@ fn_setup_aggressive_network() {
             ;;
     esac
 
-    # 使用默认参数
-    local latency=180
-    local local_bw=500
-    local vps_bw=100
-    local vps_mem=$MEM_MB
+    # 加载/配置网络参数
+    local net_conf="/etc/ax-optz.conf"
+    local latency local_bw vps_bw vps_mem=$MEM_MB
+    if [ -f "$net_conf" ]; then
+        source "$net_conf"
+        latency=${LATENCY:-$latency}
+        local_bw=${LOCAL_BW:-$local_bw}
+        vps_bw=${VPS_BW:-$vps_bw}
+        echo "已读取配置文件: $net_conf"
+    fi
+    : ${latency:=180}; : ${local_bw:=500}; : ${vps_bw:=100}
+    echo ""
+    echo "--- 网络参数配置 (直接回车使用默认值) ---"
+    read -rp "延迟 (ms) [${latency}]: " input
+    [[ -n "$input" ]] && latency=$input
+    read -rp "本地带宽 (Mbps) [${local_bw}]: " input
+    [[ -n "$input" ]] && local_bw=$input
+    read -rp "VPS带宽 (Mbps) [${vps_bw}]: " input
+    [[ -n "$input" ]] && vps_bw=$input
+    echo ""
+    cat > "$net_conf" <<EOF
+# Network parameters for ax-optz.sh
+LATENCY=$latency
+LOCAL_BW=$local_bw
+VPS_BW=$vps_bw
+EOF
     echo "网络参数: 延迟=${latency}ms, 本地带宽=${local_bw}Mbps, VPS带宽=${vps_bw}Mbps, 内存=${vps_mem}MB"
     fn_log "信息" "网络优化参数: 延迟=${latency}ms, 带宽=${local_bw}/${vps_bw}Mbps, 内存=${vps_mem}MB"
     
@@ -982,6 +1003,7 @@ EOF
         "/swapfile_zram"
         "/etc/default/earlyoom"
         "/etc/sysctl.d/99-vps-extra.conf"
+        "/etc/ax-optz.conf"
     )
     
     for f in "${files_to_clean[@]}"; do
