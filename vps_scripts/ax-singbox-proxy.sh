@@ -123,8 +123,7 @@ SINGBOX_REALITY_DEFAULT_FLOW="xtls-rprx-vision"      # VLESS+Reality 模式默�
 # =============================================================================
 # 6. WARP 分流配置
 # =============================================================================
-# WARP 分流规则
-WARP_DOMAIN_SUFFIX_JSON='"openai.com","chatgpt.com","chat.com","oaiusercontent.com","perplexity.ai","google.com","googleapis.com","grok.com","x.ai","claude.ai","anthropic.com","x.com","twitter.com","facebook.com","instagram.com","threads.net","youtube.com","ytimg.com","googlevideo.com","telegram.org","t.me","discord.com","discordapp.net","reddit.com","redditmedia.com","wikipedia.org","medium.com","quora.com","github.com","githubassets.com","stackoverflow.com","sourceforge.net"'
+# WARP 分流域名存储在文件中的每行一个域名 (由 get_warp_domain_list 管理)
 
 # =============================================================================
 # 7. Github 软件源配置
@@ -963,7 +962,7 @@ json.dump(cfg, open('$tmpfile','w'), indent=2)
         rm -f "$tmpfile"; red "输出 JSON 不合法。" >&2; return 1
     fi
     mv "$tmpfile" "$config_file"
-    green "✓ WARP 已启用 (分流: Google/OpenAI/Perplexity)"
+    green "✓ WARP 已启用"
 }
 
 # -----------------------------------------------------------------------------
@@ -999,55 +998,78 @@ json.dump(cfg, open('$tmpfile','w'), indent=2)
 }
 
 # -----------------------------------------------------------------------------
-# 合并内置 + 自定义 WARP 分流域名列表，输出 JSON 数组字符串
+# 从 .warp_domain_list 读取 WARP 分流域名，输出 JSON 数组字符串
+# 文件不存在时自动创建含 32 个默认域名的文件
 # -----------------------------------------------------------------------------
 get_warp_domain_list() {
-    local builtin="$WARP_DOMAIN_SUFFIX_JSON"
-    local custom_file="$SINGBOX_INSTALL_DIR/.warp_custom_domains"
-    if [[ -f "$custom_file" ]]; then
-        local custom_domains=""
-        while IFS= read -r line; do
-            line="${line%%#*}"
-            line="${line//[[:space:]]/}"
-            [[ -z "$line" ]] && continue
-            custom_domains+=",\"${line}\""
-        done < "$custom_file"
-        if [[ -n "$custom_domains" ]]; then
-            echo "${builtin}${custom_domains}"
-            return
-        fi
+    local domain_file="$SINGBOX_INSTALL_DIR/.warp_domain_list"
+    if [[ ! -f "$domain_file" ]]; then
+        cat > "$domain_file" <<'EOF'
+openai.com
+chatgpt.com
+chat.com
+oaiusercontent.com
+perplexity.ai
+google.com
+googleapis.com
+grok.com
+x.ai
+claude.ai
+anthropic.com
+x.com
+twitter.com
+facebook.com
+instagram.com
+threads.net
+youtube.com
+ytimg.com
+googlevideo.com
+telegram.org
+t.me
+discord.com
+discordapp.net
+reddit.com
+redditmedia.com
+wikipedia.org
+medium.com
+quora.com
+github.com
+githubassets.com
+stackoverflow.com
+sourceforge.net
+EOF
     fi
-    echo "$builtin"
+    local first=true
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="${line//[[:space:]]/}"
+        [[ -z "$line" ]] && continue
+        if $first; then
+            echo -n "\"${line}\""
+            first=false
+        else
+            echo -n ",\"${line}\""
+        fi
+    done < "$domain_file"
+    echo
 }
 
 # -----------------------------------------------------------------------------
-# 编辑自定义 WARP 分流域名 (nano)
+# 编辑 WARP 分流域名列表 (nano)
 # -----------------------------------------------------------------------------
 edit_warp_domains() {
-    local custom_file="$SINGBOX_INSTALL_DIR/.warp_custom_domains"
-    if [[ ! -f "$custom_file" ]]; then
-        {
-            echo "# 自定义 WARP 分流域名列表，每行一个域名，# 开头行为注释"
-            echo "# 内置域名（共 32 个）自动生效，无需重复添加："
-            echo "# openai.com, chatgpt.com, chat.com, oaiusercontent.com, perplexity.ai"
-            echo "# google.com, googleapis.com, grok.com, x.ai, claude.ai, anthropic.com"
-            echo "# x.com, twitter.com, facebook.com, instagram.com, threads.net"
-            echo "# youtube.com, ytimg.com, googlevideo.com, telegram.org, t.me"
-            echo "# discord.com, discordapp.net, reddit.com, redditmedia.com"
-            echo "# wikipedia.org, medium.com, quora.com, github.com, githubassets.com"
-            echo "# stackoverflow.com, sourceforge.net"
-            echo ""
-        } > "$custom_file"
-    fi
-    nano "$custom_file"
+    local domain_file="$SINGBOX_INSTALL_DIR/.warp_domain_list"
+    [[ -f "$domain_file" ]] || get_warp_domain_list > /dev/null
+    cp "$domain_file" "$domain_file.bak" 2>/dev/null
+    nano "$domain_file"
     local count=0
     while IFS= read -r line; do
         line="${line%%#*}"
         line="${line//[[:space:]]/}"
         [[ -z "$line" ]] && continue
         ((count++))
-    done < "$custom_file"
-    green "当前自定义域名: $count 个"
+    done < "$domain_file"
+    green "当前域名: $count 个"
     read -p $'是否重启 sing-box 使更改生效？(y/n): ' yn
     if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
         sync
@@ -3230,6 +3252,7 @@ export_config_backup() {
     local items=(
         "/etc/sing-box/singbox.json"
         "/etc/sing-box/.warp_wireguard.json"
+        "/etc/sing-box/.warp_domain_list"
         "/etc/sing-box/.reality_keys.json"
         "/etc/sing-box/last_ss_pass.txt"
         "/etc/sing-box/last_hy2_pass.txt"
