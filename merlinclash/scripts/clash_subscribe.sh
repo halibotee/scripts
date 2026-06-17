@@ -470,8 +470,10 @@ process_chain_link() {
     # 改写 kcptun 端口
     local kcp_args_final="$kcp_args"
     if [ "$has_kcp" -eq 1 ] && [ -n "$port_middle" ] && [ -n "$port_outer" ]; then
-        kcp_args_final=$(echo "$kcp_args_final" | sed "s/--listen 127\.0\.0\.1:[0-9]*/--listen 127.0.0.1:$port_middle/")
-        kcp_args_final=$(echo "$kcp_args_final" | sed "s/--target 127\.0\.0\.1:[0-9]*/--target 127.0.0.1:$port_outer/")
+        kcp_args_final=$(echo "$kcp_args_final" \
+            | sed 's/--listen/-l/; s/--target/-r/' \
+            | sed "s/-l 127\.0\.0\.1:[0-9]*/-l 127.0.0.1:$port_middle/" \
+            | sed "s/-r 127\.0\.0\.1:[0-9]*/-r 127.0.0.1:$port_outer/")
     fi
 
     # 改写 udp2raw 端口

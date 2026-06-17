@@ -2072,6 +2072,7 @@ start_chain_daemons() {
 		echo_date "启动串联节点 [$label]..." >> $LOG_FILE
 		[ -n "$udp_args" ] && /koolshare/bin/udp2raw $udp_args &
 		[ -n "$kcp_args" ] && /koolshare/bin/kcptun $kcp_args &
+		sleep 0.2
 	done
 	[ "$count" -gt 0 ] && echo_date "共启动 $count 个串联节点" >> $LOG_FILE
 }
