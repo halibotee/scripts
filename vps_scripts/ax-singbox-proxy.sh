@@ -1111,17 +1111,13 @@ edit_warp_domains() {
         ((count++))
     done < "$domain_file"
     green "当前域名: $count 个"
-    read -p $'是否应用新域名并重启 sing-box？(y/n): ' yn
-    if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
-        if update_warp_domains; then
-            sync
-            systemctl restart ax-singbox.service 2>/dev/null
-            green "Sing-box 已重启，新域名已生效。"
-        else
-            yellow "域名已保存，但未能更新配置。请稍后手动重启。"
-        fi
+    yellow "正在更新配置并重启..."
+    if update_warp_domains; then
+        sync
+        systemctl restart ax-singbox.service 2>/dev/null
+        green "Sing-box 已重启，新域名已生效。"
     else
-        yellow "域名已保存。下次重启 sing-box 或启用 WARP 时生效。"
+        yellow "域名已保存，但未能更新配置。请稍后手动重启。"
     fi
 }
 
