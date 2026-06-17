@@ -35,12 +35,16 @@ package_plugin(){
 		[ -f /koolshare/bin/yq ] && cp -rf /koolshare/bin/yq $PKG_DIR/bin64/
 		[ -f /koolshare/bin/jq ] && cp -rf /koolshare/bin/jq $PKG_DIR/bin64/
 		[ -f /koolshare/bin/haveged ] && cp -rf /koolshare/bin/haveged $PKG_DIR/bin64/
+		[ -f /koolshare/bin/kcptun ] && cp -rf /koolshare/bin/kcptun $PKG_DIR/bin64/
+		[ -f /koolshare/bin/udp2raw ] && cp -rf /koolshare/bin/udp2raw $PKG_DIR/bin64/
 		rm -rf $PKG_DIR/bin32
 	else
 		cp -rf /koolshare/bin/clash $PKG_DIR/bin32/
 		[ -f /koolshare/bin/yq ] && cp -rf /koolshare/bin/yq $PKG_DIR/bin32/
 		[ -f /koolshare/bin/jq ] && cp -rf /koolshare/bin/jq $PKG_DIR/bin32/
 		[ -f /koolshare/bin/haveged ] && cp -rf /koolshare/bin/haveged $PKG_DIR/bin32/
+		[ -f /koolshare/bin/kcptun ] && cp -rf /koolshare/bin/kcptun $PKG_DIR/bin32/
+		[ -f /koolshare/bin/udp2raw ] && cp -rf /koolshare/bin/udp2raw $PKG_DIR/bin32/
 		rm -rf $PKG_DIR/bin64
 	fi
 
