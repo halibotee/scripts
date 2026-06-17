@@ -2072,7 +2072,7 @@ start_chain_daemons() {
 		echo_date "启动串联节点 [$label]..." >> $LOG_FILE
 		[ -n "$udp_args" ] && /koolshare/bin/udp2raw $udp_args &
 		[ -n "$kcp_args" ] && /koolshare/bin/kcptun $kcp_args &
-		sleep 0.2
+		sleep 1
 	done
 	[ "$count" -gt 0 ] && echo_date "共启动 $count 个串联节点" >> $LOG_FILE
 }
@@ -2089,6 +2089,8 @@ kill_chain_daemons() {
 	fi
 	[ "$killed" -eq 1 ] && echo_date "关闭串联节点进程" >> $LOG_FILE
 	rm -rf /tmp/.merlinclash_chain_assigned
+	# 清理 udp2raw 遗留 iptables 规则
+	iptables-save 2>/dev/null | grep -v "udp2rawDwrW" | iptables-restore 2>/dev/null
 }
 
 kill_cron_job() {
