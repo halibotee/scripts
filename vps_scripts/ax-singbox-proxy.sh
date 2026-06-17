@@ -324,7 +324,7 @@ read -r -d '' SINGBOX_DIRECT_ROUTE_RULES <<'EOM'
     { "outbound": "warp-ep", "domain": [ __WARP_GEOSITE_LIST_JSON__ ] },
     { "outbound": "direct", "ip_is_private": true },
     { "outbound": "warp-ep", "domain_suffix": [ "ip-api.com" ] },
-    { "outbound": "block", "domain_regex": [ "^.*doubleclick\\.net$", "^.*googleadservices\\.com$" ], "domain": [ "category-ads-all" ] }
+    { "outbound": "block", "domain_regex": [ "^.*doubleclick[.]net$", "^.*googleadservices[.]com$" ], "domain": [ "category-ads-all" ] }
 ]
 EOM
 
@@ -333,7 +333,7 @@ EOM
 # -----------------------------------------------------------------------------
 read -r -d '' SINGBOX_NO_WARP_ROUTE_RULES <<'EOM'
 [
-    { "outbound": "block", "domain_regex": [ "^.*doubleclick\\.net$", "^.*googleadservices\\.com$" ], "domain": [ "category-ads-all" ] }
+    { "outbound": "block", "domain_regex": [ "^.*doubleclick[.]net$", "^.*googleadservices[.]com$" ], "domain": [ "category-ads-all" ] }
 ]
 EOM
 
@@ -1198,7 +1198,7 @@ create_initial_singbox_config() {
     
     base_config=${base_config/__ENDPOINTS__/$endpoints_json}
     base_config=${base_config/__ROUTE_RULES__/$route_rules}
-    echo "$base_config" > "$SINGBOX_INSTALL_DIR/singbox.json"
+    printf '%s\n' "$base_config" > "$SINGBOX_INSTALL_DIR/singbox.json"
     log "已创建初始 Sing-box 基础配置文件: $SINGBOX_INSTALL_DIR/singbox.json"
     return 0  # 已创建
 }
@@ -1836,7 +1836,7 @@ collect_common_instance_config() {
     for placeholder in "${!replacements[@]}"; do
         temp_config="${temp_config//${placeholder}/${replacements[${placeholder}]}}"
     done
-    echo "$temp_config" > "$conf_path"
+    printf '%s\n' "$temp_config" > "$conf_path"
 
     sync
     log "启动服务..."
@@ -2346,8 +2346,8 @@ start_new_chain_instance_3() {
     local udp_conf_path="$UDP2RAW_INSTALL_DIR/udp2raw_${chain_id}.conf"
     
     log "生成配置文件..."
-    echo "$kcp_config" > "$kcp_conf_path"
-    echo "$udp_config" > "$udp_conf_path"
+    printf '%s\n' "$kcp_config" > "$kcp_conf_path"
+    printf '%s\n' "$udp_config" > "$udp_conf_path"
 
     # 启动服务
     log "启动串联服务..."
@@ -2652,7 +2652,7 @@ EOF
     temp_udp_config="${temp_udp_config//__AUTH_MODE__/${auth_mode}}"
     
     local udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${chain_id}.conf"
-    echo "$temp_udp_config" > "$udp2raw_conf"
+    printf '%s\n' "$temp_udp_config" > "$udp2raw_conf"
     
     sync
     log "启动串联服务..."
