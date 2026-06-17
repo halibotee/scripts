@@ -9,6 +9,10 @@ if [ "$merlinclash_enable" == "1" ];then
 	exit 1
 fi
 
+# 先关闭串联节点进程
+killall kcptun >/dev/null 2>&1
+killall udp2raw >/dev/null 2>&1
+
 # 保留kcptun、jq、udp2raw
 mkdir -p /tmp/.merlinclash_reserve
 for f in kcptun jq udp2raw; do

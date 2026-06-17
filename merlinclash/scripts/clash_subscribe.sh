@@ -275,6 +275,11 @@ parse_and_process_urls() {
                 echo_date "🟠识别到链接${count}为订阅链接，处理中~" >> $LOG_FILE
                 process_http_link "$url" "$name" "$ap_dir" "$file_name" "$ua_tmp"
                 ;;
+            CHAIN://*)
+                echo_date "🟠识别到链接${count}为串联节点链接，处理中~" >> $LOG_FILE
+                mkdir -p "$ap_dir"
+                process_chain_link "$url" "$name" "$config_file"
+                ;;
             [a-zA-Z0-9]*://*)
                 # 其他协议处理
                 echo_date "🟠识别到链接${count}为节点链接，处理中~" >> $LOG_FILE
@@ -357,6 +362,119 @@ process_other_link() {
     
     # 写入链接
     echo "$url" >> "$config_file"
+}
+
+# 串联节点(CHAIN://)处理函数
+process_chain_link() {
+    local raw_url="$1"
+    local name="$2"
+    local config_file="$3"
+    local chain_dir="/koolshare/merlinclash/chain_configs"
+
+    echo_date "串联节点名称：$name" >> $LOG_FILE
+
+    # 剥离 CHAIN://[ 前缀和 ]#标签 后缀
+    local content="${raw_url#CHAIN://[}"
+    local label="${content##*]#}"
+    content="${content%]#*}"
+    [ -z "$label" ] && label="$name"
+
+    echo_date "串联标签：$label" >> $LOG_FILE
+
+    # 按 && 分割各层
+    local layers_file="/tmp/.merlinclash_layers"
+    echo "$content" | sed 's/ && /\n/g' > "$layers_file"
+
+    local inner_type="" inner_url="" kcp_args="" udp_args=""
+    local has_kcp=0 has_udp=0
+
+    while IFS= read -r layer; do
+        layer=$(echo "$layer" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        case "$layer" in
+            ss://*)
+                inner_type="ss"
+                inner_url="$layer"
+                inner_url="${inner_url%%\?*}"
+                echo_date "  内层协议: ss" >> $LOG_FILE
+                ;;
+            hysteria2://*)
+                inner_type="hysteria2"
+                inner_url="$layer"
+                echo_date "  内层协议: hysteria2" >> $LOG_FILE
+                ;;
+            kcptun://*)
+                has_kcp=1
+                kcp_args="${layer#kcptun://}"
+                echo_date "  中层协议: kcptun" >> $LOG_FILE
+                ;;
+            udp2raw://*)
+                has_udp=1
+                udp_args="${layer#udp2raw://}"
+                echo_date "  外层协议: udp2raw" >> $LOG_FILE
+                ;;
+        esac
+    done < "$layers_file"
+    rm -f "$layers_file"
+
+    [ -z "$inner_url" ] && {
+        echo_date "🔴串联节点未找到内层协议(ss/hysteria2)，跳过" >> $LOG_FILE
+        return 1
+    }
+
+    # 从外到内分配端口
+    local port_outer="" port_middle="" port_inner=""
+
+    [ "$has_udp" -eq 1 ] && {
+        port_outer=$(find_free_port)
+        [ -z "$port_outer" ] && {
+            echo_date "🔴端口分配失败(1191-1391已满)，跳过" >> $LOG_FILE
+            return 1
+        }
+        echo_date "  udp2raw 监听端口: $port_outer" >> $LOG_FILE
+    }
+    [ "$has_kcp" -eq 1 ] && {
+        port_middle=$(find_free_port)
+        [ -z "$port_middle" ] && {
+            echo_date "🔴端口分配失败(1191-1391已满)，跳过" >> $LOG_FILE
+            return 1
+        }
+        echo_date "  kcptun 监听端口: $port_middle" >> $LOG_FILE
+    }
+
+    port_inner="${port_middle:-$port_outer}"
+
+    # 改写内层 URL 端口并去掉 ss query
+    local new_inner_url="$inner_url"
+    new_inner_url=$(echo "$new_inner_url" | sed "s/@127\.0\.0\.1:[0-9]*/@127.0.0.1:$port_inner/")
+    [ "$inner_type" = "ss" ] && new_inner_url="${new_inner_url%%\?*}"
+
+    # 改写 kcptun 端口
+    local kcp_args_final="$kcp_args"
+    if [ "$has_kcp" -eq 1 ] && [ -n "$port_middle" ] && [ -n "$port_outer" ]; then
+        kcp_args_final=$(echo "$kcp_args_final" | sed "s/--listen 127\.0\.0\.1:[0-9]*/--listen 127.0.0.1:$port_middle/")
+        kcp_args_final=$(echo "$kcp_args_final" | sed "s/--target 127\.0\.0\.1:[0-9]*/--target 127.0.0.1:$port_outer/")
+    fi
+
+    # 改写 udp2raw 端口
+    local udp_args_final="$udp_args"
+    if [ "$has_udp" -eq 1 ] && [ -n "$port_outer" ]; then
+        udp_args_final=$(echo "$udp_args_final" | sed "s/-l 127\.0\.0\.1:[0-9]*/-l 127.0.0.1:$port_outer/")
+    fi
+
+    # 写入内层 URL 到 Custom.yaml
+    echo "$new_inner_url" >> "$config_file"
+    echo_date "🟢串联节点 $label 写入完成，内层端口: $port_inner" >> $LOG_FILE
+
+    # 保存串联配置供启动时拉起 daemon
+    mkdir -p "$chain_dir"
+    local chain_conf="$chain_dir/$name"
+    cat > "$chain_conf" <<- EOF
+label=$label
+inner_type=$inner_type
+EOF
+    [ "$has_kcp" -eq 1 ] && echo "kcp_args=$kcp_args_final" >> "$chain_conf"
+    [ "$has_udp" -eq 1 ] && echo "udp_args=$udp_args_final" >> "$chain_conf"
+    echo_date "串联配置已保存: $chain_conf" >> $LOG_FILE
 }
 
 # 机场规则链接处理

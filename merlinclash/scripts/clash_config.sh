@@ -2051,6 +2051,60 @@ kill_process() {
 		echo_date "关闭haveged进程." >> $LOG_FILE
 		killall haveged >/dev/null 2>&1
 	fi
+	kill_chain_daemons
+}
+
+start_chain_daemons() {
+	local chain_dir="/koolshare/merlinclash/chain_configs"
+	[ ! -d "$chain_dir" ] && return 0
+	local count=0
+	for conf in "$chain_dir"/*; do
+		[ ! -f "$conf" ] && continue
+		count=$((count + 1))
+		local label="" udp_args="" kcp_args=""
+		while IFS='=' read -r key val; do
+			case "$key" in
+				label) label="$val" ;;
+				udp_args) udp_args="$val" ;;
+				kcp_args) kcp_args="$val" ;;
+			esac
+		done < "$conf"
+		echo_date "启动串联节点 [$label]..." >> $LOG_FILE
+		# 从外到内启动
+		if [ -n "$udp_args" ]; then
+			local remote_host
+			remote_host=$(echo "$udp_args" | sed -n 's/.*-r \([^ ]*\) .*/\1/p')
+			if echo "$remote_host" | grep -qE '^[a-zA-Z]'; then
+				local resolved_ip
+				resolved_ip=$(nslookup "$remote_host" 2>/dev/null | tail -2 | head -1 | awk '{print $3}')
+				[ -n "$resolved_ip" ] && udp_args=$(echo "$udp_args" | sed "s/-r $remote_host/-r $resolved_ip/")
+			fi
+			/koolshare/bin/udp2raw $udp_args &
+			echo_date "  udp2raw 已启动" >> $LOG_FILE
+			sleep 1
+		fi
+		if [ -n "$kcp_args" ]; then
+			/koolshare/bin/kcptun $kcp_args &
+			echo_date "  kcptun 已启动" >> $LOG_FILE
+			sleep 1
+		fi
+		echo_date "✅串联节点 [$label] 启动完成" >> $LOG_FILE
+	done
+	[ "$count" -gt 0 ] && echo_date "共启动 $count 个串联节点" >> $LOG_FILE
+}
+
+kill_chain_daemons() {
+	local killed=0
+	if pidof kcptun >/dev/null 2>&1; then
+		killall kcptun >/dev/null 2>&1
+		killed=1
+	fi
+	if pidof udp2raw >/dev/null 2>&1; then
+		killall udp2raw >/dev/null 2>&1
+		killed=1
+	fi
+	[ "$killed" -eq 1 ] && echo_date "关闭串联节点进程" >> $LOG_FILE
+	rm -rf /tmp/.merlinclash_chain_assigned
 }
 
 kill_cron_job() {
@@ -2377,6 +2431,7 @@ apply_mc() {
 	echo_date ---------------------- 📌创建ipset规则 --------------------- >> $LOG_FILE
 	creat_ipset	#创建相关ipset规则
 	set_sys	#启动增熵
+	start_chain_daemons
 	echo_date ---------------------- 📌启动Mihomo内核 --------------------- >> $LOG_FILE
 	start_clash	#启动内核
 	start_remark	#恢复记忆节点

@@ -256,3 +256,26 @@ unset_lock(){
 # merlinclash_bak_dns 备份-DNS设置
 # merlinclash_bak_db  备份-数据库
 # merlinclash_bak_acl 备份-访问控制
+
+CHAIN_PORT_MIN=1191
+CHAIN_PORT_MAX=1391
+
+find_free_port() {
+	local port=$CHAIN_PORT_MIN
+	local used_ports
+	used_ports=$(awk 'NR>1{print $2}' /proc/net/tcp 2>/dev/null | awk -F: '{print $2}' | sort -n | uniq)
+	used_ports="$used_ports
+$(awk '{printf "%04X\n", $1}' /tmp/.merlinclash_chain_assigned 2>/dev/null)"
+	while [ "$port" -le "$CHAIN_PORT_MAX" ]; do
+		local hex
+		hex=$(printf "%04X" "$port" 2>/dev/null)
+		if ! echo "$used_ports" | grep -qi "^${hex}$"; then
+			echo "$port"
+			echo "$port" >> /tmp/.merlinclash_chain_assigned
+			return 0
+		fi
+		port=$((port + 1))
+	done
+	echo ""
+	return 1
+}
