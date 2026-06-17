@@ -2961,7 +2961,12 @@ show_warp_status() {
     local warp_addr=$(jq -r '.endpoints[] | select(.tag == "warp-ep") | .address // empty' "$SINGBOX_INSTALL_DIR/singbox.json" 2>/dev/null)
     warp_addr="${warp_addr%/*}"
     if [[ -n "$warp_addr" ]]; then
-        green "WARP 分流: 已启用 ($warp_addr)"
+        local real_ip=$(curl -s --max-time 5 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
+        if [[ -n "$real_ip" ]]; then
+            green "WARP 分流: 已启用 (本地: $warp_addr, 出口: $real_ip)"
+        else
+            green "WARP 分流: 已启用 ($warp_addr)"
+        fi
     else
         yellow "WARP 分流: 未启用"
     fi
