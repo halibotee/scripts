@@ -1157,15 +1157,15 @@ warp_management_menu() {
         if $cfg_enabled; then
             case $warp_choice in
                 1) if disable_warp_in_config; then sync; systemctl restart ax-singbox.service 2>/dev/null; green "Sing-box 已重启。"; else yellow "禁用失败。"; fi; read -p $'\n按任意键返回主菜单...' -n1 -s; break;;
-                2) edit_warp_domains;;
-                0) break;;
+2) edit_warp_domains; break;;
+0) break;;
                 *) red "无效选择!"; sleep 1;;
             esac
         elif [[ -f "$warp_key_file" ]]; then
             case $warp_choice in
                 1) if enable_warp_in_config; then sync; systemctl restart ax-singbox.service 2>/dev/null; green "Sing-box 已重启。"; else yellow "启用失败。"; fi; read -p $'\n按任意键返回主菜单...' -n1 -s; break;;
-                2) edit_warp_domains;;
-                0) break;;
+2) edit_warp_domains; break;;
+0) break;;
                 *) red "无效选择!"; sleep 1;;
             esac
         else
@@ -1177,8 +1177,8 @@ warp_management_menu() {
                         yellow "注册失败。"
                     fi
                     read -p $'\n按任意键返回主菜单...' -n1 -s; break;;
-                2) edit_warp_domains;;
-                0) break;;
+2) edit_warp_domains; break;;
+0) break;;
                 *) red "无效选择!"; sleep 1;;
             esac
         fi
