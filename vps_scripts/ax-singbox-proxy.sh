@@ -3153,6 +3153,37 @@ install_sys_opt() {
 }
 
 # -----------------------------------------------------------------------------
+# 定时重启 VPS (cron)
+# -----------------------------------------------------------------------------
+toggle_weekly_reboot() {
+    local cron_file="/etc/cron.d/ax-reboot"
+    if [ -f "$cron_file" ]; then
+        rm -f "$cron_file"
+        green "定时重启已取消"
+    else
+        local minute=$((RANDOM % 60))
+        printf '# ax-optz weekly reboot\nMAILTO=""\n%s 3 * * 0 root /sbin/reboot\n' "$minute" > "$cron_file"
+        chmod 644 "$cron_file"
+        local next
+        next=$(date -d "next Sunday 03:$minute:00" '+%Y-%m-%d %H:%M' 2>/dev/null)
+        green "定时重启已启用 (下次: $next 周日)"
+    fi
+}
+
+show_reboot_cron_status() {
+    local cron_file="/etc/cron.d/ax-reboot"
+    if [ -f "$cron_file" ]; then
+        local minute
+        minute=$(head -3 "$cron_file" | tail -1 | awk '{print $1}')
+        local next
+        next=$(date -d "next Sunday 03:${minute}:00" '+%Y-%m-%d %H:%M' 2>/dev/null)
+        echo -e " 定时重启: $(green "已启用") 下次: $next 周日"
+    else
+        echo -e " 定时重启: $(yellow "未设置")"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # 卸载所有 (REFACTORED: 修复软卸载路径)
 # -----------------------------------------------------------------------------
 uninstall_all() {
@@ -3197,6 +3228,7 @@ uninstall_all() {
     rm -f "$INSTANCE_NAMES_FILE" "$SERVER_ADDR_FILE" "$PUBLIC_IP_CACHE"
     log "步骤 5: 清理脚本文件和残留..."
     rm -rf /root/scripts /root/ax-singbox-proxy.sh /root/ax-acme.sh /root/ax-optz.sh
+    rm -f /etc/cron.d/ax-reboot
     log "步骤 6: 重载 systemd 并清理状态..."
     systemctl daemon-reload; systemctl reset-failed
     green "Systemd 已重载并清理。"
@@ -3317,6 +3349,7 @@ display_main_menu() {
     cyan "--- 工具管理 ---"
     echo " 11) 运行VPS优化脚本"
     echo " 12) ACME证书管理"
+    echo " 13) 定时重启VPS"
     echo "----------------------------------"   
     echo " 99) 卸载"
     echo "----------------------------------"   
@@ -3325,6 +3358,8 @@ display_main_menu() {
     show_global_tls_status
     echo "----------------------------------"
     show_warp_status
+    echo "----------------------------------"
+    show_reboot_cron_status
     echo "----------------------------------"
     show_status_summary
 }
@@ -3361,7 +3396,8 @@ handle_main_menu_choice() {
         9) restart_all_services ;;
         10) check_for_updates; read -p "按任意键继续..." -n1 -s ;;
         11) clear; install_sys_opt; read -p $'\n按任意键返回...' -n1 -s ;;
-        12) clear; run_local_script "$AX_ACME_SCRIPT" "ACME 证书管理" "$AX_ACME_URL"; read -p $'\n按任意键返回...' -n1 -s ;;
+         12) clear; run_local_script "$AX_ACME_SCRIPT" "ACME 证书管理" "$AX_ACME_URL"; read -p $'\n按任意键返回...' -n1 -s ;;
+         13) toggle_weekly_reboot; read -p $'\n按任意键返回...' -n1 -s ;;
         99) uninstall_all; if [[ $? -eq 0 ]]; then exit 0; fi ;;
         0) trap - SIGINT; exit 0 ;; 
         *) red "无效选择!"; sleep 1 ;;
@@ -3385,7 +3421,7 @@ main_menu(){
         local num_items=${#QUICK_MANAGE_MAP_ID[@]}
         local max_index=$((20 + num_items))
         echo "----------------------------------"
-        local prompt="请选择 [0-12, 99"
+        local prompt="请选择 [0-13, 99"
         if [[ $num_items -gt 0 ]]; then
             prompt+=", 21-${max_index}"
         fi
