@@ -2061,15 +2061,31 @@ start_chain_daemons() {
 	for conf in "$chain_dir"/*; do
 		[ ! -f "$conf" ] && continue
 		count=$((count + 1))
-		local label="" udp_args="" kcp_args=""
+		local label="" udp_args="" kcp_args="" r_host="" r_ip=""
 		while IFS='=' read -r key val; do
 			case "$key" in
 				label) label="$val" ;;
 				udp_args) udp_args="$val" ;;
 				kcp_args) kcp_args="$val" ;;
+				r_host) r_host="$val" ;;
+				r_ip) r_ip="$val" ;;
 			esac
 		done < "$conf"
 		echo_date "启动串联节点 [$label]..." >> $LOG_FILE
+		# 启动时重新解析域名，获取最新 IP
+		if [ -n "$r_host" ]; then
+			local remote_val remote_port new_ip
+			remote_val=$(echo "$udp_args" | sed -n 's/.*-r \([^ ]*\) .*/\1/p')
+			remote_port="${remote_val##*:}"
+			new_ip=$(nslookup "$r_host" 2>/dev/null | grep "Address 1:" | tail -1 | awk '{print $3}')
+			if [ -n "$new_ip" ]; then
+				udp_args=$(echo "$udp_args" | sed "s/-r $r_host:[0-9]*/-r $new_ip:$remote_port/")
+				echo_date "    域名 $r_host → $new_ip:$remote_port" >> $LOG_FILE
+			elif [ -n "$r_ip" ]; then
+				udp_args=$(echo "$udp_args" | sed "s/-r $r_host:[0-9]*/-r $r_ip:$remote_port/")
+				echo_date "    域名解析失败，使用备用IP $r_ip:$remote_port" >> $LOG_FILE
+			fi
+		fi
 		[ -n "$udp_args" ] && /koolshare/bin/udp2raw $udp_args &
 		[ -n "$kcp_args" ] && /koolshare/bin/kcptun $kcp_args &
 		sleep 1
