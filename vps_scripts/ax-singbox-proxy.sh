@@ -998,6 +998,45 @@ json.dump(cfg, open('$tmpfile','w'), indent=2)
 }
 
 # -----------------------------------------------------------------------------
+# 更新 singbox.json 中的 WARP 分流域名列表 (不修改 endpoint/inbound)
+# -----------------------------------------------------------------------------
+update_warp_domains() {
+    local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    if [[ ! -f "$config_file" ]]; then red "错误: singbox.json 不存在。" >&2; return 1; fi
+    if ! command -v python3 &>/dev/null; then red "错误: python3 未安装。" >&2; return 1; fi
+    if ! python3 -c "
+import json,sys
+cfg = json.load(open('$config_file'))
+for ep in cfg.get('endpoints', []):
+    if ep.get('tag') == 'warp-ep' and ep.get('type') == 'wireguard':
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        yellow "WARP 未启用，无需更新。"; return 1
+    fi
+    local route_rules=$SINGBOX_DIRECT_ROUTE_RULES
+    route_rules=${route_rules//__WARP_DOMAIN_SUFFIX_LIST__/$(get_warp_domain_list)}
+    local tmpfile; tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    local rules_tmp; rules_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
+    printf '%s\n' "$route_rules" > "$rules_tmp"
+    if ! python3 -c "
+import json
+cfg = json.load(open('$config_file'))
+rules = json.load(open('$rules_tmp'))
+cfg['route']['rules'] = rules
+json.dump(cfg, open('$tmpfile','w'), indent=2)
+" 2>/dev/null; then
+        rm -f "$tmpfile" "$rules_tmp"; red "更新失败。" >&2; return 1
+    fi
+    rm -f "$rules_tmp"
+    if ! python3 -c "import json; json.load(open('$tmpfile'))" 2>/dev/null; then
+        rm -f "$tmpfile"; red "输出 JSON 不合法。" >&2; return 1
+    fi
+    mv "$tmpfile" "$config_file"
+    green "✓ WARP 分流域名已更新"
+}
+
+# -----------------------------------------------------------------------------
 # 从 .warp_domain_list 读取 WARP 分流域名，输出 JSON 数组字符串
 # 文件不存在时自动创建含 32 个默认域名的文件
 # -----------------------------------------------------------------------------
@@ -1037,6 +1076,8 @@ github.com
 githubassets.com
 stackoverflow.com
 sourceforge.net
+ip.skk.moe
+ip-api.com
 EOF
     fi
     local first=true
@@ -1070,13 +1111,17 @@ edit_warp_domains() {
         ((count++))
     done < "$domain_file"
     green "当前域名: $count 个"
-    read -p $'是否重启 sing-box 使更改生效？(y/n): ' yn
+    read -p $'是否应用新域名并重启 sing-box？(y/n): ' yn
     if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
-        sync
-        systemctl restart ax-singbox.service 2>/dev/null
-        green "Sing-box 已重启。"
+        if update_warp_domains; then
+            sync
+            systemctl restart ax-singbox.service 2>/dev/null
+            green "Sing-box 已重启，新域名已生效。"
+        else
+            yellow "域名已保存，但未能更新配置。请稍后手动重启。"
+        fi
     else
-        yellow "更改将在下次重启 sing-box 后生效。"
+        yellow "域名已保存。下次重启 sing-box 或启用 WARP 时生效。"
     fi
 }
 
