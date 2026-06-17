@@ -3148,6 +3148,7 @@ run_local_script() {
 # 安装 VPS 一键优化脚本
 # -----------------------------------------------------------------------------
 install_sys_opt() {
+    rm -f "$AX_OPTZ_SCRIPT"
     run_local_script "$AX_OPTZ_SCRIPT" "VPS 优化脚本" "$AX_OPTZ_URL"
 }
 
