@@ -3184,6 +3184,98 @@ show_reboot_cron_status() {
 }
 
 # -----------------------------------------------------------------------------
+# 导出配置备份
+# -----------------------------------------------------------------------------
+export_config_backup() {
+    local date_str=$(date +%Y%m%d)
+    local tmp_dir="/tmp/ax-backup-$date_str"
+    local out_file="$HOME/ax-backup-$date_str.tar.gz"
+    mkdir -p "$tmp_dir"
+
+    local items=(
+        "/etc/sing-box/singbox.json"
+        "/etc/sing-box/.warp_wireguard.json"
+        "/etc/sing-box/.reality_keys.json"
+        "/etc/sing-box/last_ss_pass.txt"
+        "/etc/sing-box/last_hy2_pass.txt"
+        "/etc/kcptun"
+        "/etc/udp2raw"
+        "/etc/ax-certs"
+        "/etc/ax-server-addr.json"
+        "/etc/ax-instance-names.json"
+        "/etc/ax-optz.conf"
+        "/etc/cron.d/ax-reboot"
+    )
+    for p in "${items[@]}"; do
+        [ -e "$p" ] && cp -a --parents "$p" "$tmp_dir/" 2>/dev/null
+    done
+
+    tar -czf "$out_file" -C /tmp "ax-backup-$date_str" 2>/dev/null
+    rm -rf "$tmp_dir"
+
+    local size
+    size=$(du -h "$out_file" | cut -f1)
+    local ip
+    ip=$(get_public_ip)
+
+    echo ""
+    green "==== 备份完成 ===="
+    echo "  文件: $out_file"
+    echo "  大小: $size"
+    echo ""
+    echo "下载到本地:"
+    yellow "  scp root@$ip:$out_file ."
+    echo ""
+    read -p $'\n按任意键返回...' -n1 -s
+}
+
+# -----------------------------------------------------------------------------
+# 导入配置备份
+# -----------------------------------------------------------------------------
+import_config_backup() {
+    local ip
+    ip=$(get_public_ip)
+    echo ""
+    echo "请先将备份文件上传到 VPS:"
+    yellow "  scp ax-backup-日期.tar.gz root@$ip:"
+    echo ""
+    read -rp "输入备份文件路径 (或直接回车取消): " file
+    [ -z "$file" ] && { yellow "已取消。"; return; }
+    [ ! -f "$file" ] && { red "文件不存在: $file"; return; }
+
+    local tmp_dir="/tmp/ax-restore-$$"
+    mkdir -p "$tmp_dir"
+    tar -xzf "$file" -C "$tmp_dir" 2>/dev/null || { red "解压失败，文件可能已损坏。"; rm -rf "$tmp_dir"; return; }
+
+    local base_dir=$(find "$tmp_dir" -maxdepth 1 -type d | tail -1)
+    [ -z "$base_dir" ] && { red "备份格式错误。"; rm -rf "$tmp_dir"; return; }
+
+    echo ""
+    echo "----------------------------------"
+    green "找到备份内容:"
+    find "$base_dir" -type f | sed "s|$base_dir||" | sort
+    echo "----------------------------------"
+    read -rp "确认恢复这些文件？现有文件将被覆盖 (y/N): " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        rm -rf "$tmp_dir"; yellow "已取消。"; return
+    fi
+
+    cp -a "$base_dir"/* /
+    rm -rf "$tmp_dir"
+    green "配置已恢复。"
+
+    echo "正在重建 systemd 服务..."
+    ensure_template_files
+    systemctl daemon-reload
+    systemctl restart ax-singbox.service 2>/dev/null
+    for srv in /etc/systemd/system/ax-kcptun@*.service /etc/systemd/system/ax-udp2raw@*.service; do
+        [ -f "$srv" ] && systemctl restart "$(basename "$srv")" 2>/dev/null || true
+    done
+    green "服务已重启，请检查节点运行状态。"
+    read -p $'\n按任意键返回...' -n1 -s
+}
+
+# -----------------------------------------------------------------------------
 # 卸载所有 (REFACTORED: 修复软卸载路径)
 # -----------------------------------------------------------------------------
 uninstall_all() {
@@ -3350,6 +3442,8 @@ display_main_menu() {
     echo " 11) 运行VPS优化脚本"
     echo " 12) ACME证书管理"
     echo " 13) 定时重启VPS"
+    echo " 14) 导出配置备份"
+    echo " 15) 导入配置恢复"
     echo "----------------------------------"   
     echo " 99) 卸载"
     echo "----------------------------------"   
@@ -3398,6 +3492,8 @@ handle_main_menu_choice() {
         11) clear; install_sys_opt; read -p $'\n按任意键返回...' -n1 -s ;;
          12) clear; run_local_script "$AX_ACME_SCRIPT" "ACME 证书管理" "$AX_ACME_URL"; read -p $'\n按任意键返回...' -n1 -s ;;
          13) toggle_weekly_reboot; read -p $'\n按任意键返回...' -n1 -s ;;
+         14) clear; export_config_backup ;;
+         15) clear; import_config_backup ;;
         99) uninstall_all; if [[ $? -eq 0 ]]; then exit 0; fi ;;
         0) trap - SIGINT; exit 0 ;; 
         *) red "无效选择!"; sleep 1 ;;
@@ -3421,7 +3517,7 @@ main_menu(){
         local num_items=${#QUICK_MANAGE_MAP_ID[@]}
         local max_index=$((20 + num_items))
         echo "----------------------------------"
-        local prompt="请选择 [0-13, 99"
+        local prompt="请选择 [0-15, 99"
         if [[ $num_items -gt 0 ]]; then
             prompt+=", 21-${max_index}"
         fi
