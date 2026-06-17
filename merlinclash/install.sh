@@ -57,7 +57,7 @@ fuck_bug(){
 	mc2_version=${mc2_version:-68}		
 	if [ "${mcinstall}" == "1" ] && [ "$mc2_install" != "Magic Catling2" -o "$mc2_version" -lt 100 ]; then
 		echo_date "已安装旧版本的Merlin Clash，本插件与之冲突！"
-		echo_date "请卸载后，再次安装Magic Catling 2！"
+		echo_date "请卸载后，再次安装AX-MerlinClash！"
 		exit_install 2
 	fi
 }
@@ -430,8 +430,8 @@ install_now(){
 	fi
 	dbus set softcenter_module_merlinclash_install="1"
 	dbus set softcenter_module_merlinclash_version="$CUR_VERSION"
-	dbus set softcenter_module_merlinclash_title="Magic Catling 2（修改版）"
-	dbus set softcenter_module_merlinclash_description="Magic Catling 2（修改版）:一个基于规则的代理程序，支持多种协议~" 
+	dbus set softcenter_module_merlinclash_title="AX-MerlinClash"
+	dbus set softcenter_module_merlinclash_description="AX-MerlinClash:一个基于规则的代理程序，支持多种协议~" 
 	#设置内核版本
 	local ret=$(env -i PATH=${PATH} /koolshare/bin/clash -v 2>/dev/null | head -n 1)
 	local clashTmpV1=$(echo "$ret" | cut -d " " -f2)
