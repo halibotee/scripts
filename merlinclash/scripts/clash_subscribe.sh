@@ -239,8 +239,9 @@ parse_and_process_urls() {
     local config_file="${2:-/koolshare/merlinclash/yaml_bak/${subscribe_name}/Custom.yaml}"
     local ap_dir="${3:-/koolshare/merlinclash/yaml_bak/${subscribe_name}}"
     local file_name="${4:-""}"
-    # 清理现有配置文件
+    # 清理现有配置文件和串联节点配置
     rm -rf "$ap_dir" >/dev/null 2>&1
+    rm -rf /koolshare/merlinclash/chain_configs/* >/dev/null 2>&1
     # 计数器
     local count=1
     local url name ua_tmp
@@ -414,6 +415,17 @@ process_chain_link() {
                 has_udp=1
                 udp_args="${layer#udp2raw://}"
                 echo_date "  外层协议: udp2raw" >> $LOG_FILE
+                # 订阅时解析 -r 域名，避免启动时每次都查 DNS
+                local remote_host
+                remote_host=$(echo "$udp_args" | sed -n 's/.*-r \([^ ]*\) .*/\1/p')
+                if echo "$remote_host" | grep -qE '^[a-zA-Z]'; then
+                    local resolved_ip
+                    resolved_ip=$(nslookup "$remote_host" 2>/dev/null | tail -2 | head -1 | awk '{print $3}')
+                    if [ -n "$resolved_ip" ]; then
+                        udp_args=$(echo "$udp_args" | sed "s/-r $remote_host/-r $resolved_ip/")
+                        echo_date "    域名 $remote_host → $resolved_ip" >> $LOG_FILE
+                    fi
+                fi
                 ;;
         esac
     done < "$layers_file"
@@ -464,8 +476,8 @@ process_chain_link() {
         udp_args_final=$(echo "$udp_args_final" | sed "s/-l 127\.0\.0\.1:[0-9]*/-l 127.0.0.1:$port_outer/")
     fi
 
-    # 写入内层 URL 到 Custom.yaml
-    echo "$new_inner_url" >> "$config_file"
+    # 写入内层 URL 到 Custom.yaml（带 #label 节点名）
+    echo "${new_inner_url}#${label}" >> "$config_file"
     echo_date "🟢串联节点 $label 写入完成，内层端口: $port_inner" >> $LOG_FILE
 
     # 保存串联配置供启动时拉起 daemon
@@ -548,7 +560,6 @@ yaml_merge(){
         yq eval ".proxy-providers.Custom.type = \"file\"" -i "$yamltmp_file"
         yq eval ".proxy-providers.Custom.path = \"$custom_path\"" -i "$yamltmp_file"
         # yq eval ".proxy-providers.Custom.health-check.enable = false" -i "$yamltmp_file"
-        yq eval ".proxy-providers.Custom.override.additional-suffix = \" [Custom]\"" -i "$yamltmp_file"
             # 复写部分
         if [ "${merlinclash_sub_scv}" == "1" ]; then
             yq eval ".proxy-providers.Custom.override.skip-cert-verify = true" -i "$yamltmp_file"

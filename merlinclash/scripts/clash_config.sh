@@ -2070,25 +2070,8 @@ start_chain_daemons() {
 			esac
 		done < "$conf"
 		echo_date "启动串联节点 [$label]..." >> $LOG_FILE
-		# 从外到内启动
-		if [ -n "$udp_args" ]; then
-			local remote_host
-			remote_host=$(echo "$udp_args" | sed -n 's/.*-r \([^ ]*\) .*/\1/p')
-			if echo "$remote_host" | grep -qE '^[a-zA-Z]'; then
-				local resolved_ip
-				resolved_ip=$(nslookup "$remote_host" 2>/dev/null | tail -2 | head -1 | awk '{print $3}')
-				[ -n "$resolved_ip" ] && udp_args=$(echo "$udp_args" | sed "s/-r $remote_host/-r $resolved_ip/")
-			fi
-			/koolshare/bin/udp2raw $udp_args &
-			echo_date "  udp2raw 已启动" >> $LOG_FILE
-			sleep 1
-		fi
-		if [ -n "$kcp_args" ]; then
-			/koolshare/bin/kcptun $kcp_args &
-			echo_date "  kcptun 已启动" >> $LOG_FILE
-			sleep 1
-		fi
-		echo_date "✅串联节点 [$label] 启动完成" >> $LOG_FILE
+		[ -n "$udp_args" ] && /koolshare/bin/udp2raw $udp_args &
+		[ -n "$kcp_args" ] && /koolshare/bin/kcptun $kcp_args &
 	done
 	[ "$count" -gt 0 ] && echo_date "共启动 $count 个串联节点" >> $LOG_FILE
 }
