@@ -2977,7 +2977,7 @@ json.dump(cfg, open('$SINGBOX_INSTALL_DIR/singbox.json','w'), indent=2)
         fi
         local real_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
         if [[ -n "$real_ip" ]]; then
-            green "WARP 分流: 已启用 (本地: $warp_addr, 出口: $real_ip)"
+            green "WARP 分流: 已启用 (出口: $real_ip)"
         else
             green "WARP 分流: 已启用 ($warp_addr)"
         fi
