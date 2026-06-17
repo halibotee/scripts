@@ -8,7 +8,7 @@ LOG_FILE=/tmp/upload/merlinclash_log.txt
 
 package_plugin(){
 	rm -rf /tmp/merlinclash
-	rm -rf /tmp/upload/mc_package.tar.gz
+	rm -rf /tmp/upload/AX-MerlinClash.tar.gz
 
 	echo_date "检测架构..." >> $LOG_FILE
 	local ROT_ARCH=$(uname -m)
@@ -77,15 +77,15 @@ package_plugin(){
 
 	echo_date "正在打包..." >> $LOG_FILE
 	cd /tmp
-	tar -czf /tmp/upload/mc_package.tar.gz merlinclash
-	if [ -s /tmp/upload/mc_package.tar.gz ]; then
-		local SIZE=$(du -h /tmp/upload/mc_package.tar.gz | awk '{print $1}')
+	tar -czf /tmp/upload/AX-MerlinClash.tar.gz merlinclash
+	if [ -s /tmp/upload/AX-MerlinClash.tar.gz ]; then
+		local SIZE=$(du -h /tmp/upload/AX-MerlinClash.tar.gz | awk '{print $1}')
 		echo_date "打包完成，大小: $SIZE" >> $LOG_FILE
 		rm -rf /tmp/merlinclash
 	else
 		echo_date "打包失败，文件为空" >> $LOG_FILE
 		rm -rf /tmp/merlinclash
-		rm -rf /tmp/upload/mc_package.tar.gz
+		rm -rf /tmp/upload/AX-MerlinClash.tar.gz
 	fi
 }
 
