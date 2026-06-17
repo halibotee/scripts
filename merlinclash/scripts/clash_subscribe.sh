@@ -244,6 +244,9 @@ parse_and_process_urls() {
     # 计数器
     local count=1
     local url name ua_tmp
+
+    # 统一分隔符：空行/换行 → |
+    input_text=$(echo "$input_text" | tr '\n' '|' | sed 's/||*/|/g; s/^|//; s/|$//')
     
     # 临时保存IFS
     local OLDIFS="$IFS"
@@ -484,8 +487,8 @@ aprule_links() {
     local count=1
     local links=""
     
-    # 清理输入
-    input=$(echo "$input" | tr -d '\r\n')
+    # 统一分隔符：空行/换行 → |
+    input=$(echo "$input" | tr '\n' '|' | sed 's/||*/|/g; s/^|//; s/|$//')
 
     if echo "$input" | grep -q '|'; then
         echo_date "🔺当使用机场规则时，合并订阅不可用，准备取第一个可用订阅链接" >> "$LOG_FILE"
