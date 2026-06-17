@@ -2959,6 +2959,7 @@ show_global_tls_status() {
 show_warp_status() {
     echo "--- WARP 状态 ---"
     local warp_addr=$(jq -r '.endpoints[] | select(.tag == "warp-ep") | .address // empty' "$SINGBOX_INSTALL_DIR/singbox.json" 2>/dev/null)
+    warp_addr="${warp_addr%/*}"
     if [[ -n "$warp_addr" ]]; then
         green "WARP 分流: 已启用 ($warp_addr)"
     else
