@@ -833,26 +833,15 @@ fn_optimize_auto() {
     local result
 
     if fn_check_if_optimized; then
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "  ⚠ 系统已被优化过"
-        echo "  操作日志: $ACTION_LOG"
-        echo "  再次优化将覆盖部分配置，历史备份保留在 $BACKUP_DIR"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        if [ $FORCE_YES -eq 1 ]; then
-            echo "非交互模式: 自动继续执行优化。"
-        else
-            read -rp "是否继续优化? (y/N): " choice || choice="n"
-            if [ "$choice" != "y" ] && [ "$choice" != "Y" ]; then
-                echo "已取消。"; return 1
-            fi
-        fi
+        echo "检测到系统已被优化过，正在重新执行优化..."
+        fn_log "信息" "系统已被优化过，用户选择重新优化。"
     fi
 
     fn_backup_state || { echo "[失败] 备份失败，退出。"; return 1; }
 
     fn_fix_apt_sources_if_needed || echo "[警告] 包管理器源检查失败。"
 
-    fn_setup_aggressive_network && echo "[完成] 网络优化配置已创建。" || echo "[警告] 网络优化配置创建失败。"
+    fn_setup_aggressive_network && echo "[完成] 网络优化加速已创建。" || echo "[警告] 网络优化加速创建失败。"
     echo ""
 
     fn_setup_journald_volatile; case $? in 0) echo "[完成] Journald 已配置为内存模式。";; 2) echo "[跳过] Journald 已优化。";; esac; echo ""
@@ -1065,7 +1054,7 @@ fn_show_status_report() {
     fi
     
     fn_print_line "BBR+FQ 加速" "$bbr_status" "[ 已启用 ]" "[ 未启用 ]" ""
-    fn_print_line "网络优化配置" "$sysctl_status" "[ 已配置 ]" "[ 未配置 ]" ""
+    fn_print_line "网络优化加速" "$sysctl_status" "[ 已配置 ]" "[ 未配置 ]" ""
     
     local ipv6_status="false"
     local ipv6_details=""
@@ -1102,7 +1091,35 @@ fn_show_status_report() {
     echo "------------------------------------------------------"
 }
 
+fn_toggle_ipv6() {
+    local conf="/etc/sysctl.d/99-net.conf"
+    local current
+    current=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)
+    if [ "$current" == "1" ]; then
+        echo "正在启用 IPv6..."
+        sysctl -w net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 >/dev/null
+        if [ -f "$conf" ]; then
+            sed -i '/net.ipv6.conf.*disable_ipv6/d' "$conf" 2>/dev/null || \
+            sed -i '' '/net.ipv6.conf.*disable_ipv6/d' "$conf" 2>/dev/null
+        fi
+        echo "[完成] IPv6 已启用"
+        fn_log "信息" "IPv6 已手动启用"
+    else
+        echo "正在禁用 IPv6..."
+        sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 >/dev/null
+        sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null
+        if [ -f "$conf" ]; then
+            grep -q 'net.ipv6.conf.all.disable_ipv6' "$conf" || \
+                printf "\n# IPv6 禁用\nnet.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\nnet.ipv6.conf.lo.disable_ipv6 = 0\n" >> "$conf"
+        fi
+        echo "[完成] IPv6 已禁用"
+        fn_log "信息" "IPv6 已手动禁用"
+    fi
+    sysctl --system > /dev/null 2>&1
+}
+
 fn_show_menu() {
+    while true; do
     clear
     
     # 在菜单上方显示系统优化状态
@@ -1115,9 +1132,19 @@ fn_show_menu() {
     echo " 备份目录: $BACKUP_DIR"
     echo " 日志文件: $LOG_FILE"
     echo "==============================================="
-    echo " 1) 执行系统优化"
-    echo " 2) 撤销优化 (保留BBR和acme证书)"
-    echo " 3) 优化网络代理服务"
+    if fn_check_if_optimized; then
+        echo " 1) 重新系统优化"
+    else
+        echo " 1) 执行系统优化"
+    fi
+    echo " 2) 撤销优化"
+    local ipv6_now
+    ipv6_now=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)
+    if [ "$ipv6_now" == "1" ]; then
+        echo " 3) IPv6 启用"
+    else
+        echo " 3) IPv6 禁用"
+    fi
     echo " 0) 退出"
     echo "==============================================="
 
@@ -1129,29 +1156,21 @@ fn_show_menu() {
             ;;
         2) 
             fn_restore_all || true 
-            read -rp "撤销完成。按回车返回主菜单..." dummy || true
+            read -rp "按回车返回主菜单..." dummy || true
             ;;
         3)
-            echo "[任务] 正在优化网络代理服务..."
-            result=0
-            fn_prioritize_network_services_auto || result=$?
-            if [ $result -eq 0 ]; then
-                echo "[完成] 优化完成。"
-            elif [ $result -eq 2 ]; then
-                echo "[跳过] 未检测到服务或服务均已配置。"
-            fi
+            fn_toggle_ipv6
             read -rp "按回车返回菜单..." dummy || true
             ;;
         0) 
-            echo "退出。"
-            fn_log "信息" "退出。"; exit 0 
+            break
             ;;
         *) 
             echo "错误: 无效选项。"
             fn_log "错误" "无效选项。"; sleep 1;
             ;;
     esac
-
+    done
 }
 
 fn_check_root
