@@ -9,7 +9,7 @@ green() { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 blue() { printf '\033[34m%s\033[0m\n' "$*"; }
 
-set -euo pipefail
+set -uo pipefail
 IFS=$'\n\t'
 
 export FORCE_YES=0
@@ -53,7 +53,6 @@ FN_NETWORK_SERVICES_LIST=(
 
 mkdir -p "$BACKUP_DIR"
 touch "$LOG_FILE"
->> "$LOG_FILE"
 touch "$ACTION_LOG"
 
 fn_log() {
@@ -85,7 +84,7 @@ fn_check_if_optimized() {
     fi
     
     local action_count
-    action_count=$(grep -vc -E '(^#|^$)' "$ACTION_LOG" 2>/dev/null || true)
+    action_count=$(grep -vc -e '^#' -e '^$' "$ACTION_LOG" 2>/dev/null || true)
     
     if [ "${action_count:-0}" -gt 0 ]; then
         return 0
@@ -183,13 +182,13 @@ fn_detect_os() {
 fn_backup_state() {
 fn_log "信息" "正在创建备份于 $BACKUP_DIR ..."
 mkdir -p "$BACKUP_DIR" || { fn_log "错误" "无法创建 $BACKUP_DIR"; return 1; }
-cp -an /etc/fstab "${BACKUP_DIR}/fstab.bak" 2>/dev/null || true
-cp -an /etc/systemd/resolved.conf "${BACKUP_DIR}/resolved.conf.bak" 2>/dev/null || true
-cp -an /etc/systemd/system.conf "${BACKUP_DIR}/system.conf.bak" 2>/dev/null || true
-cp -an /etc/sysctl.conf "${BACKUP_DIR}/sysctl.conf.bak" 2>/dev/null || true
-cp -ran /etc/sysctl.d "${BACKUP_DIR}/sysctl.d.bak" 2>/dev/null || true
-cp -ran /etc/systemd/journald.conf.d "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/null || true
-[ -f /etc/selinux/config ] && cp -an /etc/selinux/config "${BACKUP_DIR}/selinux.config.bak" 2>/dev/null || true
+cp -a /etc/fstab "${BACKUP_DIR}/fstab.bak" 2>/dev/null || true
+cp -a /etc/systemd/resolved.conf "${BACKUP_DIR}/resolved.conf.bak" 2>/dev/null || true
+cp -a /etc/systemd/system.conf "${BACKUP_DIR}/system.conf.bak" 2>/dev/null || true
+cp -a /etc/sysctl.conf "${BACKUP_DIR}/sysctl.conf.bak" 2>/dev/null || true
+cp -ra /etc/sysctl.d "${BACKUP_DIR}/sysctl.d.bak" 2>/dev/null || true
+cp -ra /etc/systemd/journald.conf.d "${BACKUP_DIR}/journald.conf.d.bak" 2>/dev/null || true
+[ -f /etc/selinux/config ] && cp -a /etc/selinux/config "${BACKUP_DIR}/selinux.config.bak" 2>/dev/null || true
 sysctl -n net.ipv4.tcp_congestion_control > "${BACKUP_DIR}/sysctl_con_algo.bak" 2>/dev/null || true
 sysctl -n net.core.default_qdisc > "${BACKUP_DIR}/sysctl_q_algo.bak" 2>/dev/null || true
 
@@ -230,7 +229,7 @@ if [ "$OS_ID" = "debian" ] || [ "$OS_ID" = "ubuntu" ]; then
         fn_log "错误" "无法确定发行版代号，跳过自动替换源。"
         return 1
     fi
-    cp -an /etc/apt/sources.list "${BACKUP_DIR}/apt.sources.list.bak" 2>/dev/null || true
+    cp -a /etc/apt/sources.list "${BACKUP_DIR}/apt.sources.list.bak" 2>/dev/null || true
     
     if [ "$OS_ID" = "debian" ]; then
 cat > /etc/apt/sources.list <<EOF
@@ -335,10 +334,9 @@ fn_setup_aggressive_network() {
     local net_conf="/etc/ax-optz.conf"
     local latency local_bw vps_bw vps_mem=$MEM_MB
     if [ -f "$net_conf" ]; then
-        source "$net_conf"
-        latency=${LATENCY:-$latency}
-        local_bw=${LOCAL_BW:-$local_bw}
-        vps_bw=${VPS_BW:-$vps_bw}
+        latency=$(grep '^LATENCY=' "$net_conf" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+        local_bw=$(grep '^LOCAL_BW=' "$net_conf" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+        vps_bw=$(grep '^VPS_BW=' "$net_conf" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
         echo "已读取配置文件: $net_conf"
     fi
     : ${latency:=180}; : ${local_bw:=500}; : ${vps_bw:=100}
@@ -700,8 +698,7 @@ fn_trim_services_auto() {
     local extra_conf="/etc/sysctl.d/99-vps-extra.conf"
     if [[ ! -f "$extra_conf" ]]; then
         cat > "$extra_conf" <<'EOF'
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_mtu_probing = 1
+# Override: enable RFC 1337 protection (99-net.conf sets it to 0)
 net.ipv4.tcp_rfc1337 = 1
 EOF
         sysctl -p "$extra_conf" >/dev/null 2>&1 || true
@@ -791,7 +788,7 @@ fn_set_system_limits() {
     fn_log "信息" "设置系统级资源限制 (limits.conf)..."
     local limits_file="/etc/security/limits.conf"
     
-    if grep -q "vps_optimizert" "$limits_file"; then
+    if grep -q '^# Added by vps_optimizert' "$limits_file" 2>/dev/null; then
         fn_log "信息" "limits.conf 已包含优化配置，跳过。"
         return 2
     fi
@@ -901,8 +898,8 @@ fn_restore_all() {
     fn_log "警告" "开始执行撤销优化... 将从 $ACTION_LOG 恢复。"
 
     local log_restored=false
-    if [ -f "$ACTION_LOG" ] && [ $(grep -vc '^#' "$ACTION_LOG") -gt 0 ]; then
-        echo "[成功] 检测到操作日志: $ACTION_LOG (共 $(grep -vc '^#' "$ACTION_LOG") 条操作)。将执行日志反向撤销..."
+    if [ -f "$ACTION_LOG" ] && [ "$(grep -vc -e '^#' -e '^$' "$ACTION_LOG" 2>/dev/null || echo 0)" -gt 0 ]; then
+        echo "[成功] 检测到操作日志: $ACTION_LOG (共 $(grep -vc -e '^#' -e '^$' "$ACTION_LOG") 条操作)。将执行日志反向撤销..."
         fn_log "信息" "检测到有效操作日志，将执行反向撤销。"
         log_restored=true
     else
@@ -912,11 +909,11 @@ fn_restore_all() {
 
     echo "[任务]   正在停用 ZRAM 和 Swap..."
     (systemctl disable --now zramswap.service) >> "$LOG_FILE" 2>&1 || true
-    swapoff -a >/dev/null 2>&1 || true
+    swapoff /dev/zram0 2>/dev/null || swapoff -a 2>/dev/null || true
     modprobe -r zram >/dev/null 2>&1 || true
     
     if [ "$log_restored" = "true" ]; then
-        tac "$ACTION_LOG" | while read -r line; do
+        while read -r line; do
             [ -z "$line" ] && continue
             [[ "$line" == \#* ]] && continue
             
@@ -967,7 +964,7 @@ fn_restore_all() {
                     fn_log "警告" "未知的撤销操作: $action"
                     ;;
             esac
-        done
+        done < <(tac "$ACTION_LOG")
         
     fi
 
@@ -1004,6 +1001,7 @@ EOF
         "/etc/default/earlyoom"
         "/etc/sysctl.d/99-vps-extra.conf"
         "/etc/ax-optz.conf"
+        "/etc/sysctl.d/99-net.conf"
     )
     
     for f in "${files_to_clean[@]}"; do
@@ -1055,14 +1053,13 @@ fn_show_status_report() {
 
     fn_print_line() {
         local name="$1" status="$2" success_msg="$3" fail_msg="$4" details="${5:-}"
-        local status_msg="$fail_msg" details_str="" byte_len char_len visual_width name_pad
+        local status_msg="$fail_msg" details_str="" byte_len visual_width pad
         [ "$status" == "true" ] && status_msg="$success_msg"
         [ -n "$details" ] && details_str="$details"
         byte_len=$(echo -n "$name" | LC_ALL=C wc -c)
-        char_len=${#name}
-        visual_width=$(( char_len + (byte_len - char_len) / 2 ))
-        name_pad=$(( ${#name} + 27 - visual_width ))
-        printf "  %-${name_pad}s %-18s %s\n" "$name" "$status_msg" "$details_str"
+        visual_width=$(( ${#name} + (byte_len - ${#name}) / 2 ))
+        pad=$(( ${#name} + 24 - visual_width ))
+        printf "  %-${pad}s %-18s %s\n" "$name" "$status_msg" "$details_str"
     }
 
     local sysctl_conf_file="/etc/sysctl.d/99-net.conf"
@@ -1121,8 +1118,8 @@ fn_toggle_ipv6() {
         echo "正在启用 IPv6..."
         sysctl -w net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 >/dev/null
         if [ -f "$conf" ]; then
-            sed -i '/net.ipv6.conf.*disable_ipv6/d' "$conf" 2>/dev/null || \
-            sed -i '' '/net.ipv6.conf.*disable_ipv6/d' "$conf" 2>/dev/null
+            sed -i '/^[[:space:]]*net.ipv6.conf.*disable_ipv6/d' "$conf" 2>/dev/null || \
+            sed -i '' '/^[[:space:]]*net.ipv6.conf.*disable_ipv6/d' "$conf" 2>/dev/null
         fi
         echo "[完成] IPv6 已启用"
         fn_log "信息" "IPv6 已手动启用"
