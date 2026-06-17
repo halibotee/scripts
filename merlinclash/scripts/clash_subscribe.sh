@@ -415,15 +415,19 @@ process_chain_link() {
                 has_udp=1
                 udp_args="${layer#udp2raw://}"
                 echo_date "  外层协议: udp2raw" >> $LOG_FILE
-                # 订阅时解析 -r 域名，避免启动时每次都查 DNS
-                local remote_host
-                remote_host=$(echo "$udp_args" | sed -n 's/.*-r \([^ ]*\) .*/\1/p')
-                if echo "$remote_host" | grep -qE '^[a-zA-Z]'; then
+                # 订阅时解析 -r 域名（不含端口），避免启动时每次都查 DNS
+                local remote_val remote_name remote_port
+                remote_val=$(echo "$udp_args" | sed -n 's/.*-r \([^ ]*\) .*/\1/p')
+                remote_port="${remote_val##*:}"
+                remote_name="${remote_val%:$remote_port}"
+                if echo "$remote_name" | grep -qE '^[a-zA-Z]'; then
                     local resolved_ip
-                    resolved_ip=$(nslookup "$remote_host" 2>/dev/null | tail -2 | head -1 | awk '{print $3}')
+                    resolved_ip=$(nslookup "$remote_name" 2>/dev/null | grep "Address 1:" | tail -1 | awk '{print $3}')
                     if [ -n "$resolved_ip" ]; then
-                        udp_args=$(echo "$udp_args" | sed "s/-r $remote_host/-r $resolved_ip/")
-                        echo_date "    域名 $remote_host → $resolved_ip" >> $LOG_FILE
+                        udp_args=$(echo "$udp_args" | sed "s/-r $remote_val/-r $resolved_ip:$remote_port/")
+                        echo_date "    域名 $remote_name → $resolved_ip:$remote_port" >> $LOG_FILE
+                    else
+                        echo_date "    DNS解析失败，保留域名 $remote_name" >> $LOG_FILE
                     fi
                 fi
                 ;;
