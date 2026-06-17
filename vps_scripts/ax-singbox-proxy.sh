@@ -2243,18 +2243,12 @@ view_chain_client_config_3() {
     local ss_host=$(echo "$CLIENT_SS_3_CHAIN_SS_TARGET" | cut -d: -f1)
     local ss_port=$(echo "$CLIENT_SS_3_CHAIN_SS_TARGET" | cut -d: -f2)
     
-    # [修改点] 统一命名格式为 Chain_ss_kcp_... +UDP2RAW
-    # [New] 提取 KCPTUN 参数并添加到 URL 参数
-    local kcp_mode=$(jq -r '.mode' "$kcptun_conf_path")
-    local kcp_crypt=$(jq -r '.crypt' "$kcptun_conf_path")
-    local kcp_nocomp=$(jq -r '.nocomp' "$kcptun_conf_path")
-
-    local sub_link="ss://${ss_user_info}@${ss_host}:${ss_port}/?kcp_mode=${kcp_mode}&kcp_crypt=${kcp_crypt}&kcp_nocomp=${kcp_nocomp}#Chain_ss_kcp_${ip}_${id}+UDP2RAW"
+    local sub_link="ss://${ss_user_info}@${ss_host}:${ss_port}#Chain_ss_kcp_${ip}_${id}+UDP2RAW"
     green "$sub_link"; echo
 
     echo
     yellow "[SS+KCPTUN+UDP2RAW] 合并订阅链接 (复制以下整行):"
-    local ss_chain_clean="ss://${ss_user_info}@${ss_host}:${ss_port}/?kcp_mode=${kcp_mode}&kcp_crypt=${kcp_crypt}&kcp_nocomp=${kcp_nocomp}"
+    local ss_chain_clean="ss://${ss_user_info}@${ss_host}:${ss_port}"
     local kcp_chain_link="kcptun://${kcp_args}"
     local udp_chain_link="udp2raw://${client_args_udp2raw}"
     local chain_name="chain_ss+kcp+udp_${ip}_${id_num}"
