@@ -914,7 +914,8 @@ apply_warp_wireguard_config() {
 }
 
 # -----------------------------------------------------------------------------
-# 在 singbox.json 中添加 WARP 端点和路由规则
+# 在 singbox.json 中添加 WARP endpoint + 路由规则 + mixed-in (首次启用)
+# 已启用时跳过 (幂等)
 # -----------------------------------------------------------------------------
 enable_warp_in_config() {
     local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
@@ -966,7 +967,8 @@ json.dump(cfg, open('$tmpfile','w'), indent=2)
 }
 
 # -----------------------------------------------------------------------------
-# 从 singbox.json 中移除 WARP 端点和路由规则
+# 从 singbox.json 中移除 WARP endpoint + 路由规则 + mixed-in (完全禁用)
+# 未启用时跳过 (幂等)
 # -----------------------------------------------------------------------------
 disable_warp_in_config() {
     local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
@@ -998,7 +1000,9 @@ json.dump(cfg, open('$tmpfile','w'), indent=2)
 }
 
 # -----------------------------------------------------------------------------
-# 更新 singbox.json 中的 WARP 分流域名列表 (不修改 endpoint/inbound)
+# 更新 singbox.json 中的 WARP 分流域名 (仅替换 route.rules，不动 endpoint/inbound)
+# 前置条件: WARP 已启用 (存在 warp-ep endpoint)
+# 返回值: 0=成功, 1=WARP未启用/失败
 # -----------------------------------------------------------------------------
 update_warp_domains() {
     local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
@@ -1037,8 +1041,9 @@ json.dump(cfg, open('$tmpfile','w'), indent=2)
 }
 
 # -----------------------------------------------------------------------------
-# 从 .warp_domain_list 读取 WARP 分流域名，输出 JSON 数组字符串
-# 文件不存在时自动创建含 32 个默认域名的文件
+# 读取 .warp_domain_list → 输出 JSON 数组字符串 ("a","b","c",...)
+# 文件不存在时自动创建 (含默认分流域名)
+# 忽略 # 注释行、空行、空白字符
 # -----------------------------------------------------------------------------
 get_warp_domain_list() {
     local domain_file="$SINGBOX_INSTALL_DIR/.warp_domain_list"
@@ -1095,6 +1100,9 @@ EOF
 
 # -----------------------------------------------------------------------------
 # 编辑 WARP 分流域名列表 (nano)
+# 流程: 规范化 → 记哈希 → nano → 再规范化 → 比较哈希
+# 有变化 → update_warp_domains + 重启 sing-box
+# 无变化 → 不动
 # -----------------------------------------------------------------------------
 edit_warp_domains() {
     local domain_file="$SINGBOX_INSTALL_DIR/.warp_domain_list"
@@ -1135,7 +1143,9 @@ edit_warp_domains() {
 }
 
 # -----------------------------------------------------------------------------
-# WARP 管理子菜单 — 根据状态动态显示可用操作
+# WARP 管理子菜单
+# 根据 WARP 启用/密钥状态动态显示: 启用/禁用 + 编辑分流域名
+# 启用时显示出口 IP (通过 mixed-in SOCKS5 查询)
 # -----------------------------------------------------------------------------
 warp_management_menu() {
     local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
