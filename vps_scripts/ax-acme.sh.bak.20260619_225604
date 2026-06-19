@@ -107,7 +107,7 @@ install_acme_sh_client() {
     local Aemail
     read -p "请输入注册 ACME 所需的邮箱 (回车自动生成): " Aemail
     if [ -z "$Aemail" ]; then
-        local auto_email=$(openssl rand -hex 8)
+        local auto_email=$(date +%s%N | md5sum | cut -c 1-8)
         Aemail="$auto_email@gmail.com"
         yellow "已为您自动生成邮箱: $Aemail"
     fi
@@ -157,12 +157,13 @@ release_80_port() {
 # =============================================================================
 ax_get_certificate() {
     local domain=$1
-    local force_mode=${2:-interactive}
     local cert_dir="$AX_CERT_DIR/$domain"
-
+    
     # 1. 检查证书是否已存在且有效
     if [ -f "$cert_dir/fullchain.cer" ]; then
         log "证书 $domain 已存在于 $cert_dir"
+        
+        # 检查证书有效期
         if command -v openssl &> /dev/null; then
             local expiry_date_str=$(openssl x509 -in "$cert_dir/fullchain.cer" -noout -enddate 2>/dev/null | cut -d= -f2)
             if [ -n "$expiry_date_str" ]; then
@@ -171,17 +172,11 @@ ax_get_certificate() {
                 if [ -n "$expiry_epoch" ]; then
                     local days_remaining=$(((expiry_epoch - now_epoch) / 86400))
                     if [ $days_remaining -lt 30 ]; then
-                        yellow "证书即将过期（剩余 ${days_remaining} 天）。"
+                        yellow "证书即将过期（剩余 ${days_remaining} 天），建议续订。"
                         read -p "是否现在续订证书? [y/N]: " renew_confirm
-                        if [[ "$renew_confirm" == "y" || "$renew_confirm" == "Y" ]]; then
-                            log "正在续订..."
-                            "$ACME_SH_INSTALL_DIR" --renew -d "$domain" --ecc --force --log
-                            "$ACME_SH_INSTALL_DIR" --install-cert -d "$domain" --ecc \
-                                --fullchain-file "$cert_dir/fullchain.cer" \
-                                --key-file "$cert_dir/private.key"
-                            green "证书续订完成。"
+                        if [[ "$renew_confirm" != "y" && "$renew_confirm" != "Y" ]]; then
+                            return 0
                         fi
-                        return 0
                     else
                         green "证书有效期充足（剩余 ${days_remaining} 天）。"
                         return 0
@@ -190,116 +185,67 @@ ax_get_certificate() {
             fi
         fi
     fi
-
-    # 2. 确保 acme.sh 客户端已安装 (静默, 不弹邮箱提示)
-    if [ ! -f "$ACME_SH_INSTALL_DIR" ]; then
-        log "acme.sh 客户端未安装, 正在自动安装..."
-        local auto_email=$(openssl rand -hex 8)
-        curl -s https://get.acme.sh | sh -s email="${auto_email}@gmail.com" > /dev/null 2>&1
-        if [ ! -f "$ACME_SH_INSTALL_DIR" ]; then
-            red "acme.sh 自动安装失败, 请手动安装。"
-            return 1
-        fi
-        "$ACME_SH_INSTALL_DIR" --upgrade --auto-upgrade > /dev/null 2>&1
-        "$ACME_SH_INSTALL_DIR" --set-default-ca --server letsencrypt > /dev/null 2>&1
-        green "acme.sh 客户端已自动安装。"
+    
+    # 2. 确保 acme.sh 客户端已安装
+    install_acme_sh_client || return 1
+    
+    # 3. 检查 DNS 解析 (确保域名解析到本机)
+    log "正在验证 $domain 的 DNS 解析..."
+    local v4=$(curl -s4m2 $PUBLIC_IP_SERVICE_1 || curl -s4m2 $PUBLIC_IP_SERVICE_2)
+    local v6=$(curl -s6m2 $PUBLIC_IP_SERVICE_1 || curl -s6m2 $PUBLIC_IP_SERVICE_2)
+    local domainIP=$(dig @8.8.8.8 +time=2 +short "$domain" 2>/dev/null | grep -m1 '^[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+$')
+    
+    if [[ -z "$domainIP" && -n "$v6" ]]; then
+        domainIP=$(dig @2001:4860:4860::8888 +time=2 aaaa +short "$domain" 2>/dev/null | grep -m1 ':')
     fi
-
-    # 3. 确定验证模式
-    local acme_mode="$force_mode"
-    if [ "$acme_mode" = "interactive" ]; then
-        echo ""
-        echo "选择 ACME 验证模式:"
-        echo "  1) 80 端口 (Standalone) - 域名需解析到本机"
-        echo "  2) DNS API - 无需公网端口, 需 API 密钥"
-        read -p "请选择 [1-2] (默认 1): " acme_mode_input
-        acme_mode_input=${acme_mode_input:-1}
-        case "$acme_mode_input" in
-            1) acme_mode="standalone" ;;
-            2) acme_mode="dns_api" ;;
-            *) red "无效选择"; return 1 ;;
-        esac
+    
+    if [[ -z "$domainIP" ]]; then
+        red "错误: 无法解析 $domain 的 IP 地址。"
+        return 1
     fi
+    
+    if [[ "$domainIP" != "$v4" && "$domainIP" != "$v6" ]]; then
+        red "错误: $domain 解析的 IP ($domainIP) 与本机 IP ($v4 / $v6) 不匹配！"
+        yellow "请确保 DNS 记录已正确设置，且 CDN (小黄云) 已关闭。"
+        return 1
+    fi
+    green "DNS 验证通过: $domain -> $domainIP"
 
+    # 4. 选择 ACME 模式
+    read -p "选择 ACME 验证模式: [1] 80 端口 (Standalone) [2] DNS API (推荐): " acme_mode
     local issue_cmd=""
 
-    if [ "$acme_mode" = "standalone" ]; then
-        # 4a. Standalone 模式: DNS 检查 → 释放 80 端口 → 发证
-        local vps_ip="" domain_ip=""
-        local dns_ok=false
-
-        while ! $dns_ok; do
-            log "正在验证 $domain 的 DNS 解析..."
-            vps_ip=$(curl -s4m2 $PUBLIC_IP_SERVICE_1 2>/dev/null || curl -s4m2 $PUBLIC_IP_SERVICE_2 2>/dev/null)
-            domain_ip=$(dig @8.8.8.8 +time=2 +short "$domain" 2>/dev/null | grep -m1 '^[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+$')
-            if [ -z "$domain_ip" ]; then
-                domain_ip=$(dig @1.1.1.1 +time=2 +short "$domain" 2>/dev/null | grep -m1 '^[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+$')
-            fi
-            if [ -z "$domain_ip" ]; then
-                domain_ip=$(dig @223.5.5.5 +time=2 +short "$domain" 2>/dev/null | grep -m1 '^[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+$')
-            fi
-
-            if [ -z "$domain_ip" ]; then
-                red "错误: 无法解析 $domain 的 IP 地址。"
-                if [ "$force_mode" != "interactive" ]; then
-                    return 1
-                fi
-                read -p "按回车重试，或输入新域名 (留空退出): " new_domain
-                [ -n "$new_domain" ] && domain="$new_domain" && continue
-                return 1
-            fi
-
-            if [ "$domain_ip" != "$vps_ip" ]; then
-                red "警告: $domain 解析到 $domain_ip, 本机 IP 为 $vps_ip"
-                yellow "请确保 DNS 记录已正确设置, 且 CDN (小黄云) 已关闭。"
-                if [ "$force_mode" != "interactive" ]; then
-                    return 1
-                fi
-                read -p "按回车重试，或输入新域名 (留空退出): " new_domain
-                [ -n "$new_domain" ] && domain="$new_domain" && continue
-                return 1
-            fi
-
-            dns_ok=true
-            green "DNS 验证通过: $domain -> $domain_ip"
-        done
-
+    if [ "$acme_mode" == "1" ]; then
+        # 80 端口模式
         release_80_port || return 1
-
         local listen_opt=""
-        local v6_ip=$(curl -s6m2 $PUBLIC_IP_SERVICE_1 2>/dev/null || curl -s6m2 $PUBLIC_IP_SERVICE_2 2>/dev/null)
-        [ -n "$v6_ip" ] && listen_opt="--listen-v6"
-
+        if [[ "$domainIP" == "$v6" ]]; then
+            listen_opt="--listen-v6"
+        fi
         issue_cmd="$ACME_SH_INSTALL_DIR --issue -d $domain --standalone -k ec-256 $listen_opt --force --log"
-
-    elif [ "$acme_mode" = "dns_api" ]; then
-        # 4b. DNS API 模式: 无需 DNS 检查, 选择服务商并输入 API 密钥
-        echo ""
-        echo "选择 DNS 服务商:"
-        echo "  1) Cloudflare"
-        echo "  2) DNSPod"
-        echo "  3) Aliyun"
-        read -p "请选择 [1-3]: " dns_provider
-
+    
+    elif [ "$acme_mode" == "2" ]; then
+        # DNS API 模式
+        read -p "选择 DNS 服务商: [1] Cloudflare [2] DNSPod [3] Aliyun: " dns_provider
         local dns_api_cmd=""
         yellow "警告: API 密钥将保存在 acme.sh 配置中 (~/.acme.sh/account.conf)"
-
+        
         case $dns_provider in
-            1)
+            1) # Cloudflare
                 read -s -p "请输入 Cloudflare Global API Key: " GAK; echo
                 export CF_Key="$GAK"
                 read -p "请输入 Cloudflare 注册邮箱: " CFemail
                 export CF_Email="$CFemail"
                 dns_api_cmd="--dns dns_cf"
                 ;;
-            2)
+            2) # DNSPod
                 read -s -p "请输入 DNSPod DP_Id: " DPID; echo
                 export DP_Id="$DPID"
                 read -s -p "请输入 DNSPod DP_Key: " DPKEY; echo
                 export DP_Key="$DPKEY"
                 dns_api_cmd="--dns dns_dp"
                 ;;
-            3)
+            3) # Aliyun
                 read -s -p "请输入 Aliyun Ali_Key: " ALKEY; echo
                 export Ali_Key="$ALKEY"
                 read -s -p "请输入 Aliyun Ali_Secret: " ALSER; echo
@@ -312,6 +258,7 @@ ax_get_certificate() {
                 ;;
         esac
         issue_cmd="$ACME_SH_INSTALL_DIR --issue -d $domain $dns_api_cmd -k ec-256 --force --log"
+    
     else
         red "无效的模式选择。"
         return 1
@@ -325,16 +272,17 @@ ax_get_certificate() {
         yellow "请检查日志文件: /root/.acme.sh/acme.sh.log"
         return 1
     fi
-
+    
     # 6. 安装证书到 ax 目录
     log "正在安装证书到 $cert_dir ..."
     mkdir -p "$cert_dir"
     "$ACME_SH_INSTALL_DIR" --install-cert -d "$domain" --ecc \
         --fullchain-file "$cert_dir/fullchain.cer" \
         --key-file "$cert_dir/private.key"
-
+        
     if [ -f "$cert_dir/fullchain.cer" ]; then
         green "证书 $domain 已成功安装到 $cert_dir"
+        # 确保 cron 任务已设置
         "$ACME_SH_INSTALL_DIR" --cron -f > /dev/null 2>&1
         return 0
     else
@@ -556,21 +504,12 @@ main_menu() {
         
         case "$choice" in
             1)
-                while true; do
-                    read -p "请输入域名: " domain
-                    if [ -z "$domain" ]; then
-                        red "域名不能为空！"
-                        continue
-                    fi
-                    if ax_get_certificate "$domain" "interactive"; then
-                        green "证书申请成功！"
-                        break
-                    else
-                        yellow "证书申请失败。"
-                        read -p "按回车重试，或输入 0 返回菜单: " retry_choice
-                        [ "$retry_choice" = "0" ] && break
-                    fi
-                done
+                read -p "请输入域名: " domain
+                if [ -n "$domain" ]; then
+                    ax_get_certificate "$domain"
+                else
+                    red "域名不能为空！"
+                fi
                 read -p $'\n按任意键返回...' -n1 -s
                 ;;
             2)
@@ -618,9 +557,9 @@ if [[ "$1" == "-n" ]]; then
     if [ -z "$domain" ]; then
         read -p "请输入域名: " domain
     fi
-
+    
     if [ -n "$domain" ]; then
-        ax_get_certificate "$domain" "standalone"
+        ax_get_certificate "$domain"
     else
         red "域名不能为空！"
         exit 1
