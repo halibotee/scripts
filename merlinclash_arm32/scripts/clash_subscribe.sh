@@ -239,8 +239,9 @@ parse_and_process_urls() {
     local config_file="${2:-/koolshare/merlinclash/yaml_bak/${subscribe_name}/Custom.yaml}"
     local ap_dir="${3:-/koolshare/merlinclash/yaml_bak/${subscribe_name}}"
     local file_name="${4:-""}"
-    # 清理现有配置文件
+    # 清理现有配置文件和串联节点配置
     rm -rf "$ap_dir" >/dev/null 2>&1
+    rm -rf /koolshare/merlinclash/chain_configs/* >/dev/null 2>&1
     # 计数器
     local count=1
     local url name ua_tmp

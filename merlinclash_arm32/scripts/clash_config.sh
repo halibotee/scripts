@@ -2072,6 +2072,7 @@ start_chain_daemons() {
 			esac
 		done < "$conf"
 		echo_date "启动串联节点 [$label]..." >> $LOG_FILE
+		# 启动时重新解析域名，获取最新 IP
 		if [ -n "$r_host" ]; then
 			local remote_val remote_port new_ip
 			remote_val=$(echo "$udp_args" | sed -n 's/.*-r \([^ ]*\) .*/\1/p')
@@ -2109,6 +2110,7 @@ kill_chain_daemons() {
 	fi
 	[ "$killed" -eq 1 ] && echo_date "关闭串联节点进程" >> $LOG_FILE
 	rm -rf /tmp/.merlinclash_chain_assigned
+	# 清理 udp2raw 遗留 iptables 规则
 	iptables-save 2>/dev/null | grep -v "udp2rawDwrW" | iptables-restore 2>/dev/null
 }
 
