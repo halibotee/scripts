@@ -55,6 +55,14 @@ CHAIN:// nodes layer: `ss/hysteria2 → kcptun → udp2raw`
 - `.valid` file mandatory for koolshare offline installer (contains `hnd\nmtk\nipq64`)
 - Background: `(package_plugin; echo BBABBBBC >> $LOG_FILE) &` then `http_response`
 
-## Git
+## Git & Versioning
 
 Commits pushed to `origin/main`. No CI, no tests, no lint. Manual testing on router.
+
+**After every file modification, automatically:**
+1. Bump patch version for scripts that track `SCRIPT_VERSION`:
+   - `ax-singbox-proxy.sh` → `bash ax-singbox-proxy.sh --bump-version=patch`
+   - `ax-acme.sh` → edit `SCRIPT_VERSION` line manually (no built-in bump)
+2. `git add` modified files + `.bak.*` backups
+3. `git commit -m "..."` with descriptive message
+4. `git push origin main`
