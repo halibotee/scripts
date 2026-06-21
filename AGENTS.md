@@ -40,6 +40,32 @@ CHAIN:// nodes layer: `ss/hysteria2 → kcptun → udp2raw`
 - udp2raw uses `--raw-mode faketcp`
 - DNS resolution for `-r` domain: done at daemon startup (not subscribe time) with fallback to subscribe-time resolved IP
 - Port range: 1191-1391, allocated from smallest, tracked in `/tmp/.merlinclash_chain_assigned`
+- Startup port mapping logged: `CA_SKU kcptun :1192 -> udp2raw :1191 -> ca.xshine.top:31853`
+
+## Daemon kill order & SIGKILL fallback
+
+`kill_chain_daemons()` 在 `clash_config.sh`:
+1. **kcptun**: `killall` → sleep 1 → `pidof` 检查 → 再 sleep 1 → 还活着则 `killall -9`
+2. **udp2raw**: `killall` → 5 轮 sleep 1 → `pidof` 检查 → 还活着则 `killall -9`
+3. 清理 `/tmp/.merlinclash_chain_assigned` + `iptables-save | grep -v udp2rawDwrW`
+4. 最终 `pidof` 双重确认 + `netstat` 检查端口释放
+
+杀前记录 PID 数量和进程号，杀后确认关闭或标记残留。日志示例：
+```
+关闭串联节点进程...
+  kcptun: 5个 PID:9142 9237 9291 9341 9392
+  udp2raw: 10个 PID:9141 9193 9236 ...
+串联节点进程已全部关闭
+串联端口已全部释放
+```
+
+`kill_process()` 同理记录 clash/haveged 的 PID 并确认关闭。
+
+## Known port mapping issue
+
+`find_free_port()` 在订阅时分配端口，若 `/tmp/.merlinclash_chain_assigned` 跨订阅残留，
+会导致 `Custom.yaml` 的内层 URL 端口与 `chain_configs` 守护进程端口不匹配。
+**修复:** 重新订阅 (`clash_subscribe.sh subscribe`) 可刷新全部端口分配。
 
 ## WebUI (ASP) conventions
 
@@ -50,10 +76,32 @@ CHAIN:// nodes layer: `ss/hysteria2 → kcptun → udp2raw`
 
 ## Package plugin (clash_package.sh)
 
-- Output: `/tmp/upload/AX-MerlinClash.tar.gz`
-- Must have execute permission (`chmod 755`) — `cat >` pipe loses it
-- `.valid` file mandatory for koolshare offline installer (contains `hnd\nmtk\nipq64`)
+### Router-side packaging
+- Output: `/tmp/upload/AX-MerlinClash_ARM64.tar.gz` (arm64) or `..._ARM32.tar.gz` (arm32)
+- Run: `sh /koolshare/scripts/clash_package.sh "" package`
+- `.valid` file:
+  - ARM64: `hnd\nmtk\nipq64\n`
+  - ARM32: `hnd\nqca\nipq32\n`
+- `chmod 755` must be applied after `cat >` pipe (pipe loses permissions)
 - Background: `(package_plugin; echo BBABBBBC >> $LOG_FILE) &` then `http_response`
+
+### Local packaging (from repo)
+```sh
+# ARM64
+cd merlinclash_arm64
+tar -czf /tmp/upload/AX-MerlinClash_ARM64.tar.gz \
+  --transform='s|^|merlinclash/|' \
+  bin64/ clash/ conf/ dashboard/ install.sh res/ rule_configs/ scripts/ \
+  uninstall.sh version webs/ yaml_basic/ yaml_dns/ .valid
+
+# ARM32
+cd merlinclash_arm32
+tar -czf /tmp/upload/AX-MerlinClash_ARM32.tar.gz \
+  --transform='s|^|merlinclash/|' \
+  bin32/ clash/ conf/ dashboard/ install.sh res/ rule_configs/ scripts/ \
+  uninstall.sh version webs/ yaml_basic/ yaml_dns/ .valid
+```
+Note: `kcptun`/`udp2raw` binaries are NOT in the repo — they must be fetched from a running router for arm64 packages.
 
 ## Git & Versioning
 
