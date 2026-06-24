@@ -339,7 +339,7 @@ fn_setup_aggressive_network() {
         vps_bw=$(grep '^VPS_BW=' "$net_conf" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
         echo "已读取配置文件: $net_conf"
     fi
-    : ${latency:=180}; : ${local_bw:=500}; : ${vps_bw:=100}
+    : ${latency:=180}; : ${local_bw:=500}; : ${vps_bw:=1000}
     echo ""
     echo "--- 网络参数配置 (直接回车使用默认值) ---"
     read -rp "延迟 (ms) [${latency}]: " input
