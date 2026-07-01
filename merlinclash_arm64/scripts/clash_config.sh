@@ -2069,17 +2069,16 @@ kill_process() {
 start_chain_daemons() {
 	local chain_dir="/koolshare/merlinclash/chain_configs"
 	[ ! -d "$chain_dir" ] && return 0
-	# ponytail: only start chain daemons whose labels are in active config
+	# ponytail: don't clean chain_configs — they may be needed by other profiles
 	local custom_path="" has_chain=0
 	if [ -n "$yamlpath" ] && [ -f "$yamlpath" ]; then
 		local rel_path
 		rel_path=$(yq e '.proxy-providers.Custom.path // ""' "$yamlpath" 2>/dev/null)
 		[ -n "$rel_path" ] && custom_path="/koolshare/merlinclash/${rel_path#./}"
 		[ -f "$custom_path" ] && has_chain=1
-		# also check inline chain proxies in merged yaml
 		grep -q '@127\.0\.0\.1:1[1-3]9[1-9]' "$yamlpath" 2>/dev/null && has_chain=1
 	fi
-	[ "$has_chain" -eq 0 ] && rm -rf "$chain_dir"/* && return 0
+	[ "$has_chain" -eq 0 ] && return 0
 	local count=0
 	for conf in "$chain_dir"/*; do
 		[ ! -f "$conf" ] && continue
@@ -2093,9 +2092,8 @@ start_chain_daemons() {
 				r_ip) r_ip="$val" ;;
 			esac
 		done < "$conf"
-		# skip orphaned chain_config (label not in active config anywhere)
+		# skip chain_config not used by this profile (keep file for other profiles)
 		if ! grep -q "#${label}" "$yamlpath" 2>/dev/null && ! grep -q "#${label}" "$custom_path" 2>/dev/null; then
-			rm -f "$conf"
 			continue
 		fi
 		count=$((count + 1))
