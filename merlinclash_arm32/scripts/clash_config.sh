@@ -2057,10 +2057,17 @@ kill_process() {
 start_chain_daemons() {
 	local chain_dir="/koolshare/merlinclash/chain_configs"
 	[ ! -d "$chain_dir" ] && return 0
+	# ponytail: only start chain daemons whose labels are in active Custom.yaml
+	local custom_path=""
+	if [ -n "$yamlpath" ] && [ -f "$yamlpath" ]; then
+		local rel_path
+		rel_path=$(yq e '.proxy-providers.Custom.path // ""' "$yamlpath" 2>/dev/null)
+		[ -n "$rel_path" ] && custom_path="/koolshare/merlinclash/${rel_path#./}"
+	fi
+	[ ! -f "$custom_path" ] && rm -rf "$chain_dir"/* && return 0
 	local count=0
 	for conf in "$chain_dir"/*; do
 		[ ! -f "$conf" ] && continue
-		count=$((count + 1))
 		local label="" udp_args="" kcp_args="" r_host="" r_ip=""
 		while IFS='=' read -r key val; do
 			case "$key" in
@@ -2071,6 +2078,12 @@ start_chain_daemons() {
 				r_ip) r_ip="$val" ;;
 			esac
 		done < "$conf"
+		# skip orphaned chain_config (label not in active Custom.yaml)
+		if ! grep -q "#${label}" "$custom_path" 2>/dev/null; then
+			rm -f "$conf"
+			continue
+		fi
+		count=$((count + 1))
 		echo_date "启动串联节点 [$label]..." >> $LOG_FILE
 		# 启动时重新解析域名，获取最新 IP
 		if [ -n "$r_host" ]; then
