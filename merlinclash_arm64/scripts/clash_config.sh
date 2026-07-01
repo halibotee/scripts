@@ -2069,6 +2069,17 @@ kill_process() {
 start_chain_daemons() {
 	local chain_dir="/koolshare/merlinclash/chain_configs"
 	[ ! -d "$chain_dir" ] && return 0
+	# ponytail: check active YAML actually uses chain nodes before starting
+	local custom_path=""
+	if [ -n "$yamlpath" ] && [ -f "$yamlpath" ]; then
+		local rel_path
+		rel_path=$(yq e '.proxy-providers.Custom.path // ""' "$yamlpath" 2>/dev/null)
+		[ -n "$rel_path" ] && custom_path="/koolshare/merlinclash/${rel_path#./}"
+	fi
+	if [ ! -f "$custom_path" ] || ! grep -q '#[A-Za-z]' "$custom_path" 2>/dev/null; then
+		rm -rf "$chain_dir"/*
+		return 0
+	fi
 	local count=0
 	for conf in "$chain_dir"/*; do
 		[ ! -f "$conf" ] && continue
