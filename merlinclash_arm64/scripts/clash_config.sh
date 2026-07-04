@@ -2119,6 +2119,19 @@ start_chain_daemons() {
 		[ -n "$kcp_args" ] && kcp_port=$(echo "$kcp_args" | sed -n 's/.*-l 127\.0\.0\.1:\([0-9]*\).*/\1/p')
 		[ -n "$udp_args" ] && udp_port=$(echo "$udp_args" | sed -n 's/.*-l 127\.0\.0\.1:\([0-9]*\).*/\1/p')
 		[ -n "$udp_args" ] && remote_target=$(echo "$udp_args" | sed -n 's/.*-r \([^ ]*\) .*/\1/p')
+		# ponytail: sync Custom.yaml port to match daemon listening port
+		local inner_port="${kcp_port:-$udp_port}"
+		if [ -n "$inner_port" ]; then
+			for _f in "$custom_path" "$yamlpath"; do
+				[ ! -f "$_f" ] && continue
+				local _line _old
+				_line=$(grep "@127\.0\.0\.1:[0-9]*#${label}" "$_f" 2>/dev/null | head -1)
+				[ -z "$_line" ] && continue
+				_old=$(echo "$_line" | sed 's/.*@127\.0\.0\.1:\([0-9]*\)#.*/\1/')
+				[ -n "$_old" ] && [ "$_old" != "$inner_port" ] && \
+					sed -i "s/@127\.0\.0\.1:${_old}#${label}/@127.0.0.1:${inner_port}#${label}/" "$_f"
+			done
+		fi
 		local port_map="$label"
 		[ -n "$kcp_port" ] && port_map="$port_map kcptun :$kcp_port ->"
 		[ -n "$udp_port" ] && port_map="$port_map udp2raw :$udp_port ->"

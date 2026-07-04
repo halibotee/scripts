@@ -2102,6 +2102,22 @@ start_chain_daemons() {
 		fi
 		[ -n "$udp_args" ] && /koolshare/bin/udp2raw $udp_args >/dev/null 2>&1 &
 		[ -n "$kcp_args" ] && /koolshare/bin/kcptun $kcp_args >/dev/null 2>&1 &
+		# ponytail: sync Custom.yaml port to match daemon listening port
+		local kcp_port="" udp_port=""
+		[ -n "$kcp_args" ] && kcp_port=$(echo "$kcp_args" | sed -n 's/.*-l 127\.0\.0\.1:\([0-9]*\).*/\1/p')
+		[ -n "$udp_args" ] && udp_port=$(echo "$udp_args" | sed -n 's/.*-l 127\.0\.0\.1:\([0-9]*\).*/\1/p')
+		local inner_port="${kcp_port:-$udp_port}"
+		if [ -n "$inner_port" ]; then
+			for _f in "$custom_path" "$yamlpath"; do
+				[ ! -f "$_f" ] && continue
+				local _line _old
+				_line=$(grep "@127\.0\.0\.1:[0-9]*#${label}" "$_f" 2>/dev/null | head -1)
+				[ -z "$_line" ] && continue
+				_old=$(echo "$_line" | sed 's/.*@127\.0\.0\.1:\([0-9]*\)#.*/\1/')
+				[ -n "$_old" ] && [ "$_old" != "$inner_port" ] && \
+					sed -i "s/@127\.0\.0\.1:${_old}#${label}/@127.0.0.1:${inner_port}#${label}/" "$_f"
+			done
+		fi
 		sleep 1
 	done
 	[ "$count" -gt 0 ] && echo_date "共启动 $count 个串联节点" >> $LOG_FILE
