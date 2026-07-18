@@ -275,15 +275,16 @@ parse_accelerator_params(){
             continue
         fi
 
-        case "$tool_type" in
+        local tool_type_upr=$(echo "$tool_type" | tr 'a-z' 'A-Z')
+        case "$tool_type_upr" in
             KCPTUN)
                 case "$arg" in
-                    --listen)
+                    --listen|-l)
                         kcp_listen_ip=$(echo "$val" | cut -d':' -f1)
                         kcp_listen_port=$(echo "$val" | cut -d':' -f2)
                         skip_next=1
                         ;;
-                    --target)
+                    --target|-r)
                         kcp_target_ip=$(echo "$val" | cut -d':' -f1)
                         kcp_target_port=$(echo "$val" | cut -d':' -f2)
                         skip_next=1
@@ -338,9 +339,9 @@ parse_accelerator_params(){
     done
 
     # Trim leading/trailing whitespace
-    if [ "$tool_type" == "KCPTUN" ]; then
+    if [ "$tool_type_upr" == "KCPTUN" ]; then
         kcp_param_final=$(echo "$temp_params" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    elif [ "$tool_type" == "UDP2RAW" ]; then
+    elif [ "$tool_type_upr" == "UDP2RAW" ]; then
         udp_param_final=$(echo "$temp_params" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     fi
 }
@@ -2456,46 +2457,57 @@ start_offline_update() {
         # 去除行首尾的空白字符（增强容错）
         local node=$(echo "$line" | sed 's/^[ \t]*//;s/[ \t]*$//')
 
-        # ----------------- 分支 A：处理 CHAIN## 串联节点 -----------------
-        # 参考 clash_online_yaml4.sh 的识别逻辑 
-        if echo "$node" | grep -q "^CHAIN##"; then
+        # ----------------- 分支 A：处理 CHAIN://[...]#name 串联节点 -----------------
+        if echo "$node" | grep -qE "^CHAIN://\["; then
             echo_date "🔗 识别到串联节点 (CHAIN)..."
             
-            # A1. 移除前缀
-            local content=${node#CHAIN##}
+            # A1. 提取括号内内容和名称
+            # 格式: CHAIN://[ss://... && kcptun://... && udp2raw://...]#display_name
+            local content=$(echo "$node" | sed -n 's/^CHAIN:\/\/\[\(.*\)\].*/\1/p')
+            local chain_name=$(echo "$node" | sed -n 's/.*#\(.*\)$/\1/p')
             
-            # A2. 分割基础链接与加速命令 (使用 awk 确保能够处理含空格的参数)
-            # 格式: hysteria2://... && UDP2RAW://...
-            local base_part=$(echo "$content" | awk -F '&&' '{print $1}' | sed 's/^[ \t]*//;s/[ \t]*$//')
-            local accel_part=$(echo "$content" | awk -F '&&' '{print $2}' | sed 's/^[ \t]*//;s/[ \t]*$//')
-
-            # A3. 识别加速器类型 (UDP2RAW / KCPTUN)
+            # A2. 分割所有部分 (支持多个加速器)
+            local base_part=""
             local kcp_part=""
             local udp_part=""
             
-            if echo "$accel_part" | grep -qi "UDP2RAW"; then
-                udp_part="$accel_part"
-            elif echo "$accel_part" | grep -qi "KCPTUN"; then
-                kcp_part="$accel_part"
-            else
-                # 模糊匹配：如果没写协议头，尝试通过参数特征识别
-                if echo "$accel_part" | grep -q "\-c "; then
-                     udp_part="UDP2RAW://$accel_part"
-                elif echo "$accel_part" | grep -q "\-\-key"; then
-                     kcp_part="KCPTUN://$accel_part"
+            # 使用 awk 按 " && " (带空格) 分割，避免 URL 参数中的 & 被误分割
+            local part_count=$(echo "$content" | awk -F ' && ' '{print NF}')
+            local part_index=1
+            
+            while [ $part_index -le $part_count ]; do
+                local part=$(echo "$content" | awk -F ' && ' -v idx=$part_index '{print $idx}' | sed 's/^[ \t]*//;s/[ \t]*$//')
+                
+                # 识别该部分的类型
+                if echo "$part" | grep -qE "^(ss|ssr|vmess|vless|trojan|hysteria2)://"; then
+                    base_part="$part"
+                elif echo "$part" | grep -qiE "^(kcptun|KCPTUN)://"; then
+                    kcp_part="$part"
+                elif echo "$part" | grep -qiE "^(udp2raw|UDP2RAW)://"; then
+                    udp_part="$part"
+                elif echo "$part" | grep -q "\-\-listen.*\-\-target"; then
+                    kcp_part="KCPTUN://$part"
+                elif echo "$part" | grep -q "\-c.*\-r.*\-l"; then
+                    udp_part="UDP2RAW://$part"
+                else
+                    if [ -n "$part" ]; then
+                        echo_date "⚠️ 链式节点：未能识别部分内容，已跳过: ${part:0:50}..."
+                    fi
                 fi
-            fi
+                
+                part_index=$((part_index + 1))
+            done
 
-            # A4. 执行添加 (调用现有的 add_chained_node 函数)
+            # A3. 执行添加
             if [ -n "$base_part" ]; then
-                # 注意：Fancyss 不需要像 Clash 那样做端口递增映射 
-                # 因为它一次只运行一个节点，直接保存参数即可
+                if [ -n "$chain_name" ]; then
+                    base_part="${base_part}#${chain_name}"
+                fi
                 add_chained_node "$base_part" "$kcp_part" "$udp_part" 2
             else
                 echo_date "🔴 串联节点解析失败：基础链接为空"
             fi
             
-            # 处理完 CHAIN 节点后，直接进入下一次循环
             continue
         fi
 
