@@ -107,12 +107,12 @@ detect_running_status(){
 restart_dnsmasq() {
 	# 如果是梅林固件，确保 【Tool - Other Settings  - Advanced Tweaks and Hacks - Wan: Use local caching DNS server as system resolver (default: No)】为【否】
 	# 否则/etc/resolv.conf会连接到 rom分区，无法修改
-	local DLC=$(nvram get dns_local_cache)
-	if [ "$DLC" == "1" ]; then
-		nvram set dns_local_cache=0
-		nvram commit
-	fi
-	# 根据情况写路由本机DNS，Fake ip情况下不可使用MC的代理
+#	local DLC=$(nvram get dns_local_cache)
+#	if [ "$DLC" == "1" ]; then
+#		nvram set dns_local_cache=0
+#		nvram commit
+#	fi
+#	# 根据情况写路由本机DNS，Fake ip情况下不可使用MC的代理
 #	local LOCAL_DNSISP_DNS1=$(nvram get wan0_dns | sed 's/ /\n/g' | grep -v 0.0.0.0 | grep -v 127.0.0.1 | sed -n 1p | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}|:")
 #    local LOCAL_DNSISP_DNS2=$(nvram get wan0_dns | sed 's/ /\n/g' | grep -v 0.0.0.0 | grep -v 127.0.0.1 | sed -n 2p | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}|:")
 #	local LOCAL_DNSISP_DNSv6=$(nvram get ipv6_get_dns | awk '{print $1}' | grep -v '^::$' | grep -v '^::1$' | head -1)
@@ -533,7 +533,7 @@ start_custom(){
 		echo_date "设置路由流量标记值(Routing-Mark)为：$mcrm" >> $LOG_FILE
 	fi
 
-	# 检测是否在lan设置中是否自定义过dns,如果有给干掉
+#	# 检测是否在lan设置中是否自定义过dns,如果有给干掉
 #	if [ "${merlinclash_dns_cleardns_sw}" == "1" ]; then
 #		echo_date "清除路由自定义DNS" >> $LOG_FILE
 #		if [ -n "$(nvram get dhcp_dns1_x)" ]; then
@@ -2039,17 +2039,29 @@ kill_process() {
 	clash_process=$(pidof clash)
 	haveged_process=$(pidof haveged)
 	if [ -n "$clash_process" ]; then
-		echo_date "关闭Clash进程.."
+		echo_date "关闭Clash进程(PID:$(echo $clash_process|tr '\n' ' '))..."
 		if [ -f "/koolshare/perp/clash/rc.main" ]; then
 			perpctl d clash >/dev/null 2>&1
 		fi
 		rm -rf /koolshare/perp/clash
 		killall clash >/dev/null 2>&1
 		kill -9 "$clash_process" >/dev/null 2>&1
+		sleep 1
+		if pidof clash >/dev/null 2>&1; then
+			echo_date "⚠️ Clash进程残留 PID:$(pidof clash|tr '\n' ' ')" >> $LOG_FILE
+		else
+			echo_date "Clash进程已关闭" >> $LOG_FILE
+		fi
 	fi
 	if [ -n "$haveged_process" ]; then
-		echo_date "关闭haveged进程." >> $LOG_FILE
+		echo_date "关闭haveged进程(PID:$(echo $haveged_process|tr '\n' ' '))" >> $LOG_FILE
 		killall haveged >/dev/null 2>&1
+		sleep 1
+		if pidof haveged >/dev/null 2>&1; then
+			echo_date "⚠️ haveged进程残留 PID:$(pidof haveged|tr '\n' ' ')" >> $LOG_FILE
+		else
+			echo_date "haveged进程已关闭" >> $LOG_FILE
+		fi
 	fi
 	kill_chain_daemons
 }
@@ -2102,10 +2114,12 @@ start_chain_daemons() {
 		fi
 		[ -n "$udp_args" ] && /koolshare/bin/udp2raw $udp_args >/dev/null 2>&1 &
 		[ -n "$kcp_args" ] && /koolshare/bin/kcptun $kcp_args >/dev/null 2>&1 &
-		# ponytail: sync Custom.yaml port to match daemon listening port
-		local kcp_port="" udp_port=""
+		# 提取端口映射
+		local kcp_port="" udp_port="" remote_target=""
 		[ -n "$kcp_args" ] && kcp_port=$(echo "$kcp_args" | sed -n 's/.*-l 127\.0\.0\.1:\([0-9]*\).*/\1/p')
 		[ -n "$udp_args" ] && udp_port=$(echo "$udp_args" | sed -n 's/.*-l 127\.0\.0\.1:\([0-9]*\).*/\1/p')
+		[ -n "$udp_args" ] && remote_target=$(echo "$udp_args" | sed -n 's/.*-r \([^ ]*\) .*/\1/p')
+		# ponytail: sync Custom.yaml port to match daemon listening port
 		local inner_port="${kcp_port:-$udp_port}"
 		if [ -n "$inner_port" ]; then
 			for _f in "$custom_path" "$yamlpath"; do
@@ -2118,17 +2132,41 @@ start_chain_daemons() {
 					sed -i "s/@127\.0\.0\.1:${_old}#${label}/@127.0.0.1:${inner_port}#${label}/" "$_f"
 			done
 		fi
+		local port_map="$label"
+		[ -n "$kcp_port" ] && port_map="$port_map kcptun :$kcp_port ->"
+		[ -n "$udp_port" ] && port_map="$port_map udp2raw :$udp_port ->"
+		[ -n "$remote_target" ] && port_map="$port_map $remote_target"
+		echo_date "    $port_map" >> $LOG_FILE
 		sleep 1
 	done
 	[ "$count" -gt 0 ] && echo_date "共启动 $count 个串联节点" >> $LOG_FILE
 }
 
 kill_chain_daemons() {
-	local killed=0
+	# 记录杀前状态
+	local kcp_pids=$(pidof kcptun)
+	local udp_pids=$(pidof udp2raw)
+	local kcp_count=0 udp_count=0
+	[ -n "$kcp_pids" ] && kcp_count=$(echo "$kcp_pids" | wc -w)
+	[ -n "$udp_pids" ] && udp_count=$(echo "$udp_pids" | wc -w)
+	if [ "$kcp_count" -gt 0 ] || [ "$udp_count" -gt 0 ]; then
+		echo_date "关闭串联节点进程..." >> $LOG_FILE
+		[ "$kcp_count" -gt 0 ] && echo_date "  kcptun: ${kcp_count}个 PID:$(echo $kcp_pids|tr '\n' ' ')" >> $LOG_FILE
+		[ "$udp_count" -gt 0 ] && echo_date "  udp2raw: ${udp_count}个 PID:$(echo $udp_pids|tr '\n' ' ')" >> $LOG_FILE
+	fi
+	# 杀kcptun - 逐步等待+SIGKILL兜底
 	if pidof kcptun >/dev/null 2>&1; then
 		killall kcptun >/dev/null 2>&1
-		killed=1
+		sleep 1
+		if pidof kcptun >/dev/null 2>&1; then
+			sleep 1
+			if pidof kcptun >/dev/null 2>&1; then
+				echo_date "  kcptun 进程未响应，强制终止(SIGKILL)..." >> $LOG_FILE
+				killall -9 kcptun >/dev/null 2>&1
+			fi
+		fi
 	fi
+	# 杀udp2raw - 5s轮询+SIGKILL兜底
 	if pidof udp2raw >/dev/null 2>&1; then
 		killall udp2raw >/dev/null 2>&1
 		local _w=0
@@ -2136,12 +2174,30 @@ kill_chain_daemons() {
 			sleep 1
 			_w=$((_w + 1))
 		done
-		killed=1
+		if pidof udp2raw >/dev/null 2>&1; then
+			echo_date "  udp2raw 进程未响应，强制终止(SIGKILL)..." >> $LOG_FILE
+			killall -9 udp2raw >/dev/null 2>&1
+		fi
 	fi
-	[ "$killed" -eq 1 ] && echo_date "关闭串联节点进程" >> $LOG_FILE
+	# 清理文件 + iptables
 	rm -rf /tmp/.merlinclash_chain_assigned
-	# 清理 udp2raw 遗留 iptables 规则
 	iptables-save 2>/dev/null | grep -v "udp2rawDwrW" | iptables-restore 2>/dev/null
+	# 确认全部已死
+	local remain_kcp=$(pidof kcptun)
+	local remain_udp=$(pidof udp2raw)
+	if [ -n "$remain_kcp" ] || [ -n "$remain_udp" ]; then
+		[ -n "$remain_kcp" ] && echo_date "⚠️ kcptun进程残留 PID:$(echo $remain_kcp|tr '\n' ' ')" >> $LOG_FILE
+		[ -n "$remain_udp" ] && echo_date "⚠️ udp2raw进程残留 PID:$(echo $remain_udp|tr '\n' ' ')" >> $LOG_FILE
+	else
+		[ "$kcp_count" -gt 0 ] || [ "$udp_count" -gt 0 ] && echo_date "串联节点进程已全部关闭" >> $LOG_FILE
+	fi
+	# 检查端口释放
+	local bound_ports=$(netstat -anp 2>/dev/null | grep -E "(kcptun|udp2raw)" | awk '{print $4}' | sed 's/.*://' | sort -n | tr '\n' ' ')
+	if [ -n "$bound_ports" ]; then
+		echo_date "⚠️ 串联端口未完全释放: $bound_ports" >> $LOG_FILE
+	else
+		[ "$kcp_count" -gt 0 ] || [ "$udp_count" -gt 0 ] && echo_date "串联端口已全部释放" >> $LOG_FILE
+	fi
 }
 
 kill_cron_job() {

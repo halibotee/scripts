@@ -245,7 +245,7 @@ parse_and_process_urls() {
     # 计数器
     local count=1
     local url name ua_tmp
-    
+
     # 统一分隔符：空行/换行 → |
     input_text=$(echo "$input_text" | tr '\n' '|' | sed 's/||*/|/g; s/^|//; s/|$//')
     

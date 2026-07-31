@@ -8,7 +8,7 @@
 		<meta HTTP-EQUIV="Expires" CONTENT="-1">
 		<link rel="shortcut icon" href="images/favicon.png">
 		<link rel="icon" href="images/favicon.png">
-		<title>【Magic Catling 2】</title>
+		<title>【AX-MerlinClash】</title>
 		<link rel="stylesheet" type="text/css" href="index_style.css">
 		<link rel="stylesheet" type="text/css" href="form_style.css">
 		<link rel="stylesheet" type="text/css" href="usp_style.css">
@@ -2725,24 +2725,24 @@ function getACLConfigs(db_acl) {
 									<tr>
 										<td bgcolor="#4D595D" colspan="3" valign="top">
 											<div>&nbsp;</div>
-											<div class="formfonttitle">Magic Catling 2</div>
+											<div class="formfonttitle">AX-MerlinClash</div>
 											<div style="float:right; width:15px; height:25px;margin-top:-20px">
 												<img id="return_btn" onclick="reload_Soft_Center();" align="right" style="cursor:pointer;position:absolute;margin-left:-30px;margin-top:-25px;" title="返回软件中心" src="/images/backprev.png" onMouseOver="this.src='/images/backprevclick.png'" onMouseOut="this.src='/images/backprev.png'"></img>
 											</div>
 											<div style="margin:10px 0 10px 5px;" class="splitLine"></div>
 											<div class="SimpleNote" id="head_illustrate"><i></i>
-												<p>Magic Catling2</u></em></a>是一个基于<a href='https://github.com/MetaCubeX/mihomo' target='_blank'><em><u>Mihomo内核</u></em></a>的代理程序，支持<em>SS</em>、<em>SSR</em>、<em>Vmess</em>、<em>Vless</em>、<em>Trojan</em>、<em>Hysteria</em>等协议科学上网。</p>
+												<p>AX-MerlinClash</u></em></a>是一个基于<a href='https://github.com/MetaCubeX/mihomo' target='_blank'><em><u>Mihomo内核</u></em></a>的代理程序，支持<em>SS</em>、<em>SSR</em>、<em>Vmess</em>、<em>Vless</em>、<em>Trojan</em>、<em>Hysteria</em>等协议科学上网。</p>
 												<p>&nbsp;</p>
-												<p id="showmsg1"></p>
-												<p id="showmsg2"></p>
-												<p id="showmsg3"></p>
-												<p id="showmsg4"></p>
-												<p id="showmsg5"></p>
-												<p id="showmsg6"></p>
-												<p id="showmsg7"></p>
-												<p id="showmsg8"></p>
-												<p id="showmsg9"></p>
-												<p id="showmsg10"></p>
+												<p id="showmsg1" style="display:none"></p>
+												<p id="showmsg2" style="display:none"></p>
+												<p id="showmsg3" style="display:none"></p>
+												<p id="showmsg4" style="display:none"></p>
+												<p id="showmsg5" style="display:none"></p>
+												<p id="showmsg6" style="display:none"></p>
+												<p id="showmsg7" style="display:none"></p>
+												<p id="showmsg8" style="display:none"></p>
+												<p id="showmsg9" style="display:none"></p>
+												<p id="showmsg10" style="display:none"></p>
 											</div>
 											<!-- this is the popup area for process status -->
 											<div id="detail_status"  class="content_status" style="box-shadow: 3px 3px 10px #000;margin-top: -20px;display: none;">
