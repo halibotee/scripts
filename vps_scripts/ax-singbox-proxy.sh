@@ -346,7 +346,7 @@ read -r -d '' SINGBOX_WARP_ROUTE_RULES <<'EOM'
     { "action": "sniff" },
     { "action": "resolve", "domain": [ "api.openai.com" ], "strategy": "prefer_ipv4" },
     { "action": "resolve", "rule_set": [ "geosite-openai" ], "strategy": "prefer_ipv6" },
-    { "domain": [ "api.openai.com" ], "rule_set": [ "geosite-openai" ], "outbound": "__CHATGPT_OUT__" }
+    { "action": "route", "domain": [ "api.openai.com" ], "rule_set": [ "geosite-openai" ], "outbound": "__CHATGPT_OUT__" }
 ]
 EOM
 
@@ -1046,7 +1046,7 @@ for name in extra_names:
         'url': f'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{srs}'
     })
 # 构建路由规则: 基础规则 + 每个用户规则集一条 warp-ep 出站规则
-extra_rules = [{'rule_set': [name], 'outbound': 'warp-ep'} for name in extra_names]
+extra_rules = [{'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'} for name in extra_names]
 cfg['route']['rules'] = base + extra_rules
 cfg['route']['rule_set'] = ruleset
 if 'final' in cfg.get('route', {}):
