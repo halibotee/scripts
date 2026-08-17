@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.65"
+SCRIPT_VERSION="0.8.66"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1360,7 +1360,10 @@ global_warp_enabled() {
 
 enable_global_warp() {
     local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
-    if ! warp_enabled; then red "请先启用 WARP 分流 (warp-ep 节点不存在)。" >&2; return 1; fi
+    if ! warp_enabled; then
+        yellow "warp-ep 节点不存在, 正在启用 WARP 分流..."
+        enable_warp_in_config || { red "WARP 分流启用失败, 全局 WARP 取消。" >&2; return 1; }
+    fi
     if ! python3 -c "
 import json
 cfg = json.load(open('$config_file'))
