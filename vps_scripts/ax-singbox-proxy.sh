@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.60"
+SCRIPT_VERSION="0.8.62"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -999,70 +999,6 @@ apply_warp_wireguard_config() {
 }
 
 # -----------------------------------------------------------------------------
-# 检测规则集对应的外部服务是否可直连访问
-# 参数: $1=规则集名称 (geosite-xxx 或 domain:xxx)
-# 返回: "direct" 或 "warp-ep"
-# -----------------------------------------------------------------------------
-check_ruleset_access() {
-    local name=$1 url="" test_host=""
-    case "$name" in
-        geosite-openai)
-            # ChatGPT 解锁检测: API 响应含 unsupported_country 即被 ban
-            local r1=$(curl -sL --max-time 8 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -H 'origin: https://platform.openai.com' -H 'authorization: Bearer null' "https://api.openai.com/compliance/cookie_requirements" 2>/dev/null)
-            if [[ -z "$r1" ]] || grep -qi 'unsupported_country' <<< "$r1"; then
-                echo "warp-ep"
-            else
-                echo "direct"
-            fi
-            return
-            ;;
-        geosite-google-gemini)
-            # Gemini: 被墙时 302 跳转到 www.google.com/sorry, 检查最终 URL 域名
-            test_host="gemini.google.com"; url="https://gemini.google.com" ;;
-        geosite-twitter)
-            test_host="twitter.com"; url="https://twitter.com" ;;
-        geosite-xai)
-            test_host="x.ai"; url="https://x.ai" ;;
-        domain:*)
-            test_host="${name#domain:}"; url="https://${test_host}" ;;
-        *) echo "warp-ep"; return ;;
-    esac
-    # 通用检测: 跟随跳转, 检查最终 URL 是否仍在目标域名 (跳走=被墙→warp-ep)
-    local final_url
-    final_url=$(curl -sL --max-time 8 --retry 1 -o /dev/null -w "%{url_effective}" "$url" 2>/dev/null)
-    local final_host
-    final_host=$(sed -E 's#^https?://([^/:]+).*#\1#' <<< "$final_url")
-    if [[ "$final_host" == "$test_host" ]]; then
-        echo "direct"
-    else
-        echo "warp-ep"
-    fi
-}
-
-# 读取 .warp_ruleset_list, 为每条规则检测连通性, 输出 JSON 映射
-# 返回: 临时文件路径, 内容为 {"name":"direct/warp-ep",...}
-build_ruleset_outbound_map() {
-    local list_file="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
-    local map_tmp
-    map_tmp=$(umask 077 && mktemp) || return 1
-    echo "{" > "$map_tmp"
-    local first=true
-    if [[ -f "$list_file" ]]; then
-        while IFS= read -r line; do
-            line=$(echo "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-            [[ -z "$line" || "$line" == \#* ]] && continue
-            local outbound
-            outbound=$(check_ruleset_access "$line")
-            $first || echo "," >> "$map_tmp"
-            first=false
-            printf '"%s":"%s"' "$line" "$outbound" >> "$map_tmp"
-        done < "$list_file"
-    fi
-    echo "}" >> "$map_tmp"
-    echo "$map_tmp"
-}
-
-# -----------------------------------------------------------------------------
 # WARP 连通性测试 (通过 mixed-in SOCKS5 代理)
 # 返回 0 表示连通，1 表示不通
 # -----------------------------------------------------------------------------
@@ -1080,12 +1016,14 @@ test_warp_connectivity() {
 
 # -----------------------------------------------------------------------------
 # 写入 WARP endpoint + 路由规则 + rule_set 到 singbox.json
-# 参数: $1=wg_ep (endpoints JSON), $2=route_rules (基础规则), $3=outbound_map (JSON 映射文件, 可选)
+# -----------------------------------------------------------------------------
+# 写入 WARP endpoint + 路由规则 + rule_set 到 singbox.json
+# 参数: $1=wg_ep (endpoints JSON), $2=route_rules (基础规则)
 # 自动读取 .warp_ruleset_list 中的规则集向 singbox.json 添加 warp-ep 分流规则
 # 写入成功返回 0, 失败返回 1
 # -----------------------------------------------------------------------------
 apply_warp_config_to_file() {
-    local wg_ep=$1 route_rules=$2 outbound_map_file=${3:-} config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    local wg_ep=$1 route_rules=$2 config_file="$SINGBOX_INSTALL_DIR/singbox.json"
     local list_file="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
     local tmpfile ep_tmp rules_tmp
     tmpfile=$(umask 077 && mktemp) || return 1
@@ -1093,11 +1031,10 @@ apply_warp_config_to_file() {
     rules_tmp=$(umask 077 && mktemp) || { rm -f "$tmpfile" "$ep_tmp"; return 1; }
     printf '%s\n' "$wg_ep" > "$ep_tmp"
     printf '%s\n' "$route_rules" > "$rules_tmp"
-    [[ -n "$outbound_map_file" ]] && cp "$outbound_map_file" "${tmpfile}.map" || touch "${tmpfile}.map"
-    # 合并规则 (基础规则 + 用户列表中的规则集, 按连通性检测结果分配出站)
-    if ! python3 - "$ep_tmp" "$rules_tmp" "$list_file" "$config_file" "$tmpfile" "${tmpfile}.map" <<'PYEOF' 2>/dev/null
+    # 合并规则 (基础规则 + 用户列表中的规则集, 全部走 warp-ep)
+    if ! python3 - "$ep_tmp" "$rules_tmp" "$list_file" "$config_file" "$tmpfile" <<'PYEOF' 2>/dev/null
 import json, os, sys
-ep_tmp, rules_tmp, list_file, config_file, tmpfile, map_file = sys.argv[1:]
+ep_tmp, rules_tmp, list_file, config_file, tmpfile = sys.argv[1:]
 cfg = json.load(open(config_file))
 cfg['endpoints'] = json.load(open(ep_tmp))
 base = json.load(open(rules_tmp))
@@ -1112,13 +1049,6 @@ if os.path.exists(list_file):
 # 去重
 seen = set()
 extra_names = [x for x in extra_names if not (x in seen or seen.add(x))]
-# 读取出站映射
-outbound_map = {}
-if os.path.exists(map_file) and os.path.getsize(map_file) > 2:
-    try:
-        outbound_map = json.load(open(map_file))
-    except:
-        pass
 # 构建 rule_set 定义: 用户列表中的规则集
 ruleset = []
 for name in extra_names:
@@ -1129,20 +1059,14 @@ for name in extra_names:
         'tag': name, 'type': 'remote', 'format': 'binary',
         'url': f'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{srs}'
     })
-# 构建路由规则: 基础规则 + 固定 ip-api.com→warp-ep + 每条规则按连通性分配出站
+# 构建路由规则: 基础规则 + 固定 ip-api.com→warp-ep + 每条规则走 warp-ep
     warp_ip_rule = [{'action': 'route', 'domain_suffix': ['ip-api.com'], 'outbound': 'warp-ep'}]
     extra_rules = []
     for name in extra_names:
-        outbound = outbound_map.get(name, 'warp-ep')
         if name.startswith('domain:'):
-            extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': outbound})
+            extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': 'warp-ep'})
         else:
-            extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': outbound})
-            # 特殊处理 geosite-google-gemini: 前端域名直连, API 后端走 warp-ep
-            if name == 'geosite-google-gemini':
-                gemini_api = ["generativelanguage.googleapis.com","alkalicore-pa.clients6.google.com","alkalimakersuite-pa.clients6.google.com","proactivebackend-pa.googleapis.com","antigravity.googleapis.com","cloudaicompanion.googleapis.com","notebooklm.googleapis.com","notebooklm-pa.googleapis.com","webchannel-alkalimakersuite-pa.clients6.google.com","geminiweb-pa.clients6.google.com","content.googleapis.com","aistudio.google.com","bard.google.com","makersuite.google.com","deepmind.google","deepmind.com","gemini.google","labs.google.com","labs.google","flow.google","opal.google.com","opal.google","jules.google.com","jules.google","stitch.withgoogle.com","aicode.googleapis.com","aida.googleapis.com","aisandbox-pa.googleapis.com","antigravity-unleash.goog","antigravity.google","ai.studio","geller-pa.googleapis.com","generativeai.google","notebooklm.google","notebooklm.google.com","gemini.gstatic.com"]
-                g_out = 'warp-ep' if outbound == 'direct' else 'direct'
-                extra_rules.append({'action': 'route', 'domain_suffix': gemini_api, 'outbound': g_out})
+            extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
     cfg['route']['rules'] = base + warp_ip_rule + extra_rules
 cfg['route']['rule_set'] = ruleset
 if 'final' in cfg.get('route', {}):
@@ -1166,7 +1090,7 @@ PYEOF
 
 # -----------------------------------------------------------------------------
 # 在 singbox.json 中添加 WARP endpoint + 路由规则 + mixed-in
-# 流程: 注册 → 按规则集检测连通性 → 生成配置 → 热更 → 测试连通性
+# 流程: 注册 → 生成配置 → 热更 → 测试连通性
 # 已启用时跳过 (幂等)；含 IP 优选: 注册 → 测试 → 不通则换注册
 # -----------------------------------------------------------------------------
 enable_warp_in_config() {
@@ -1180,17 +1104,14 @@ enable_warp_in_config() {
     if [[ ! -f "$warp_key_file" ]]; then
         register_warp_wireguard || return 1
     fi
-    local map_file
-    map_file=$(build_ruleset_outbound_map) || { red "连通性检测失败"; return 1; }
     local max_retries=5 attempt=0 wg_ep route_rules
     while [[ $attempt -lt $max_retries ]]; do
         attempt=$((attempt + 1))
-        wg_ep=$(apply_warp_wireguard_config) || { rm -f "$map_file"; return 1; }
+        wg_ep=$(apply_warp_wireguard_config) || return 1
         route_rules=$SINGBOX_WARP_ROUTE_RULES
-        if apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file"; then
+        if apply_warp_config_to_file "$wg_ep" "$route_rules"; then
             if safe_hot_reload_singbox; then
                 if test_warp_connectivity 5; then
-                    rm -f "$map_file"
                     green "✓ WARP 已启用 (尝试 $attempt 次)"
                     return 0
                 fi
@@ -1198,7 +1119,6 @@ enable_warp_in_config() {
                 systemctl restart ax-singbox.service 2>/dev/null
                 sleep 2
                 if test_warp_connectivity 3; then
-                    rm -f "$map_file"
                     green "✓ WARP 已启用 (尝试 $attempt 次, 全重启)"
                     return 0
                 fi
@@ -1206,11 +1126,9 @@ enable_warp_in_config() {
         fi
         if [[ $attempt -lt $max_retries ]]; then
             yellow "WARP 连通性测试失败 (第 $attempt 次), 重新注册以更换出口 IP..."
-            register_warp_wireguard || { rm -f "$map_file"; return 1; }
-            map_file=$(build_ruleset_outbound_map) || { rm -f "$map_file"; return 1; }
+            register_warp_wireguard || return 1
         fi
     done
-    rm -f "$map_file"
     red "✗ WARP 启用失败, 所有 $max_retries 次注册均无法连通。已回滚。"
     disable_warp_in_config
     safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
@@ -1263,12 +1181,10 @@ sync_warp_config() {
         yellow "WARP 未启用, 跳过同步。"
         return 1
     fi
-    local wg_ep route_rules map_file
+    local wg_ep route_rules
     wg_ep=$(apply_warp_wireguard_config) || return 1
-    map_file=$(build_ruleset_outbound_map) || { yellow "连通性检测失败, 所有规则走 warp-ep。" >&2; map_file=""; }
     route_rules=$SINGBOX_WARP_ROUTE_RULES
-    apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file" || { rm -f "$map_file"; return 1; }
-    rm -f "$map_file"
+    apply_warp_config_to_file "$wg_ep" "$route_rules" || return 1
     safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
     sleep 1
 }
@@ -1289,11 +1205,8 @@ warp_ip_optimize() {
         yellow "正在重新注册 (第 $i 次)..."
         register_warp_wireguard || { yellow "注册失败"; continue; }
         local wg_ep; wg_ep=$(apply_warp_wireguard_config) || continue
-        local map_file
-        map_file=$(build_ruleset_outbound_map) || map_file=""
         route_rules=$SINGBOX_WARP_ROUTE_RULES
-        apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file" || { rm -f "$map_file"; continue; }
-        rm -f "$map_file"
+        apply_warp_config_to_file "$wg_ep" "$route_rules" || continue
         safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
         local new_ip=""
         for w in 2 4 6; do
@@ -1314,11 +1227,8 @@ warp_ip_optimize() {
     red "IP优选失败: 注册均未更换出口IP。恢复原配置..."
     cp "$backup_file" "$warp_key_file"; rm -f "$backup_file"
     local wg_ep; wg_ep=$(apply_warp_wireguard_config)
-    local map_file
-    map_file=$(build_ruleset_outbound_map) || map_file=""
     route_rules=$SINGBOX_WARP_ROUTE_RULES
-    apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file"
-    rm -f "$map_file"
+    apply_warp_config_to_file "$wg_ep" "$route_rules"
     safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
     return 1
 }
@@ -1368,12 +1278,10 @@ EOF
 
 # 应用当前 .warp_wireguard.json 到 singbox.json 并 SIGHUP 热更
 change_warp_account_apply() {
-    local wg_ep route_rules map_file
+    local wg_ep route_rules
     wg_ep=$(apply_warp_wireguard_config) || { red "WARP 配置生成失败" >&2; return 1; }
-    map_file=$(build_ruleset_outbound_map) || map_file=""
     route_rules=$SINGBOX_WARP_ROUTE_RULES
-    apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file" || { rm -f "$map_file"; return 1; }
-    rm -f "$map_file"
+    apply_warp_config_to_file "$wg_ep" "$route_rules" || return 1
     if safe_hot_reload_singbox; then
         green "✓ WARP 账户已更新, Sing-box 已热重载"
         return 0
