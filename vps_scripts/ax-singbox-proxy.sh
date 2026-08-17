@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.56"
+SCRIPT_VERSION="0.8.57"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -860,59 +860,97 @@ collect_kcptun_params() {
 
 
 # -----------------------------------------------------------------------------
-# WARP WireGuard 注册 (通过第三方 API 自动获取密钥对与地址)
+# WARP WireGuard 注册 (依次尝试: CF 官方 API → 第三方 API → 共享账户)
 # 输出: 将 WARP 密钥写入 $SINGBOX_INSTALL_DIR/.warp_wireguard.json
+# 返回 0 表示注册成功, 1 表示仅使用共享账户
 # -----------------------------------------------------------------------------
 register_warp_wireguard() {
     local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
     mkdir -p "$SINGBOX_INSTALL_DIR"
     log "正在注册 WARP WireGuard 账户..."
-    local api_result=$(curl -s --max-time 10 "https://warp.cloudflare.nyc.mn/?run=register" 2>/dev/null)
-    if ! grep -q '"id"' <<< "$api_result" 2>/dev/null; then
-        red "WARP 注册失败, 使用共享账户。" >&2
+
+    # 写入密钥文件辅助函数
+    write_warp_key() {  # $1=private_key $2=address_v6 $3=reserved_json
         cat > "$warp_key_file" <<EOF
 {
-    "private_key": "YFYOAdbw1bKTHlNNi+aEjBM3BO7unuFC5rOkMRAz9XY=",
+    "private_key": "$1",
     "address_v4": "172.16.0.2/32",
-    "address_v6": "2606:4700:110:8a36:df92:102a:9602:fa18",
-    "reserved": [78, 135, 76],
+    "address_v6": "$2",
+    "reserved": $3,
     "peer_address": "engage.cloudflareclient.com"
 }
 EOF
         chmod 600 "$warp_key_file"
-        return 1
+    }
+
+    # ---------- 方法1: CF 官方 API ----------
+    local wg_private wg_public
+    if command -v wg &>/dev/null; then
+        wg_private=$(wg genkey 2>/dev/null)
+        wg_public=$(echo "$wg_private" | wg pubkey 2>/dev/null)
+    elif [[ -x "$SINGBOX_INSTALL_DIR/sing-box" ]]; then
+        local wg_keypair=$("$SINGBOX_INSTALL_DIR/sing-box" generate wg-keypair 2>/dev/null)
+        wg_private=$(echo "$wg_keypair" | grep "PrivateKey" | awk '{print $2}')
+        wg_public=$(echo "$wg_keypair" | grep "PublicKey" | awk '{print $2}')
     fi
-    local wg_address_v6=$(jq -r '.config.interface.addresses.v6 // empty' <<< "$api_result" 2>/dev/null)
-    local wg_private_key=$(jq -r '.config.interface.private_key // empty' <<< "$api_result" 2>/dev/null)
-    local cid=$(jq -r '.config.client_id // empty' <<< "$api_result" 2>/dev/null)
-    if [[ -z "$wg_private_key" ]]; then
-        red "WARP 注册响应字段缺失。" >&2
-        return 1
-    fi
-    local reserved="[78, 135, 76]"
-    if [[ -n "$cid" ]]; then
-        local decoded
-        decoded=$(python3 -c "
+    if [[ -n "$wg_private" && -n "$wg_public" ]]; then
+        local api_result=$(curl -s --connect-timeout 10 \
+            "https://api.cloudflareclient.com/v0a$(printf '%04d' $((RANDOM % 10000)))/reg" \
+            -H "Content-Type: application/json" \
+            -d "{\"key\": \"${wg_public}\", \"install_id\": \"\", \"fcm_token\": \"\", \"warp_enabled\": false, \"locale\": \"zh_CN\"}" 2>/dev/null)
+        if grep -q '"id"' <<< "$api_result" 2>/dev/null; then
+            local c1=$(jq -r '.config.client_id // empty' <<< "$api_result" 2>/dev/null)
+            local k1=$(jq -r '.config.interface.private_key // .config.interface.private_key // empty' <<< "$api_result" 2>/dev/null)
+            local v4=$(jq -r '.config.interface.addresses.v4 // "172.16.0.2"' <<< "$api_result" 2>/dev/null)
+            local v6=$(jq -r '.config.interface.addresses.v6 // empty' <<< "$api_result" 2>/dev/null)
+            [[ -z "$k1" || "$k1" == "null" ]] && k1="$wg_private"
+            local r1="[78, 135, 76]"
+            if [[ -n "$c1" && "$c1" != "null" ]]; then
+                local dec1=$(python3 -c "
 import base64, json
 try:
-    raw = base64.b64decode('$cid' + '==')
+    raw = base64.b64decode('$c1' + '==')
     print(json.dumps([raw[0], raw[1], raw[2]]))
 except Exception:
     print('[78, 135, 76]')
 " 2>/dev/null)
-        [[ -n "$decoded" ]] && reserved="$decoded"
+                [[ -n "$dec1" ]] && r1="$dec1"
+            fi
+            write_warp_key "$k1" "$v6" "$r1"
+            green "✓ WARP 已通过 CF 官方 API 注册"
+            return 0
+        fi
     fi
-    cat > "$warp_key_file" <<EOF
-{
-    "private_key": "$wg_private_key",
-    "address_v4": "172.16.0.2/32",
-    "address_v6": "$wg_address_v6",
-    "reserved": $reserved,
-    "peer_address": "engage.cloudflareclient.com"
-}
-EOF
-    chmod 600 "$warp_key_file"
-    green "✓ WARP 注册成功"
+
+    # ---------- 方法2: 第三方 API ----------
+    local api2=$(curl -s --max-time 10 "https://warp.cloudflare.nyc.mn/?run=register" 2>/dev/null)
+    if grep -q '"id"' <<< "$api2" 2>/dev/null; then
+        local c2=$(jq -r '.config.client_id // empty' <<< "$api2" 2>/dev/null)
+        local k2=$(jq -r '.config.interface.private_key // empty' <<< "$api2" 2>/dev/null)
+        local v6b=$(jq -r '.config.interface.addresses.v6 // empty' <<< "$api2" 2>/dev/null)
+        local r2="[78, 135, 76]"
+        if [[ -n "$c2" && "$c2" != "null" ]]; then
+            local dec2=$(python3 -c "
+import base64, json
+try:
+    raw = base64.b64decode('$c2' + '==')
+    print(json.dumps([raw[0], raw[1], raw[2]]))
+except Exception:
+    print('[78, 135, 76]')
+" 2>/dev/null)
+            [[ -n "$dec2" ]] && r2="$dec2"
+        fi
+        if [[ -n "$k2" && "$k2" != "null" ]]; then
+            write_warp_key "$k2" "$v6b" "$r2"
+            green "✓ WARP 已通过第三方 API 注册"
+            return 0
+        fi
+    fi
+
+    # ---------- 方法3: 共享账户 fallback ----------
+    red "WARP 注册失败, 使用共享账户。" >&2
+    write_warp_key "YFYOAdbw1bKTHlNNi+aEjBM3BO7unuFC5rOkMRAz9XY=" "2606:4700:110:8a36:df92:102a:9602:fa18" "[78, 135, 76]"
+    return 1
 }
 
 # -----------------------------------------------------------------------------
@@ -1393,8 +1431,8 @@ warp_management_menu() {
         echo "=================================="
         if $cfg_enabled; then
             green "当前状态: 已启用 (按规则集分配分流)"
-            local warp_ip=$(curl -s --max-time 3 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
-            [[ -n "$warp_ip" ]] && echo "      出口IP: $warp_ip"
+            local count=$(warp_ruleset_count)
+            echo "      规则集数量: $count"
         else
             yellow "当前状态: 未启用"
         fi
@@ -3511,8 +3549,8 @@ json.dump(cfg, open('$SINGBOX_INSTALL_DIR/singbox.json','w'), indent=2)
 " 2>/dev/null && systemctl restart ax-singbox.service 2>/dev/null
         fi
         green "WARP 分流: 已启用"
-        local real_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
-        [[ -n "$real_ip" ]] && green "  WARP 出口IP: $real_ip"
+        local count=$(warp_ruleset_count)
+        green "  规则集数量: $count"
     else
         yellow "WARP 分流: 未启用"
     fi
