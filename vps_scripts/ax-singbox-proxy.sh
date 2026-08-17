@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.63"
+SCRIPT_VERSION="0.8.64"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -900,16 +900,15 @@ EOF
             -d "{\"key\": \"${wg_public}\", \"install_id\": \"\", \"fcm_token\": \"\", \"warp_enabled\": false, \"locale\": \"zh_CN\"}" 2>/dev/null)
         if grep -q '"id"' <<< "$api_result" 2>/dev/null; then
             local c1=$(jq -r '.config.client_id // empty' <<< "$api_result" 2>/dev/null)
-            local k1=$(jq -r '.config.interface.private_key // .config.interface.private_key // empty' <<< "$api_result" 2>/dev/null)
-            local v4=$(jq -r '.config.interface.addresses.v4 // "172.16.0.2"' <<< "$api_result" 2>/dev/null)
+            local k1=$(jq -r '.config.interface.private_key // empty' <<< "$api_result" 2>/dev/null)
             local v6=$(jq -r '.config.interface.addresses.v6 // empty' <<< "$api_result" 2>/dev/null)
             [[ -z "$k1" || "$k1" == "null" ]] && k1="$wg_private"
             local r1="[78, 135, 76]"
             if [[ -n "$c1" && "$c1" != "null" ]]; then
-                local dec1=$(python3 -c "
-import base64, json
+                local dec1=$(CID="$c1" python3 -c "
+import base64, json, os
 try:
-    raw = base64.b64decode('$c1' + '==')
+    raw = base64.b64decode(os.environ['CID'] + '==')
     print(json.dumps([raw[0], raw[1], raw[2]]))
 except Exception:
     print('[78, 135, 76]')
@@ -930,10 +929,10 @@ except Exception:
         local v6b=$(jq -r '.config.interface.addresses.v6 // empty' <<< "$api2" 2>/dev/null)
         local r2="[78, 135, 76]"
         if [[ -n "$c2" && "$c2" != "null" ]]; then
-            local dec2=$(python3 -c "
-import base64, json
+            local dec2=$(CID="$c2" python3 -c "
+import base64, json, os
 try:
-    raw = base64.b64decode('$c2' + '==')
+    raw = base64.b64decode(os.environ['CID'] + '==')
     print(json.dumps([raw[0], raw[1], raw[2]]))
 except Exception:
     print('[78, 135, 76]')
@@ -1006,11 +1005,11 @@ test_warp_connectivity() {
     local wait_seconds=${1:-5}
     sleep "$wait_seconds"
     local code=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "https://www.gstatic.com/generate_204" 2>/dev/null)
-    if [[ "$code" == "204" || "$code" != "000" ]]; then
+    if [[ "$code" == "204" ]]; then
         green "  代理连通性测试通过: www.gstatic.com → HTTP $code"
         return 0
     fi
-    yellow "  代理连通性测试失败 (SOCKS5 代理无响应)"
+    yellow "  代理连通性测试失败 (SOCKS5 代理无响应或异常码 $code)"
     return 1
 }
 
@@ -1258,7 +1257,10 @@ geosite-twitter
 geosite-xai
 # 域名后缀 (domain_suffix): 以 domain: 开头
 # geosite-xai 包含 grok.com 但不含 grok.x.ai, 单独补充:
-#domain:grok.x.ai
+domain:grok.x.ai
+# Google 认证一致性 (避免 gemini 前后端 IP 不一致):
+domain:accounts.google.com
+domain:oauth2.googleapis.com
 #domain:google.com
 #domain:youtube.com
 #domain:openai.com
@@ -1351,6 +1353,35 @@ change_warp_account_menu() {
 # -----------------------------------------------------------------------------
 # WARP 管理子菜单 (对齐 fscarmen: 自定义路由 + WARP 账户管理)
 # -----------------------------------------------------------------------------
+# 全局 WARP: 所有未匹配流量走 warp-ep
+global_warp_enabled() {
+    jq -e '.route.final == "warp-ep"' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1
+}
+
+enable_global_warp() {
+    local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    if ! python3 -c "
+import json
+cfg = json.load(open('$config_file'))
+cfg.setdefault('route', {})['final'] = 'warp-ep'
+json.dump(cfg, open('$config_file','w'), indent=2)
+" 2>/dev/null; then red "设置全局 WARP 失败。" >&2; return 1; fi
+    safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
+    green "✓ 全局 WARP 已启用 (所有未匹配流量走 warp-ep)"
+}
+
+disable_global_warp() {
+    local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    if ! python3 -c "
+import json
+cfg = json.load(open('$config_file'))
+cfg['route'].pop('final', None)
+json.dump(cfg, open('$config_file','w'), indent=2)
+" 2>/dev/null; then red "关闭全局 WARP 失败。" >&2; return 1; fi
+    safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
+    green "✓ 全局 WARP 已关闭"
+}
+
 warp_management_menu() {
     while true; do
         local cfg_enabled=false
@@ -1363,6 +1394,7 @@ warp_management_menu() {
             green "当前状态: 已启用 (按规则集分配分流)"
             local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
             [[ -n "$warp_ip" ]] && echo "      出口IP: $warp_ip"
+            if global_warp_enabled; then green "      全局模式: 已启用 (全部流量走 WARP)"; fi
         else
             yellow "当前状态: 未启用"
         fi
@@ -1370,6 +1402,7 @@ warp_management_menu() {
         if $cfg_enabled; then echo " 1) 禁用 WARP 分流"; else echo " 1) 启用 WARP 分流"; fi
         echo " 2) 编辑WARP 分流域名"
         echo " 3) 更换 WARP 账户"
+        if global_warp_enabled; then echo " 4) 关闭全局 WARP"; else echo " 4) 启用全局 WARP"; fi
         echo " 0) 返回"
         read -p "请选择: " warp_choice
         case "$warp_choice" in
@@ -1383,6 +1416,9 @@ warp_management_menu() {
                 break;;
             2) edit_warp_rulesets;;
             3) change_warp_account_menu;;
+            4)
+                if global_warp_enabled; then disable_global_warp; else enable_global_warp; fi
+                read -p $'\n按任意键返回...' -n1 -s;;
             0) break;;
             *) red "无效选择!"; sleep 1;;
         esac
@@ -1770,7 +1806,7 @@ get_listen_info_from_conf() {
             echo "0.0.0.0:${port}"
         else
             local listen=$(jq -r '.inbounds[0].listen // "0.0.0.0"' "$conf_path" 2>/dev/null)
-            local port=$(jq -r '.inbounds[0].port // 0' "$conf_path" 2>/dev/null)
+            local port=$(jq -r '.inbounds[0].listen_port // 0' "$conf_path" 2>/dev/null)
             if [[ "$listen" == "null" || "$port" == "0" ]]; then echo "JSON解析错误"; else echo "${listen}:${port}"; fi
         fi
     elif [[ "$conf_path" == *".conf" ]]; then
@@ -2273,6 +2309,7 @@ collect_common_instance_config() {
     case "$type" in
         udp2raw) 
             TITLE="UDP2RAW"
+            INSTALL_DIR="$UDP2RAW_INSTALL_DIR"
             SERVICE_PREFIX="udp2raw"
             SYSTEMD_SERVICE_NAME="ax-udp2raw"
             FILE_EXT="conf"
@@ -2280,6 +2317,7 @@ collect_common_instance_config() {
             ;;
         kcptun)
             TITLE="KCPTUN"
+            INSTALL_DIR="$KCP_INSTALL_DIR"
             SERVICE_PREFIX="kcptun"
             SYSTEMD_SERVICE_NAME="ax-kcptun"
             FILE_EXT="json"
@@ -3279,7 +3317,7 @@ chain_manager_menu_3() {
     declare -A CHAIN_MAP
     
     while true; do
-        trap 'echo -e "\n\n${yellow}操作已取消, 返回上级菜单...${reset}"; sleep 1; return' SIGINT
+        trap 'echo -e "\n\n\033[33m操作已取消, 返回上级菜单...\033[0m"; sleep 1; return' SIGINT
         clear; echo "=================================="; echo "  安装/管理 $title"; echo "=================================="; echo
         
         local INSTANCES=$(get_chain_instances_3)
@@ -3327,7 +3365,7 @@ chain_manager_menu() {
     declare -A CHAIN_MAP
     
     while true; do
-        trap 'echo -e "\n\n${yellow}操作已取消, 返回上级菜单...${reset}"; sleep 1; return' SIGINT
+        trap 'echo -e "\n\n\033[33m操作已取消, 返回上级菜单...\033[0m"; sleep 1; return' SIGINT
         clear; echo "=================================="; echo "  安装/管理 $title"; echo "=================================="; echo
         
         local INSTANCES=$(get_chain_instances "$chain_type")
@@ -3366,7 +3404,7 @@ main_manager_loop() {
         hysteria2) title="Hysteria2"; dir="$SINGBOX_INSTALL_DIR"; pattern=""; service_prefix="ax-singbox"; type_lowercase="hysteria2";;
     esac
     while true; do
-        trap 'echo -e "\n\n${yellow}操作已取消, 返回上级菜单...${reset}"; sleep 1; return' SIGINT
+        trap 'echo -e "\n\n\033[33m操作已取消, 返回上级菜单...\033[0m"; sleep 1; return' SIGINT
         clear; echo "=================================="; echo "     安装/管理 $title"; echo "=================================="; echo
         
         local INSTANCES=($(get_standalone_instances "$type_lowercase"))
@@ -3384,7 +3422,11 @@ main_manager_loop() {
         read -p "请选择: " choice
         case $choice in
             1)
-                add_singbox_inbound "$type_lowercase"
+                if [[ "$type_lowercase" == "udp2raw" || "$type_lowercase" == "kcptun" ]]; then
+                    create_new_instance "$type_lowercase"
+                else
+                    add_singbox_inbound "$type_lowercase"
+                fi
                 read -p $'\n按任意键返回...' -n1 -s;;
             2)
                 if [[ ${#INSTANCES[@]} -eq 0 ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
@@ -3941,7 +3983,7 @@ import_subscription_links() {
             view_chain_client_config_3 "$i"
 
         # ── 2 层串联: HY2 + UDP2RAW ──
-        elif [[ "$p1" == hysteria2://* && "$p2" == udp2raw://* && -z "$p3" ]]; then
+        elif [[ "$p1" == hysteria2://* && "$p2" == udp2raw://* && ( -z "$p3" || "$p3" == "$p2" ) ]]; then
             log "检测到 2 层串联链接 (HY2+UDP)"
 
             local hy2_raw="${p1#hysteria2://}"
@@ -4314,7 +4356,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo -e "\033[1;36m[INFO] 脚本启动... 当前版本: v${SCRIPT_VERSION}\033[0m"
     sleep 2
     # 捕获 Ctrl+C 信号，以便在脚本主体执行期间优雅退出
-    trap 'echo -e "\n\n${yellow}操作被中断，退出脚本。${reset}"; trap - SIGINT; exit 1' SIGINT
+    trap 'echo -e "\n\n\033[33m操作被中断，退出脚本。\033[0m"; trap - SIGINT; exit 1' SIGINT
     # 初始化检查和安装
     initial_check_and_install
     # 显示主菜单
