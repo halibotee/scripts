@@ -15,7 +15,7 @@
 #   https://api.openai.com/compliance/cookie_requirements    — ChatGPT 解锁检测 (API)
 #   https://ios.chat.openai.com                              — ChatGPT 解锁检测 (Web)
 
-SCRIPT_VERSION="0.8.54"
+SCRIPT_VERSION="0.8.55"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -4137,6 +4137,32 @@ check_system_compatibility() {
 }
 
 # -----------------------------------------------------------------------------
+# 自动检测并启用 BBR + fq (如果未启用)
+# -----------------------------------------------------------------------------
+enable_bbr_fq() {
+    local mod_loaded=false changed=false
+    if ! lsmod 2>/dev/null | grep -q 'tcp_bbr'; then
+        modprobe tcp_bbr 2>/dev/null && mod_loaded=true
+    else
+        mod_loaded=true
+    fi
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    if [[ "$current_cc" != "bbr" || "$current_qdisc" != "fq" ]]; then
+        cat > /etc/sysctl.d/99-bbr-fq.conf <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+        sysctl -p /etc/sysctl.d/99-bbr-fq.conf >/dev/null 2>&1 && changed=true
+    fi
+    if $mod_loaded && $changed; then
+        green "✓ BBR + fq 已启用"
+    elif $mod_loaded && ! $changed; then
+        green "✓ BBR + fq 已就绪"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # 首次运行检查和安装核心程序
 # -----------------------------------------------------------------------------
 initial_check_and_install() {
@@ -4145,6 +4171,9 @@ initial_check_and_install() {
     
     # 使用统一的安装函数
     install_dependencies_and_programs || { red "安装失败，退出脚本。"; exit 1; }
+    
+    # 自动启用 BBR + fq
+    enable_bbr_fq
     
     # 确保模板文件就绪
     ensure_template_files
