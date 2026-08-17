@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.57"
+SCRIPT_VERSION="0.8.58"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1115,15 +1115,16 @@ for name in extra_names:
         'tag': name, 'type': 'remote', 'format': 'binary',
         'url': f'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{srs}'
     })
-# 构建路由规则: 基础规则 + 每条规则按连通性分配出站
-extra_rules = []
-for name in extra_names:
-    outbound = outbound_map.get(name, 'warp-ep')
-    if name.startswith('domain:'):
-        extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': outbound})
-    else:
-        extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': outbound})
-cfg['route']['rules'] = base + extra_rules
+# 构建路由规则: 基础规则 + 固定 ip-api.com→warp-ep + 每条规则按连通性分配出站
+    warp_ip_rule = [{'action': 'route', 'domain_suffix': ['ip-api.com'], 'outbound': 'warp-ep'}]
+    extra_rules = []
+    for name in extra_names:
+        outbound = outbound_map.get(name, 'warp-ep')
+        if name.startswith('domain:'):
+            extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': outbound})
+        else:
+            extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': outbound})
+    cfg['route']['rules'] = base + warp_ip_rule + extra_rules
 cfg['route']['rule_set'] = ruleset
 if 'final' in cfg.get('route', {}):
     del cfg['route']['final']
@@ -1431,8 +1432,8 @@ warp_management_menu() {
         echo "=================================="
         if $cfg_enabled; then
             green "当前状态: 已启用 (按规则集分配分流)"
-            local count=$(warp_ruleset_count)
-            echo "      规则集数量: $count"
+            local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
+            [[ -n "$warp_ip" ]] && echo "      出口IP: $warp_ip"
         else
             yellow "当前状态: 未启用"
         fi
@@ -3549,8 +3550,8 @@ json.dump(cfg, open('$SINGBOX_INSTALL_DIR/singbox.json','w'), indent=2)
 " 2>/dev/null && systemctl restart ax-singbox.service 2>/dev/null
         fi
         green "WARP 分流: 已启用"
-        local count=$(warp_ruleset_count)
-        green "  规则集数量: $count"
+        local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
+        [[ -n "$warp_ip" ]] && green "  WARP 出口IP: $warp_ip"
     else
         yellow "WARP 分流: 未启用"
     fi
