@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.69"
+SCRIPT_VERSION="0.8.70"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1541,6 +1541,10 @@ read_valid_port() {
             eval "$var_name='$input'"; return
         fi
         if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1024 && input <= 65535 )); then
+            if ss -tuln 2>/dev/null | grep -qE ":${input}([[:space:]]|\$)"; then
+                red "端口 $input 已被占用，请重新输入！" >&2
+                continue
+            fi
             eval "$var_name='$input'"; return
         fi
         red "端口必须是 1024-65535 之间的数字！" >&2
@@ -2941,8 +2945,28 @@ start_new_chain_instance_3() {
     read_valid_port "请输入KCPTUN内联端口 (UDP2RAW->KCPTUN) (留空则随机生成): " kcptun_listen_port true
     read_valid_port "请输入SS内联端口 (KCPTUN->SS) (留空则随机生成): " ss_listen_port true
     
-    # 去重: 同实例 3 端口不得相同 (0.0.0.0 bind 覆盖 127.0.0.1, 撞口则启动失败)
+    # 去重: 同实例 3 端口不得相同, 且不得与已有服务端口冲突
     while true; do
+        local conflict=false
+        for p in "$udp2raw_listen_port" "$kcptun_listen_port" "$ss_listen_port"; do
+            if ss -tuln 2>/dev/null | grep -qE ":${p}([[:space:]]|\$)"; then
+                yellow "端口 $p 已被占用, 重新分配..." >&2
+                conflict=true
+                break
+            fi
+        done
+        if $conflict; then
+            if ss -tuln 2>/dev/null | grep -qE ":${udp2raw_listen_port}([[:space:]]|\$)"; then
+                udp2raw_listen_port=$(find_available_port)
+            fi
+            if ss -tuln 2>/dev/null | grep -qE ":${kcptun_listen_port}([[:space:]]|\$)"; then
+                kcptun_listen_port=$(find_available_port)
+            fi
+            if ss -tuln 2>/dev/null | grep -qE ":${ss_listen_port}([[:space:]]|\$)"; then
+                ss_listen_port=$(find_available_port)
+            fi
+            continue
+        fi
         if [[ "$ss_listen_port" == "$udp2raw_listen_port" || "$ss_listen_port" == "$kcptun_listen_port" ]]; then
             yellow "SS 端口 $ss_listen_port 与其它端口冲突, 重新分配..." >&2
             ss_listen_port=$(find_available_port)
