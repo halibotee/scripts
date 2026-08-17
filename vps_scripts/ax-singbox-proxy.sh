@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.67"
+SCRIPT_VERSION="0.8.68"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -332,7 +332,7 @@ read -r -d '' SINGBOX_WARP_WIREGUARD_ENDPOINT <<'EOM'
     {
         "type": "wireguard",
         "tag": "warp-ep",
-        "mtu": 1400,
+        "mtu": __WARP_MTU__,
         "address": __WARP_ADDRESS_LIST__,
         "private_key": "__WARP_PRIVATE_KEY__",
         "peers": [
@@ -341,6 +341,7 @@ read -r -d '' SINGBOX_WARP_WIREGUARD_ENDPOINT <<'EOM'
                 "port": 2408,
                 "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
                 "allowed_ips": ["0.0.0.0/0", "::/0"],
+                "persistent_keepalive_interval": 30,
                 "reserved": __WARP_RESERVED__
             }
         ]
@@ -953,6 +954,34 @@ except Exception:
 }
 
 # -----------------------------------------------------------------------------
+# 探测到 Cloudflare WARP 端点的最优 MTU (ICMP 二进制搜索, 仿 fscarmen)
+# 返回 1280-1420 之间的值
+# -----------------------------------------------------------------------------
+detect_best_warp_mtu() {
+    local test_ip="162.159.192.1"  # Cloudflare WARP 任何可达 IP 均可
+    local min=1280 max=1500 best=1280
+    while [ $((min <= max)) -eq 1 ]; do
+        local mid=$(( (min + max) / 2 ))
+        # ping -s 为 ICMP 负载, 总包 = 28 + 负载; 目标总包 = mid
+        if ping -c1 -W1 -s $((mid - 28)) -M do "$test_ip" >/dev/null 2>&1; then
+            best=$mid; min=$((mid + 1))
+        else
+            max=$((mid - 1))
+        fi
+    done
+    # 向上微调 2 个字节
+    local i
+    for i in $(seq $((best + 1)) $((best + 2))); do
+        ping -c1 -W1 -s $((i - 28)) -M do "$test_ip" >/dev/null 2>&1 && best=$i
+    done
+    # WireGuard 开销 (IPv4): 路径MTU - 60
+    local wg_mtu=$((best - 60))
+    [ $wg_mtu -lt 1280 ] && wg_mtu=1280
+    [ $wg_mtu -gt 1420 ] && wg_mtu=1420
+    echo "$wg_mtu"
+}
+
+# -----------------------------------------------------------------------------
 # 从密钥文件加载 WARP WireGuard 配置到模板
 # -----------------------------------------------------------------------------
 apply_warp_wireguard_config() {
@@ -966,6 +995,7 @@ apply_warp_wireguard_config() {
         return 1
     fi
     local block=$SINGBOX_WARP_WIREGUARD_ENDPOINT
+    local warp_mtu=$(detect_best_warp_mtu)
     local addr=$(jq -r '.address_v4 // "172.16.0.2/32"' "$warp_key_file" 2>/dev/null)
     if [[ -z "$addr" || "$addr" == "null" || "$addr" == "/32" ]]; then
         addr="172.16.0.2/32"
@@ -990,6 +1020,7 @@ apply_warp_wireguard_config() {
         yellow "警告: WARP reserved 缺失, 使用 [78,135,76]。" >&2
         reserved="[78, 135, 76]"
     fi
+    block=${block/__WARP_MTU__/$warp_mtu}
     block=${block/__WARP_ADDRESS_LIST__/$addr_list}
     block=${block/__WARP_PRIVATE_KEY__/$priv_key}
     block=${block/__WARP_PEER_ADDRESS__/$peer_addr}
@@ -1010,6 +1041,28 @@ test_warp_connectivity() {
         return 0
     fi
     yellow "  代理连通性测试失败 (SOCKS5 代理无响应或异常码 $code)"
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# WARP 隧道健康检查 (快速, 不 sleep)
+# 返回 0 = 隧道正常, 1 = 隧道异常
+# $1=1 时异常自动重启 sing-box 恢复 (重启后再验证一次)
+# -----------------------------------------------------------------------------
+check_warp_tunnel() {
+    local auto_repair=${1:-0}
+    local code
+    code=$(curl -s --max-time 6 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "https://www.gstatic.com/generate_204" 2>/dev/null)
+    if [[ "$code" == "204" ]]; then
+        return 0
+    fi
+    if [[ "$auto_repair" == "1" ]]; then
+        yellow "WARP 隧道异常 (HTTP $code), 重启 sing-box 尝试恢复..."
+        systemctl restart ax-singbox.service 2>/dev/null
+        sleep 5
+        code=$(curl -s --max-time 6 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "https://www.gstatic.com/generate_204" 2>/dev/null)
+        [[ "$code" == "204" ]] && return 0
+    fi
     return 1
 }
 
@@ -1400,8 +1453,10 @@ warp_management_menu() {
         echo "       WARP分流管理"
         echo "=================================="
         local warp_ip=""
+        local warp_ok=""
         if $cfg_enabled || $global; then
             warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
+            if check_warp_tunnel 1; then warp_ok=true; else warp_ok=false; fi
         fi
         if $global; then
             green "当前状态: 全局 WARP (全部流量走 WARP)"
@@ -1411,6 +1466,9 @@ warp_management_menu() {
             [[ -n "$warp_ip" ]] && echo "      出口IP: $warp_ip"
         else
             yellow "当前状态: 未启用"
+        fi
+        if [[ -n "$warp_ok" ]]; then
+            if $warp_ok; then green "      隧道状态: 正常 (keepalive 30s)"; else red "      隧道状态: 异常 (已尝试自愈失败)"; fi
         fi
         echo "----------------------------------"
         if $global; then
@@ -3543,6 +3601,11 @@ json.dump(cfg, open('$SINGBOX_INSTALL_DIR/singbox.json','w'), indent=2)
         green "WARP 分流: 已启用"
         local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
         [[ -n "$warp_ip" ]] && green "  WARP 出口IP: $warp_ip"
+        if check_warp_tunnel; then
+            green "  隧道状态: 正常 (keepalive 30s)"
+        else
+            red "  隧道状态: 异常"
+        fi
     else
         yellow "WARP 分流: 未启用"
     fi
