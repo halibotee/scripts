@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.58"
+SCRIPT_VERSION="0.8.59"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1004,21 +1004,35 @@ apply_warp_wireguard_config() {
 # 返回: "direct" 或 "warp-ep"
 # -----------------------------------------------------------------------------
 check_ruleset_access() {
-    local name=$1 test_domain=""
+    local name=$1 url="" test_host=""
     case "$name" in
-        geosite-openai) test_domain="api.openai.com" ;;
-        geosite-google-gemini) test_domain="gemini.google.com" ;;
-        geosite-twitter) test_domain="twitter.com" ;;
-        geosite-xai) test_domain="x.ai" ;;
-        domain:*) test_domain="${name#domain:}" ;;
+        geosite-openai)
+            # ChatGPT 解锁检测: API 响应含 unsupported_country 即被 ban
+            local r1=$(curl -sL --max-time 8 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -H 'origin: https://platform.openai.com' -H 'authorization: Bearer null' "https://api.openai.com/compliance/cookie_requirements" 2>/dev/null)
+            if [[ -z "$r1" ]] || grep -qi 'unsupported_country' <<< "$r1"; then
+                echo "warp-ep"
+            else
+                echo "direct"
+            fi
+            return
+            ;;
+        geosite-google-gemini)
+            # Gemini: 被墙时 302 跳转到 www.google.com/sorry, 检查最终 URL 域名
+            test_host="gemini.google.com"; url="https://gemini.google.com" ;;
+        geosite-twitter)
+            test_host="twitter.com"; url="https://twitter.com" ;;
+        geosite-xai)
+            test_host="x.ai"; url="https://x.ai" ;;
+        domain:*)
+            test_host="${name#domain:}"; url="https://${test_host}" ;;
         *) echo "warp-ep"; return ;;
     esac
-    local code
-    code=$(curl -s --max-time 5 --retry 1 -o /dev/null -w "%{http_code}" "https://${test_domain}" 2>/dev/null)
-    if [[ -z "$code" || "$code" == "000" ]]; then
-        code=$(curl -s --max-time 5 --retry 1 --ciphers 'DEFAULT@SECLEVEL=1' -o /dev/null -w "%{http_code}" "https://${test_domain}" 2>/dev/null)
-    fi
-    if [[ "$code" =~ ^[23] ]]; then
+    # 通用检测: 跟随跳转, 检查最终 URL 是否仍在目标域名 (跳走=被墙→warp-ep)
+    local final_url
+    final_url=$(curl -sL --max-time 8 --retry 1 -o /dev/null -w "%{url_effective}" "$url" 2>/dev/null)
+    local final_host
+    final_host=$(sed -E 's#^https?://([^/:]+).*#\1#' <<< "$final_url")
+    if [[ "$final_host" == "$test_host" ]]; then
         echo "direct"
     else
         echo "warp-ep"
