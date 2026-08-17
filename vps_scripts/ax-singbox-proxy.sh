@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.59"
+SCRIPT_VERSION="0.8.60"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1138,6 +1138,11 @@ for name in extra_names:
             extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': outbound})
         else:
             extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': outbound})
+            # 特殊处理 geosite-google-gemini: 前端域名直连, API 后端走 warp-ep
+            if name == 'geosite-google-gemini':
+                gemini_api = ["generativelanguage.googleapis.com","alkalicore-pa.clients6.google.com","alkalimakersuite-pa.clients6.google.com","proactivebackend-pa.googleapis.com","antigravity.googleapis.com","cloudaicompanion.googleapis.com","notebooklm.googleapis.com","notebooklm-pa.googleapis.com","webchannel-alkalimakersuite-pa.clients6.google.com","geminiweb-pa.clients6.google.com","content.googleapis.com","aistudio.google.com","bard.google.com","makersuite.google.com","deepmind.google","deepmind.com","gemini.google","labs.google.com","labs.google","flow.google","opal.google.com","opal.google","jules.google.com","jules.google","stitch.withgoogle.com","aicode.googleapis.com","aida.googleapis.com","aisandbox-pa.googleapis.com","antigravity-unleash.goog","antigravity.google","ai.studio","geller-pa.googleapis.com","generativeai.google","notebooklm.google","notebooklm.google.com","gemini.gstatic.com"]
+                g_out = 'warp-ep' if outbound == 'direct' else 'direct'
+                extra_rules.append({'action': 'route', 'domain_suffix': gemini_api, 'outbound': g_out})
     cfg['route']['rules'] = base + warp_ip_rule + extra_rules
 cfg['route']['rule_set'] = ruleset
 if 'final' in cfg.get('route', {}):
