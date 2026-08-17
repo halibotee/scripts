@@ -12,10 +12,8 @@
 #   https://warp.cloudflare.nyc.mn                           — WARP 账户注册 API (第三方代理)
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
-#   https://api.openai.com/compliance/cookie_requirements    — ChatGPT 解锁检测 (API)
-#   https://ios.chat.openai.com                              — ChatGPT 解锁检测 (Web)
 
-SCRIPT_VERSION="0.8.55"
+SCRIPT_VERSION="0.8.56"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -130,8 +128,8 @@ SINGBOX_REALITY_DEFAULT_FLOW="xtls-rprx-vision"      # VLESS+Reality 模式默�
 # =============================================================================
 # 6. WARP 分流配置
 # =============================================================================
-# WARP 使用 geosite-openai 规则集 (SagerNet/sing-geosite) 分流 ChatGPT/OpenAI,
-# 原生 IP 解锁则 direct, 否则 warp-ep; 分流域名列表走 .warp_ruleset_list
+# WARP 按 .warp_ruleset_list 逐条检测原生连通性, 可达走 direct, 否则走 warp-ep
+# 支持 geosite 规则集 (SagerNet/sing-geosite) 与 domain: 域名后缀
 
 
 # =============================================================================
@@ -862,7 +860,7 @@ collect_kcptun_params() {
 
 
 # -----------------------------------------------------------------------------
-# WARP WireGuard 注册 (通过 Cloudflare API 自动获取密钥对与地址)
+# WARP WireGuard 注册 (通过第三方 API 自动获取密钥对与地址)
 # 输出: 将 WARP 密钥写入 $SINGBOX_INSTALL_DIR/.warp_wireguard.json
 # -----------------------------------------------------------------------------
 register_warp_wireguard() {
@@ -977,7 +975,12 @@ check_ruleset_access() {
         domain:*) test_domain="${name#domain:}" ;;
         *) echo "warp-ep"; return ;;
     esac
-    if curl -s --max-time 5 --retry 1 -o /dev/null -w "%{http_code}" "https://${test_domain}" 2>/dev/null | grep -qE '^[23]'; then
+    local code
+    code=$(curl -s --max-time 5 --retry 1 -o /dev/null -w "%{http_code}" "https://${test_domain}" 2>/dev/null)
+    if [[ -z "$code" || "$code" == "000" ]]; then
+        code=$(curl -s --max-time 5 --retry 1 --ciphers 'DEFAULT@SECLEVEL=1' -o /dev/null -w "%{http_code}" "https://${test_domain}" 2>/dev/null)
+    fi
+    if [[ "$code" =~ ^[23] ]]; then
         echo "direct"
     else
         echo "warp-ep"
@@ -1006,6 +1009,9 @@ build_ruleset_outbound_map() {
     echo "}" >> "$map_tmp"
     echo "$map_tmp"
 }
+
+# -----------------------------------------------------------------------------
+# WARP 连通性测试 (通过 mixed-in SOCKS5 代理)
 # 返回 0 表示连通，1 表示不通
 # -----------------------------------------------------------------------------
 test_warp_connectivity() {
@@ -1101,8 +1107,8 @@ PYEOF
 }
 
 # -----------------------------------------------------------------------------
-# 在 singbox.json 中添加 WARP endpoint + geosite-openai 路由规则 + mixed-in
-# 对齐 fscarmen: ChatGPT 出站由原生 IP 是否解锁决定
+# 在 singbox.json 中添加 WARP endpoint + 路由规则 + mixed-in
+# 流程: 注册 → 按规则集检测连通性 → 生成配置 → 热更 → 测试连通性
 # 已启用时跳过 (幂等)；含 IP 优选: 注册 → 测试 → 不通则换注册
 # -----------------------------------------------------------------------------
 enable_warp_in_config() {
@@ -1265,7 +1271,7 @@ warp_ip_optimize() {
 warp_ruleset_count() {
     local list_file="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
     if [[ -f "$list_file" ]]; then
-        grep -cE '^(#domain:|[a-zA-Z0-9_-])' "$list_file" 2>/dev/null || echo 0
+        grep -cE '^(domain:|[a-zA-Z0-9_-])' "$list_file" 2>/dev/null || echo 0
     else
         echo 0
     fi
@@ -1386,7 +1392,7 @@ warp_management_menu() {
         echo "       WARP分流管理"
         echo "=================================="
         if $cfg_enabled; then
-            green "当前状态: 已启用 (ChatGPT/OpenAI 走 warp 分流)"
+            green "当前状态: 已启用 (按规则集分配分流)"
             local warp_ip=$(curl -s --max-time 3 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
             [[ -n "$warp_ip" ]] && echo "      出口IP: $warp_ip"
         else
@@ -4159,6 +4165,8 @@ EOF
         green "✓ BBR + fq 已启用"
     elif $mod_loaded && ! $changed; then
         green "✓ BBR + fq 已就绪"
+    elif ! $mod_loaded; then
+        yellow "⚠ tcp_bbr 模块不可用, 跳过 BBR 配置。"
     fi
 }
 
