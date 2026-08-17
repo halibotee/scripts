@@ -15,7 +15,7 @@
 #   https://api.openai.com/compliance/cookie_requirements    — ChatGPT 解锁检测 (API)
 #   https://ios.chat.openai.com                              — ChatGPT 解锁检测 (Web)
 
-SCRIPT_VERSION="0.8.53"
+SCRIPT_VERSION="0.8.54"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -351,29 +351,11 @@ read -r -d '' SINGBOX_WARP_WIREGUARD_ENDPOINT <<'EOM'
 EOM
 
 # -----------------------------------------------------------------------------
-# Sing-box 路由规则块 (JSON) - WARP 启用时 (对齐 fscarmen: geosite-openai 规则集,
-# 原生 IP 解锁 ChatGPT → direct, 否则 → warp-ep)
+# Sing-box 路由规则块 (JSON) - WARP 启用时 (基础规则, 其余规则由 Python 动态生成)
 # -----------------------------------------------------------------------------
 read -r -d '' SINGBOX_WARP_ROUTE_RULES <<'EOM'
 [
-    { "action": "sniff" },
-    { "action": "resolve", "domain": [ "api.openai.com" ], "strategy": "prefer_ipv4" },
-    { "action": "resolve", "rule_set": [ "geosite-openai" ], "strategy": "prefer_ipv6" },
-    { "action": "route", "domain": [ "api.openai.com" ], "rule_set": [ "geosite-openai" ], "outbound": "__CHATGPT_OUT__" }
-]
-EOM
-
-# -----------------------------------------------------------------------------
-# geosite-openai 规则集定义 (remote binary, 来源 SagerNet/sing-geosite)
-# -----------------------------------------------------------------------------
-read -r -d '' SINGBOX_GEOSITE_OPENAI_RULESET <<'EOM'
-[
-    {
-        "tag": "geosite-openai",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"
-    }
+    { "action": "sniff" }
 ]
 EOM
 
@@ -981,7 +963,49 @@ apply_warp_wireguard_config() {
 }
 
 # -----------------------------------------------------------------------------
-# WARP 连通性测试 (通过 mixed-in SOCKS5 代理)
+# 检测规则集对应的外部服务是否可直连访问
+# 参数: $1=规则集名称 (geosite-xxx 或 domain:xxx)
+# 返回: "direct" 或 "warp-ep"
+# -----------------------------------------------------------------------------
+check_ruleset_access() {
+    local name=$1 test_domain=""
+    case "$name" in
+        geosite-openai) test_domain="api.openai.com" ;;
+        geosite-google-gemini) test_domain="gemini.google.com" ;;
+        geosite-twitter) test_domain="twitter.com" ;;
+        geosite-xai) test_domain="x.ai" ;;
+        domain:*) test_domain="${name#domain:}" ;;
+        *) echo "warp-ep"; return ;;
+    esac
+    if curl -s --max-time 5 --retry 1 -o /dev/null -w "%{http_code}" "https://${test_domain}" 2>/dev/null | grep -qE '^[23]'; then
+        echo "direct"
+    else
+        echo "warp-ep"
+    fi
+}
+
+# 读取 .warp_ruleset_list, 为每条规则检测连通性, 输出 JSON 映射
+# 返回: 临时文件路径, 内容为 {"name":"direct/warp-ep",...}
+build_ruleset_outbound_map() {
+    local list_file="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
+    local map_tmp
+    map_tmp=$(umask 077 && mktemp) || return 1
+    echo "{" > "$map_tmp"
+    local first=true
+    if [[ -f "$list_file" ]]; then
+        while IFS= read -r line; do
+            line=$(echo "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            local outbound
+            outbound=$(check_ruleset_access "$line")
+            $first || echo "," >> "$map_tmp"
+            first=false
+            printf '"%s":"%s"' "$line" "$outbound" >> "$map_tmp"
+        done < "$list_file"
+    fi
+    echo "}" >> "$map_tmp"
+    echo "$map_tmp"
+}
 # 返回 0 表示连通，1 表示不通
 # -----------------------------------------------------------------------------
 test_warp_connectivity() {
@@ -998,12 +1022,12 @@ test_warp_connectivity() {
 
 # -----------------------------------------------------------------------------
 # 写入 WARP endpoint + 路由规则 + rule_set 到 singbox.json
-# 参数: $1=wg_ep (endpoints JSON), $2=route_rules (基础规则, 已替换 __CHATGPT_OUT__)
+# 参数: $1=wg_ep (endpoints JSON), $2=route_rules (基础规则), $3=outbound_map (JSON 映射文件, 可选)
 # 自动读取 .warp_ruleset_list 中的规则集向 singbox.json 添加 warp-ep 分流规则
 # 写入成功返回 0, 失败返回 1
 # -----------------------------------------------------------------------------
 apply_warp_config_to_file() {
-    local wg_ep=$1 route_rules=$2 config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    local wg_ep=$1 route_rules=$2 outbound_map_file=${3:-} config_file="$SINGBOX_INSTALL_DIR/singbox.json"
     local list_file="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
     local tmpfile ep_tmp rules_tmp
     tmpfile=$(umask 077 && mktemp) || return 1
@@ -1011,10 +1035,11 @@ apply_warp_config_to_file() {
     rules_tmp=$(umask 077 && mktemp) || { rm -f "$tmpfile" "$ep_tmp"; return 1; }
     printf '%s\n' "$wg_ep" > "$ep_tmp"
     printf '%s\n' "$route_rules" > "$rules_tmp"
-    # 合并规则 (geosite-openai 基础 + 用户列表中的规则集)
-    if ! python3 - "$ep_tmp" "$rules_tmp" "$list_file" "$config_file" "$tmpfile" <<'PYEOF' 2>/dev/null
+    [[ -n "$outbound_map_file" ]] && cp "$outbound_map_file" "${tmpfile}.map" || touch "${tmpfile}.map"
+    # 合并规则 (基础规则 + 用户列表中的规则集, 按连通性检测结果分配出站)
+    if ! python3 - "$ep_tmp" "$rules_tmp" "$list_file" "$config_file" "$tmpfile" "${tmpfile}.map" <<'PYEOF' 2>/dev/null
 import json, os, sys
-ep_tmp, rules_tmp, list_file, config_file, tmpfile = sys.argv[1:]
+ep_tmp, rules_tmp, list_file, config_file, tmpfile, map_file = sys.argv[1:]
 cfg = json.load(open(config_file))
 cfg['endpoints'] = json.load(open(ep_tmp))
 base = json.load(open(rules_tmp))
@@ -1029,24 +1054,31 @@ if os.path.exists(list_file):
 # 去重
 seen = set()
 extra_names = [x for x in extra_names if not (x in seen or seen.add(x))]
-# 构建 rule_set 定义: geosite-openai 基础 + 用户列表
-ruleset = [
-    {'tag': 'geosite-openai', 'type': 'remote', 'format': 'binary',
-     'url': 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs'}
-]
+# 读取出站映射
+outbound_map = {}
+if os.path.exists(map_file) and os.path.getsize(map_file) > 2:
+    try:
+        outbound_map = json.load(open(map_file))
+    except:
+        pass
+# 构建 rule_set 定义: 用户列表中的规则集
+ruleset = []
 for name in extra_names:
+    if name.startswith('domain:'):
+        continue
     srs = f'{name}.srs'
     ruleset.append({
         'tag': name, 'type': 'remote', 'format': 'binary',
         'url': f'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{srs}'
     })
-# 构建路由规则: 基础规则 + 每个用户规则集/域名一条 warp-ep 出站规则
+# 构建路由规则: 基础规则 + 每条规则按连通性分配出站
 extra_rules = []
 for name in extra_names:
+    outbound = outbound_map.get(name, 'warp-ep')
     if name.startswith('domain:'):
-        extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': 'warp-ep'})
+        extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': outbound})
     else:
-        extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
+        extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': outbound})
 cfg['route']['rules'] = base + extra_rules
 cfg['route']['rule_set'] = ruleset
 if 'final' in cfg.get('route', {}):
@@ -1084,20 +1116,17 @@ enable_warp_in_config() {
     if [[ ! -f "$warp_key_file" ]]; then
         register_warp_wireguard || return 1
     fi
-    local chatgpt_out="warp-ep"
-    if grep -qE '^geosite-openai' "$SINGBOX_INSTALL_DIR/.warp_ruleset_list" 2>/dev/null; then
-        chatgpt_out=$(get_chatgpt_out)
-        yellow "ChatGPT 出站选择: $chatgpt_out (原生 IP 解锁→direct, 否则→warp-ep)" >&2
-    fi
+    local map_file
+    map_file=$(build_ruleset_outbound_map) || { red "连通性检测失败"; return 1; }
     local max_retries=5 attempt=0 wg_ep route_rules
     while [[ $attempt -lt $max_retries ]]; do
         attempt=$((attempt + 1))
-        wg_ep=$(apply_warp_wireguard_config) || return 1
+        wg_ep=$(apply_warp_wireguard_config) || { rm -f "$map_file"; return 1; }
         route_rules=$SINGBOX_WARP_ROUTE_RULES
-        route_rules=${route_rules/__CHATGPT_OUT__/$chatgpt_out}
-        if apply_warp_config_to_file "$wg_ep" "$route_rules"; then
+        if apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file"; then
             if safe_hot_reload_singbox; then
                 if test_warp_connectivity 5; then
+                    rm -f "$map_file"
                     green "✓ WARP 已启用 (尝试 $attempt 次)"
                     return 0
                 fi
@@ -1105,6 +1134,7 @@ enable_warp_in_config() {
                 systemctl restart ax-singbox.service 2>/dev/null
                 sleep 2
                 if test_warp_connectivity 3; then
+                    rm -f "$map_file"
                     green "✓ WARP 已启用 (尝试 $attempt 次, 全重启)"
                     return 0
                 fi
@@ -1112,9 +1142,11 @@ enable_warp_in_config() {
         fi
         if [[ $attempt -lt $max_retries ]]; then
             yellow "WARP 连通性测试失败 (第 $attempt 次), 重新注册以更换出口 IP..."
-            register_warp_wireguard || return 1
+            register_warp_wireguard || { rm -f "$map_file"; return 1; }
+            map_file=$(build_ruleset_outbound_map) || { rm -f "$map_file"; return 1; }
         fi
     done
+    rm -f "$map_file"
     red "✗ WARP 启用失败, 所有 $max_retries 次注册均无法连通。已回滚。"
     disable_warp_in_config
     safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
@@ -1160,43 +1192,6 @@ warp_enabled() {
 }
 
 # -----------------------------------------------------------------------------
-# ChatGPT 解锁检测 (对齐 fscarmen check_chatgpt): ban=不可用, unlock=可用
-# -----------------------------------------------------------------------------
-check_chatgpt() {
-    local stack=${1:-}
-    local ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-    local r1
-    r1=$(curl -s --retry 2 --retry-delay 1 --max-time 6 $stack -A "$ua" \
-        -H 'origin: https://platform.openai.com' -H 'authorization: Bearer null' \
-        "https://api.openai.com/compliance/cookie_requirements" 2>/dev/null)
-    if [ -z "$r1" ]; then
-        r1=$(curl -s --retry 1 --max-time 6 --ciphers 'DEFAULT@SECLEVEL=1' $stack -A "$ua" \
-            -H 'origin: https://platform.openai.com' -H 'authorization: Bearer null' \
-            "https://api.openai.com/compliance/cookie_requirements" 2>/dev/null)
-    fi
-    if [ -z "$r1" ] || grep -qi 'unsupported_country' <<< "$r1"; then
-        echo "ban"; return
-    fi
-    local r2
-    r2=$(curl -s --retry 2 --retry-delay 1 --max-time 6 $stack -A "$ua" "https://ios.chat.openai.com/" 2>/dev/null)
-    if [ -z "$r2" ]; then
-        r2=$(curl -s --retry 1 --max-time 6 --ciphers 'DEFAULT@SECLEVEL=1' $stack -A "$ua" "https://ios.chat.openai.com/" 2>/dev/null)
-    fi
-    if [ -z "$r2" ] || grep -qi 'VPN' <<< "$r2"; then
-        echo "ban"
-    else
-        echo "unlock"
-    fi
-}
-
-# -----------------------------------------------------------------------------
-# ChatGPT 出站选择: 原生 IP 解锁 → direct, 否则 → warp-ep
-# -----------------------------------------------------------------------------
-get_chatgpt_out() {
-    if [ "$(check_chatgpt)" = "unlock" ]; then echo "direct"; else echo "warp-ep"; fi
-}
-
-# -----------------------------------------------------------------------------
 # 重新同步 WARP 配置并热更 (自定义路由/账户变更后调用)
 # -----------------------------------------------------------------------------
 sync_warp_config() {
@@ -1204,15 +1199,12 @@ sync_warp_config() {
         yellow "WARP 未启用, 跳过同步。"
         return 1
     fi
-    local wg_ep route_rules
+    local wg_ep route_rules map_file
     wg_ep=$(apply_warp_wireguard_config) || return 1
-    local chatgpt_out="warp-ep"
-    if grep -qE '^geosite-openai' "$SINGBOX_INSTALL_DIR/.warp_ruleset_list" 2>/dev/null; then
-        chatgpt_out=$(get_chatgpt_out)
-    fi
+    map_file=$(build_ruleset_outbound_map) || { yellow "连通性检测失败, 所有规则走 warp-ep。" >&2; map_file=""; }
     route_rules=$SINGBOX_WARP_ROUTE_RULES
-    route_rules=${route_rules/__CHATGPT_OUT__/$chatgpt_out}
-    apply_warp_config_to_file "$wg_ep" "$route_rules" || return 1
+    apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file" || { rm -f "$map_file"; return 1; }
+    rm -f "$map_file"
     safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
     sleep 1
 }
@@ -1228,18 +1220,16 @@ warp_ip_optimize() {
     local old_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // "未知"')
     echo "当前出口IP: $old_ip"
     cp "$warp_key_file" "$backup_file"
-    local route_rules base_chatgpt_out
-    base_chatgpt_out="warp-ep"
-    if grep -qE '^geosite-openai' "$SINGBOX_INSTALL_DIR/.warp_ruleset_list" 2>/dev/null; then
-        base_chatgpt_out=$(get_chatgpt_out)
-    fi
+    local route_rules
     for i in {1..10}; do
         yellow "正在重新注册 (第 $i 次)..."
         register_warp_wireguard || { yellow "注册失败"; continue; }
         local wg_ep; wg_ep=$(apply_warp_wireguard_config) || continue
+        local map_file
+        map_file=$(build_ruleset_outbound_map) || map_file=""
         route_rules=$SINGBOX_WARP_ROUTE_RULES
-        route_rules=${route_rules/__CHATGPT_OUT__/$base_chatgpt_out}
-        apply_warp_config_to_file "$wg_ep" "$route_rules" || continue
+        apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file" || { rm -f "$map_file"; continue; }
+        rm -f "$map_file"
         safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
         local new_ip=""
         for w in 2 4 6; do
@@ -1260,9 +1250,11 @@ warp_ip_optimize() {
     red "IP优选失败: 注册均未更换出口IP。恢复原配置..."
     cp "$backup_file" "$warp_key_file"; rm -f "$backup_file"
     local wg_ep; wg_ep=$(apply_warp_wireguard_config)
+    local map_file
+    map_file=$(build_ruleset_outbound_map) || map_file=""
     route_rules=$SINGBOX_WARP_ROUTE_RULES
-    route_rules=${route_rules/__CHATGPT_OUT__/$base_chatgpt_out}
-    apply_warp_config_to_file "$wg_ep" "$route_rules"
+    apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file"
+    rm -f "$map_file"
     safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
     return 1
 }
@@ -1312,15 +1304,12 @@ EOF
 
 # 应用当前 .warp_wireguard.json 到 singbox.json 并 SIGHUP 热更
 change_warp_account_apply() {
-    local wg_ep route_rules
+    local wg_ep route_rules map_file
     wg_ep=$(apply_warp_wireguard_config) || { red "WARP 配置生成失败" >&2; return 1; }
-    local chatgpt_out="warp-ep"
-    if grep -qE '^geosite-openai' "$SINGBOX_INSTALL_DIR/.warp_ruleset_list" 2>/dev/null; then
-        chatgpt_out=$(get_chatgpt_out)
-    fi
+    map_file=$(build_ruleset_outbound_map) || map_file=""
     route_rules=$SINGBOX_WARP_ROUTE_RULES
-    route_rules=${route_rules/__CHATGPT_OUT__/$chatgpt_out}
-    apply_warp_config_to_file "$wg_ep" "$route_rules" || return 1
+    apply_warp_config_to_file "$wg_ep" "$route_rules" "$map_file" || { rm -f "$map_file"; return 1; }
+    rm -f "$map_file"
     if safe_hot_reload_singbox; then
         green "✓ WARP 账户已更新, Sing-box 已热重载"
         return 0
