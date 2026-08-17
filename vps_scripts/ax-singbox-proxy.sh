@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.66"
+SCRIPT_VERSION="0.8.67"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1392,31 +1392,43 @@ json.dump(cfg, open('$config_file','w'), indent=2)
 
 warp_management_menu() {
     while true; do
-        local cfg_enabled=false
+        local cfg_enabled=false global=false
         if warp_enabled; then cfg_enabled=true; fi
+        if global_warp_enabled; then global=true; fi
 
         echo "=================================="
         echo "       WARP分流管理"
         echo "=================================="
-        if $cfg_enabled; then
-            green "当前状态: 已启用 (按规则集分配分流)"
-            local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
+        local warp_ip=""
+        if $cfg_enabled || $global; then
+            warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
+        fi
+        if $global; then
+            green "当前状态: 全局 WARP (全部流量走 WARP)"
             [[ -n "$warp_ip" ]] && echo "      出口IP: $warp_ip"
-            if global_warp_enabled; then green "      全局模式: 已启用 (全部流量走 WARP)"; fi
+        elif $cfg_enabled; then
+            green "当前状态: 智能分流已启用 (按规则集分配分流)"
+            [[ -n "$warp_ip" ]] && echo "      出口IP: $warp_ip"
         else
             yellow "当前状态: 未启用"
         fi
         echo "----------------------------------"
-        if $cfg_enabled; then echo " 1) 禁用 WARP 分流"; else echo " 1) 启用 WARP 分流"; fi
+        if $global; then
+            echo " 1) 关闭 WARP (含全局)"
+        elif $cfg_enabled; then
+            echo " 1) 禁用 WARP 分流"
+        else
+            echo " 1) 启用 WARP 分流"
+        fi
         echo " 2) 编辑WARP 分流域名"
         echo " 3) 更换 WARP 账户"
-        if global_warp_enabled; then echo " 4) 关闭全局 WARP"; else echo " 4) 启用全局 WARP"; fi
+        if $global; then echo " 4) 关闭全局 WARP (回到智能分流)"; else echo " 4) 启用全局 WARP"; fi
         echo " 0) 返回"
         read -p "请选择: " warp_choice
         case "$warp_choice" in
             1)
-                if $cfg_enabled; then
-                    if disable_warp_in_config; then sync; safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null; green "WARP 已禁用。"; else yellow "禁用失败。"; fi
+                if $global || $cfg_enabled; then
+                    if disable_warp_in_config; then sync; safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null; green "WARP 已关闭。"; else yellow "关闭失败。"; fi
                 else
                     if enable_warp_in_config; then sync; green "WARP 分流已启用！"; else yellow "启用失败。"; fi
                 fi
@@ -1425,7 +1437,7 @@ warp_management_menu() {
             2) edit_warp_rulesets;;
             3) change_warp_account_menu;;
             4)
-                if global_warp_enabled; then disable_global_warp; else enable_global_warp; fi
+                if $global; then disable_global_warp; else enable_global_warp; fi
                 read -p $'\n按任意键返回...' -n1 -s;;
             0) break;;
             *) red "无效选择!"; sleep 1;;
