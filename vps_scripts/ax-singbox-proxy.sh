@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.74"
+SCRIPT_VERSION="0.8.75"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1422,7 +1422,9 @@ global_warp_enabled() {
 
 enable_global_warp() {
     local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    local self_enabled=false
     if ! warp_enabled; then
+        self_enabled=true
         yellow "warp-ep 节点不存在, 正在启用 WARP 分流..."
         local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
         if [[ ! -f "$warp_key_file" ]]; then
@@ -1433,33 +1435,44 @@ enable_global_warp() {
         if ! apply_warp_config_to_file "$wg_ep" "$route_rules"; then
             red "WARP 配置写入失败。" >&2; return 1
         fi
-        # 设 final 后再热更, 避免两次热更
-        if ! python3 -c "
-import json
-cfg = json.load(open('$config_file'))
-cfg.setdefault('route', {})['final'] = 'warp-ep'
-json.dump(cfg, open('$config_file','w'), indent=2)
-" 2>/dev/null; then red "设置全局 WARP 失败。" >&2; return 1; fi
-        if ! safe_hot_reload_singbox && ! systemctl restart ax-singbox.service 2>/dev/null; then
-            red "重载 sing-box 失败。" >&2; return 1
+        # 先测试 WARP 连通性, 通过后再设 final
+        if ! test_warp_connectivity 5; then
+            red "WARP 连通性测试失败, 已取消全局 WARP。"
+            disable_warp_in_config >/dev/null 2>&1
+            safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
+            return 1
         fi
-        if test_warp_connectivity 5; then
-            green "✓ 全局 WARP 已启用 (所有未匹配流量走 warp-ep)"
-        else
-            yellow "WARP 隧道连通性测试未通过, 但已启用全局 WARP 路由。"
-        fi
-        return 0
     fi
+    # 设 final = warp-ep
+    local gwbak; gwbak=$(umask 077 && mktemp) || { red "创建临时文件失败"; return 1; }
+    cp "$config_file" "$gwbak" 2>/dev/null
     if ! python3 -c "
 import json
 cfg = json.load(open('$config_file'))
 cfg.setdefault('route', {})['final'] = 'warp-ep'
 json.dump(cfg, open('$config_file','w'), indent=2)
-" 2>/dev/null; then red "设置全局 WARP 失败。" >&2; return 1; fi
+" 2>/dev/null; then rm -f "$gwbak"; red "设置全局 WARP 失败。" >&2; return 1; fi
     if ! safe_hot_reload_singbox && ! systemctl restart ax-singbox.service 2>/dev/null; then
-        red "重载 sing-box 失败，全局 WARP 可能未生效。" >&2; return 1
+        [[ -f "$gwbak" ]] && cp "$gwbak" "$config_file" && rm -f "$gwbak"
+        red "重载 sing-box 失败，全局 WARP 未生效。" >&2
+        return 1
     fi
-    green "✓ 全局 WARP 已启用 (所有未匹配流量走 warp-ep)"
+    rm -f "$gwbak"
+    if test_warp_connectivity 3; then
+        green "✓ 全局 WARP 已启用 (所有未匹配流量走 warp-ep)"
+    else
+        red "WARP 连通性测试失败，已回滚全局 WARP。"
+        python3 -c "
+import json
+cfg = json.load(open('$config_file'))
+cfg['route'].pop('final', None)
+json.dump(cfg, open('$config_file','w'), indent=2)
+" 2>/dev/null
+        safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
+        # 如果本次启用时注册了 WARP, 也一并关闭
+        if $self_enabled; then disable_warp_in_config >/dev/null 2>&1; safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null; fi
+        return 1
+    fi
 }
 
 disable_global_warp() {
