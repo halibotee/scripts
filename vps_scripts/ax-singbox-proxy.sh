@@ -10,10 +10,10 @@
 #   https://github.com/MetaCubeX/meta-rules-dat              — geosite-lite 规则集
 #   https://github.com/chika0801/sing-box-examples           — 客户端配置模板参考
 #   https://warp.cloudflare.nyc.mn                           — WARP 账户注册 API (第三方代理)
-#   https://www.gstatic.com/generate_204                     — 连通性检测端点
+#   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.78"
+SCRIPT_VERSION="0.8.79"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1060,12 +1060,12 @@ apply_warp_wireguard_config() {
 test_warp_connectivity() {
     local wait_seconds=${1:-5}
     sleep "$wait_seconds"
-    local code=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "https://www.gstatic.com/generate_204" 2>/dev/null)
+    local code=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
     if [[ "$code" == "204" ]]; then
-        green "  代理连通性测试通过: www.gstatic.com → HTTP $code"
+        green "  代理连通性测试通过: HTTP $code"
         return 0
     fi
-    yellow "  代理连通性测试失败 (SOCKS5 代理无响应或异常码 $code)"
+    yellow "  代理连通性测试失败 (HTTP $code)"
     return 1
 }
 
@@ -1077,7 +1077,7 @@ test_warp_connectivity() {
 check_warp_tunnel() {
     local auto_repair=${1:-0}
     local code
-    code=$(curl -s --max-time 6 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "https://www.gstatic.com/generate_204" 2>/dev/null)
+    code=$(curl -s --max-time 6 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
     if [[ "$code" == "204" ]]; then
         return 0
     fi
@@ -1085,7 +1085,7 @@ check_warp_tunnel() {
         yellow "WARP 隧道异常 (HTTP $code), 重启 sing-box 尝试恢复..."
         systemctl restart ax-singbox.service 2>/dev/null
         sleep 5
-        code=$(curl -s --max-time 6 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "https://www.gstatic.com/generate_204" 2>/dev/null)
+        code=$(curl -s --max-time 6 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
         [[ "$code" == "204" ]] && return 0
     fi
     return 1
