@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.71"
+SCRIPT_VERSION="0.8.72"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -523,12 +523,12 @@ check_and_install_helper_scripts() {
     
     if [[ ! -f "$AX_ACME_SCRIPT" ]]; then
         cyan "  » 下载 $AX_ACME_SCRIPT"
-        download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 下载完成" || yellow "    ⚠ $AX_ACME_SCRIPT 下载失败"
+        download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && is_shell_script "$AX_ACME_SCRIPT" && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 下载完成" || yellow "    ⚠ $AX_ACME_SCRIPT 下载失败"
     fi
     
     if [[ ! -f "$AX_OPTZ_SCRIPT" ]]; then
         cyan "  » 下载 $AX_OPTZ_SCRIPT"
-        download_with_retry "$AX_OPTZ_URL" "$AX_OPTZ_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_OPTZ_SCRIPT" && green "    ✓ $AX_OPTZ_SCRIPT 下载完成" || yellow "    ⚠ $AX_OPTZ_SCRIPT 下载失败"
+        download_with_retry "$AX_OPTZ_URL" "$AX_OPTZ_SCRIPT" >/dev/null 2>&1 && is_shell_script "$AX_OPTZ_SCRIPT" && chmod +x "$AX_OPTZ_SCRIPT" && green "    ✓ $AX_OPTZ_SCRIPT 下载完成" || yellow "    ⚠ $AX_OPTZ_SCRIPT 下载失败"
     fi
     
     green "✓ 辅助脚本检查完成！"
@@ -555,7 +555,7 @@ download_with_retry(){
     local url=$1 output=$2 retries=3 timeout=15
     for ((i=1; i<=retries; i++)); do
         log "下载 ($i/$retries)：$url" >&2
-        curl -L --connect-timeout 5 --max-time $timeout -o "$output" "$url" && return 0
+        curl -fsSL --connect-timeout 5 --max-time $timeout -o "$output" "$url" && return 0
         yellow "下载失败，正在重试..." >&2
     done
     red "下载失败超过 $retries 次，请检查网络。" >&2
@@ -589,6 +589,15 @@ is_elf_binary() {
 }
 
 # -----------------------------------------------------------------------------
+# 校验辅助脚本首行为 shebang, 拒绝下载到非脚本内容
+# -----------------------------------------------------------------------------
+is_shell_script() {
+    local f=$1
+    [[ -f "$f" ]] || return 1
+    head -n 1 "$f" | grep -qE '^#!.*(bash|sh)'
+}
+
+# -----------------------------------------------------------------------------
 # 确保辅助脚本存在（统一下载函数）
 # 参数: $1=脚本名称变量 (如: "$AX_ACME_SCRIPT")
 # 参数: $2=脚本 URL
@@ -609,6 +618,11 @@ ensure_ax_script() {
     download_with_retry "$script_url" "$script_name" >&2
     if [ $? -ne 0 ]; then
         red "${script_name} 下载失败。" >&2
+        return 1
+    fi
+    if ! is_shell_script "$script_name"; then
+        rm -f "$script_name"
+        red "${script_name} 内容校验失败。" >&2
         return 1
     fi
     chmod +x "$script_name"
@@ -859,7 +873,7 @@ collect_kcptun_params() {
 # -----------------------------------------------------------------------------
 # WARP WireGuard 注册 (依次尝试: CF 官方 API → 第三方 API → 共享账户)
 # 输出: 将 WARP 密钥写入 $SINGBOX_INSTALL_DIR/.warp_wireguard.json
-# 返回 0 表示注册成功, 1 表示仅使用共享账户
+# 返回 0 表示注册成功 (含共享账户 fallback)
 # -----------------------------------------------------------------------------
 register_warp_wireguard() {
     local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
@@ -946,7 +960,7 @@ except Exception:
     # ---------- 方法3: 共享账户 fallback ----------
     red "WARP 注册失败, 使用共享账户。" >&2
     write_warp_key "YFYOAdbw1bKTHlNNi+aEjBM3BO7unuFC5rOkMRAz9XY=" "2606:4700:110:8a36:df92:102a:9602:fa18" "[78, 135, 76]"
-    return 1
+    return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -1605,12 +1619,14 @@ download_kcp_udp_binaries(){
     # UDP2RAW - 只有版本不匹配或文件缺失才下载
     if [[ "$udp_current" != "$fixed_version_udp" || ! -f "$UDP2RAW_INSTALL_DIR/udp2raw" ]]; then
         log "下载 UDP2RAW (udp2raw_binaries.tar.gz)..."
-        download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/udp2raw_binaries.tar.gz" /tmp/udp2raw.tar.gz && \
-        tar -xzf /tmp/udp2raw.tar.gz -C "$UDP2RAW_INSTALL_DIR" "udp2raw_${cpu}" && \
+        local udp2raw_tmp; udp2raw_tmp=$(umask 077 && mktemp) || { red "创建临时文件失败"; return 1; }
+        download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/udp2raw_binaries.tar.gz" "$udp2raw_tmp" && \
+        tar -xzf "$udp2raw_tmp" -C "$UDP2RAW_INSTALL_DIR" "udp2raw_${cpu}" && \
         is_elf_binary "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" && \
         mv "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw" && \
         chmod +x "$UDP2RAW_INSTALL_DIR/udp2raw" && \
-        echo "$fixed_version_udp" > "$UDP2RAW_INSTALL_DIR/version.txt" || { rm -f "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw"; rm -f /tmp/udp2raw.tar.gz; red "UDP2RAW 下载失败。"; return 1; }
+        echo "$fixed_version_udp" > "$UDP2RAW_INSTALL_DIR/version.txt" || { rm -f "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw" "$udp2raw_tmp"; red "UDP2RAW 下载失败。"; return 1; }
+        rm -f "$udp2raw_tmp"
     else
         green "UDP2RAW 已是最新版本 ($udp_current)"
     fi
@@ -1631,16 +1647,18 @@ download_singbox_binary(){
         log "下载 Sing-box ($singbox_latest)..."
         local singbox_ver="${singbox_latest#v}"
         local singbox_url="$GITHUB_URL/$SINGBOX_REPO/releases/download/${singbox_latest}/sing-box-${singbox_ver}-linux-${cpu}.tar.gz"
-        download_with_retry "$singbox_url" /tmp/singbox.tar.gz || {
+        local singbox_tmp; singbox_tmp=$(umask 077 && mktemp) || { red "创建临时文件失败"; return 1; }
+        local extract_dir; extract_dir=$(umask 077 && mktemp -d) || { rm -f "$singbox_tmp"; red "创建临时目录失败"; return 1; }
+        download_with_retry "$singbox_url" "$singbox_tmp" || {
             # fallback: try with v prefix in archive name
             singbox_url="$GITHUB_URL/$SINGBOX_REPO/releases/download/${singbox_latest}/sing-box-${singbox_latest}-linux-${cpu}.tar.gz"
-            download_with_retry "$singbox_url" /tmp/singbox.tar.gz || { red "Sing-box 下载失败。"; return 1; }
+            download_with_retry "$singbox_url" "$singbox_tmp" || { rm -f "$singbox_tmp"; rm -rf "$extract_dir"; red "Sing-box 下载失败。"; return 1; }
         }
-        tar -xzf /tmp/singbox.tar.gz -C /tmp && \
-        cp "/tmp/sing-box-${singbox_ver}-linux-${cpu}/sing-box" "$SINGBOX_INSTALL_DIR/sing-box" && \
+        tar -xzf "$singbox_tmp" -C "$extract_dir" && \
+        cp "$extract_dir/sing-box-${singbox_ver}-linux-${cpu}/sing-box" "$SINGBOX_INSTALL_DIR/sing-box" && \
         chmod +x "$SINGBOX_INSTALL_DIR/sing-box" && \
-        echo "$singbox_latest" > "$SINGBOX_INSTALL_DIR/version.txt" || { red "Sing-box 解压/安装失败。"; return 1; }
-        rm -rf "/tmp/sing-box-${singbox_ver}-linux-${cpu}" /tmp/singbox.tar.gz
+        echo "$singbox_latest" > "$SINGBOX_INSTALL_DIR/version.txt" || { rm -f "$singbox_tmp"; rm -rf "$extract_dir"; red "Sing-box 解压/安装失败。"; return 1; }
+        rm -f "$singbox_tmp" && rm -rf "$extract_dir"
     else
         green "Sing-box 已是最新版本 ($singbox_latest)"
     fi
@@ -1779,8 +1797,11 @@ safe_hot_reload_singbox() {
         red "配置校验失败, 跳过热更。" >&2
         return 1
     fi
-    local pid_before=$(systemctl show -p MainPID ax-singbox.service 2>/dev/null | awk -F= '{print $2}')
-    systemctl reload ax-singbox.service 2>/dev/null
+    if ! systemctl reload ax-singbox.service 2>/dev/null; then
+        [[ -f "$backup" ]] && cp "$backup" "$config_file" && rm -f "$backup"
+        systemctl restart ax-singbox.service 2>/dev/null
+        return 1
+    fi
     sleep 1
     local pid_after=$(systemctl show -p MainPID ax-singbox.service 2>/dev/null | awk -F= '{print $2}')
     if [[ -n "$pid_after" && "$pid_after" != "0" ]]; then
@@ -2594,7 +2615,8 @@ add_singbox_inbound() {
     sleep 1
     
     if ! systemctl is-active --quiet ax-singbox.service; then
-        red "Sing-box 重启失败！请检查配置或日志。"
+        red "Sing-box 重启失败！正在回滚..."
+        remove_singbox_inbound "$tag" >/dev/null 2>&1
         log "journalctl -u ax-singbox.service -n 20"
         return 1
     fi
@@ -2703,9 +2725,9 @@ save_reality_keypair() {
     local keys_file="$SINGBOX_REALITY_KEYS_FILE"
     mkdir -p "$(dirname "$keys_file")"
     if [[ -f "$keys_file" ]]; then
-        local tmp=$(mktemp)
+        local tmp; tmp=$(umask 077 && mktemp) || return 1
         jq --arg tag "$tag" --arg priv "$private_key" --arg pub "$public_key" \
-            '.[$tag] = {"private_key": $priv, "public_key": $pub}' "$keys_file" > "$tmp" && mv "$tmp" "$keys_file"
+            '.[$tag] = {"private_key": $priv, "public_key": $pub}' "$keys_file" > "$tmp" && mv "$tmp" "$keys_file" || { rm -f "$tmp"; return 1; }
     else
         echo "{\"$tag\": {\"private_key\": \"$private_key\", \"public_key\": \"$public_key\"}}" > "$keys_file"
     fi
@@ -3033,6 +3055,11 @@ start_new_chain_instance_3() {
     # 启动服务
     log "启动串联服务..."
     systemctl restart ax-singbox.service
+    if ! systemctl is-active --quiet ax-singbox.service; then
+        red "Sing-box 重启失败, 正在回滚..." >&2
+        rollback_chain_instance_3 "$chain_id"
+        return 1
+    fi
 
     if ! systemctl enable --now "ax-kcptun@${chain_id}.service" 2>/dev/null; then
         red "KCPTUN 服务启动失败, 正在回滚..." >&2
@@ -3346,6 +3373,12 @@ EOF
     sync
     log "启动串联服务..."
     systemctl restart ax-singbox.service
+    if ! systemctl is-active --quiet ax-singbox.service; then
+        red "Sing-box 重启失败, 正在回滚..." >&2
+        remove_singbox_inbound "hy2-c${i}" >/dev/null 2>&1
+        rm -f "$udp2raw_conf"
+        return 1
+    fi
     if ! systemctl enable --now "ax-udp2raw@${chain_id}.service" 2>/dev/null; then
         red "UDP2RAW 启动失败, 正在回滚..." >&2
         remove_singbox_inbound "hy2-c${i}" >/dev/null 2>&1
@@ -3735,12 +3768,12 @@ update_helper_scripts() {
     
     if [[ -f "$AX_ACME_SCRIPT" ]]; then
         cyan "  » 更新 $AX_ACME_SCRIPT"
-        download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_ACME_SCRIPT 更新失败"
+        download_with_retry "$AX_ACME_URL" "$AX_ACME_SCRIPT" >/dev/null 2>&1 && is_shell_script "$AX_ACME_SCRIPT" && chmod +x "$AX_ACME_SCRIPT" && green "    ✓ $AX_ACME_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_ACME_SCRIPT 更新失败"
     fi
     
     if [[ -f "$AX_OPTZ_SCRIPT" ]]; then
         cyan "  » 更新 $AX_OPTZ_SCRIPT"
-        download_with_retry "$AX_OPTZ_URL" "$AX_OPTZ_SCRIPT" >/dev/null 2>&1 && chmod +x "$AX_OPTZ_SCRIPT" && green "    ✓ $AX_OPTZ_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_OPTZ_SCRIPT 更新失败"
+        download_with_retry "$AX_OPTZ_URL" "$AX_OPTZ_SCRIPT" >/dev/null 2>&1 && is_shell_script "$AX_OPTZ_SCRIPT" && chmod +x "$AX_OPTZ_SCRIPT" && green "    ✓ $AX_OPTZ_SCRIPT 更新完成" && script_updated=true || yellow "    ⚠ $AX_OPTZ_SCRIPT 更新失败"
     fi
     
     if [[ "$script_updated" == false ]]; then
@@ -3808,6 +3841,11 @@ run_local_script() {
     if [[ ! -f "$script_file" ]]; then
         yellow "本地脚本不存在，正在下载..."
         download_with_retry "$script_url" "$script_file" || { red "脚本下载失败！"; return 1; }
+        if ! is_shell_script "$script_file"; then
+            rm -f "$script_file"
+            red "脚本内容校验失败！"
+            return 1
+        fi
         chmod +x "$script_file"
         green "脚本下载完成。"
     fi
@@ -3834,9 +3872,8 @@ install_sys_opt() {
 # -----------------------------------------------------------------------------
 export_config_backup() {
     local date_str=$(date +%Y%m%d)
-    local tmp_dir="/tmp/ax-backup-$date_str"
+    local tmp_dir; tmp_dir=$(umask 077 && mktemp -d) || { red "创建临时目录失败"; return; }
     local out_file="$HOME/ax-backup-$date_str.tar.gz"
-    mkdir -p "$tmp_dir"
 
     local items=(
         "/etc/sing-box/singbox.json"
@@ -3857,7 +3894,7 @@ export_config_backup() {
         [ -e "$p" ] && cp -a --parents "$p" "$tmp_dir/" 2>/dev/null
     done
 
-    tar -czf "$out_file" -C /tmp "ax-backup-$date_str" 2>/dev/null
+    tar -czf "$out_file" -C "$(dirname "$tmp_dir")" "$(basename "$tmp_dir")" 2>/dev/null || { rm -rf "$tmp_dir"; red "备份打包失败"; return; }
     rm -rf "$tmp_dir"
 
     local size
@@ -3890,12 +3927,17 @@ import_config_backup() {
     [ -z "$file" ] && { yellow "已取消。"; return; }
     [ ! -f "$file" ] && { red "文件不存在: $file"; return; }
 
-    local tmp_dir="/tmp/ax-restore-$$"
-    mkdir -p "$tmp_dir"
+    local tmp_dir; tmp_dir=$(umask 077 && mktemp -d) || { red "创建临时目录失败"; return; }
+    if tar -tf "$file" 2>/dev/null | grep -qE '(^|/)\.\.(/|$)|^/'; then
+        red "备份文件包含非法路径，已拒绝。"
+        rm -rf "$tmp_dir"
+        return
+    fi
     tar -xzf "$file" -C "$tmp_dir" 2>/dev/null || { red "解压失败，文件可能已损坏。"; rm -rf "$tmp_dir"; return; }
 
     local base_dir=$(find "$tmp_dir" -maxdepth 1 -type d | tail -1)
     [ -z "$base_dir" ] && { red "备份格式错误。"; rm -rf "$tmp_dir"; return; }
+    [[ "$base_dir" != "$tmp_dir" && "$base_dir" != "$tmp_dir"/* ]] && { red "备份格式错误。"; rm -rf "$tmp_dir"; return; }
 
     echo ""
     echo "----------------------------------"
@@ -4043,8 +4085,9 @@ import_subscription_links() {
             local kcp_nocomp=$(echo "$kcp_raw" | grep -oP '(?<=--nocomp )\S+')
             local kcp_tcp=$(echo "$kcp_raw" | grep -oP '(?<=--tcp )\S+')
             [[ -z "$kcp_key" ]] && { red "KCPTUN --key 未找到。"; return; }
-            local kcp_listen_port="${kcp_remote##*:}"
-            local ss_port="${kcp_listen##*:}"
+            local kcp_listen_port="${kcp_remote##*:}"; local ss_port="${kcp_listen##*:}"
+            _validate_num_range "$ss_port" 1 65535 "SS 端口" || return
+            _validate_num_range "$kcp_listen_port" 1 65535 "KCP 端口" || return
 
             local udp_raw="${p3#udp2raw://}"
             local udp_remote=$(echo "$udp_raw" | grep -oP '(?<=-r )\S+')
@@ -4055,6 +4098,7 @@ import_subscription_links() {
             local udp_auth_mode=$(echo "$udp_raw" | grep -oP '(?<=--auth-mode )\S+')
             [[ -z "$udp_password" ]] && { red "UDP2RAW -k 未找到。"; return; }
             local udp_public_port="${udp_remote##*:}"
+            _validate_num_range "$udp_public_port" 1 65535 "UDP2RAW 端口" || return
 
             local i=1
             while true; do
@@ -4070,7 +4114,7 @@ import_subscription_links() {
             local ss_inbound=$SINGBOX_SHADOWSOCKS_TEMPLATE
             ss_inbound=${ss_inbound/__ID__/s3c${i}}
             ss_inbound=${ss_inbound/__LISTEN_PORT__/$ss_port}
-            ss_inbound=${ss_inbound/__SS_METHOD__/$ss_method}
+            ss_inbound=${ss_inbound/__SS_METHOD__/$(json_escape "$ss_method")}
             ss_inbound=${ss_inbound/__SS_PASSWORD__/$(json_escape "$ss_password")}
             safe_add_singbox_inbound "$ss_inbound" "$SINGBOX_INSTALL_DIR/singbox.json" || return 1
 
@@ -4085,8 +4129,8 @@ import_subscription_links() {
             kcp_config=${kcp_config/__LISTEN__/127.0.0.1:${kcp_listen_port}}
             kcp_config=${kcp_config/__TARGET__/127.0.0.1:${ss_port}}
             kcp_config=${kcp_config/__KEY__/$(json_escape "$kcp_key")}
-            kcp_config=${kcp_config/__MODE__/$kcp_mode}
-            kcp_config=${kcp_config/__CRYPT__/$kcp_crypt}
+            kcp_config=${kcp_config/__MODE__/$(json_escape "$kcp_mode")}
+            kcp_config=${kcp_config/__CRYPT__/$(json_escape "$kcp_crypt")}
             kcp_config=${kcp_config/__TCP__/$kcp_tcp}
             kcp_config=${kcp_config/__MTU__/$kcp_mtu}
             kcp_config=${kcp_config/__SNDWND__/$kcp_sndwnd}
@@ -4108,6 +4152,11 @@ import_subscription_links() {
 
             log "启动串联服务..."
             systemctl restart ax-singbox.service
+            if ! systemctl is-active --quiet ax-singbox.service; then
+                red "Sing-box 重启失败，回滚..."
+                rollback_chain_instance_3 "$chain_id"
+                return 1
+            fi
             systemctl enable --now "ax-kcptun@${chain_id}.service" 2>/dev/null || {
                 red "KCPTUN 启动失败，回滚..."; rollback_chain_instance_3 "$chain_id"; return 1; }
             systemctl enable --now "ax-udp2raw@${chain_id}.service" 2>/dev/null || {
@@ -4133,8 +4182,9 @@ import_subscription_links() {
             local udp_cipher_mode=$(echo "$udp_raw" | grep -oP '(?<=--cipher-mode )\S+')
             local udp_auth_mode=$(echo "$udp_raw" | grep -oP '(?<=--auth-mode )\S+')
             [[ -z "$udp_password" ]] && { red "UDP2RAW -k 未找到。"; return; }
-            local udp_public_port="${udp_remote##*:}"
-            local hy2_listen_port="${udp_listen##*:}"
+            local udp_public_port="${udp_remote##*:}"; local hy2_listen_port="${udp_listen##*:}"
+            _validate_num_range "$udp_public_port" 1 65535 "UDP2RAW 端口" || return
+            _validate_num_range "$hy2_listen_port" 1 65535 "HY2 端口" || return
 
             local i=1
             while true; do
@@ -4159,7 +4209,7 @@ import_subscription_links() {
     "users": [{"password": "'$(json_escape "${hy2_password}")'"}],
     "tls": {
         "enabled": true,
-        "server_name": "'${hy2_sni}'",
+        "server_name": "'$(json_escape "${hy2_sni}")'",
         "key_path": "'${HY2_KEY_PATH}'",
         "certificate_path": "'${HY2_CERT_PATH}'"
     }
@@ -4180,6 +4230,12 @@ import_subscription_links() {
 
             log "启动串联服务..."
             systemctl restart ax-singbox.service
+            if ! systemctl is-active --quiet ax-singbox.service; then
+                red "Sing-box 重启失败，回滚..."
+                remove_singbox_inbound "hy2-c${i}" >/dev/null 2>&1
+                rm -f "$UDP2RAW_INSTALL_DIR/udp2raw_${chain_id}.conf"
+                return 1
+            fi
             systemctl enable --now "ax-udp2raw@${chain_id}.service" 2>/dev/null || {
                 red "UDP2RAW 启动失败"; return 1; }
             sleep 1
@@ -4208,6 +4264,7 @@ import_subscription_links() {
         [[ -z "$vless_sni" ]] && vless_sni="$SINGBOX_REALITY_DEFAULT_SNI"
         [[ -z "$vless_flow" ]] && vless_flow="$SINGBOX_REALITY_DEFAULT_FLOW"
         [[ -z "$vless_sid" ]] && vless_sid="$(openssl rand -hex 8)"
+        _validate_num_range "$vless_port" 1 65535 "VLESS 端口" || return
 
         local i=1
         while true; do
@@ -4226,15 +4283,20 @@ import_subscription_links() {
         local inbound_json=$SINGBOX_VLESS_REALITY_TEMPLATE
         inbound_json=${inbound_json/__ID__/$i}
         inbound_json=${inbound_json/__LISTEN_PORT__/$vless_port}
-        inbound_json=${inbound_json/__UUID__/$vless_uuid}
-        inbound_json=${inbound_json/__REALITY_FLOW__/$vless_flow}
-        inbound_json=${inbound_json//__SNI__/$vless_sni}
+        inbound_json=${inbound_json/__UUID__/$(json_escape "$vless_uuid")}
+        inbound_json=${inbound_json/__REALITY_FLOW__/$(json_escape "$vless_flow")}
+        inbound_json=${inbound_json//__SNI__/$(json_escape "$vless_sni")}
         inbound_json=${inbound_json/__PRIVATE_KEY__/$private_key}
-        inbound_json=${inbound_json/__SHORT_ID__/$vless_sid}
+        inbound_json=${inbound_json/__SHORT_ID__/$(json_escape "$vless_sid")}
         safe_add_singbox_inbound "$inbound_json" "$SINGBOX_INSTALL_DIR/singbox.json" || return 1
 
         systemctl restart ax-singbox.service
         sleep 1
+        if ! systemctl is-active --quiet ax-singbox.service; then
+            red "Sing-box 重启失败，正在回滚..."
+            remove_singbox_inbound "$tag" >/dev/null 2>&1
+            return 1
+        fi
         green "VLESS+Reality 实例 #${i} 已部署完成！"; echo
         yellow "注意: 服务端生成了新的 Reality 密钥对。"
         yellow "请将客户端链接中的 pbk 更新为以下公钥:"
