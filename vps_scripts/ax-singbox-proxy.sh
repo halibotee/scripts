@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.73"
+SCRIPT_VERSION="0.8.74"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1523,7 +1523,7 @@ warp_management_menu() {
                 else
                     if enable_warp_in_config; then sync; green "WARP 分流已启用！"; else yellow "启用失败。"; fi
                 fi
-                read -p $'\n按任意键返回主菜单...' -n1 -s
+                read -p $'\n按任意键返回...' -n1 -s
                 break;;
             2) edit_warp_rulesets;;
             3) change_warp_account_menu;;
@@ -2372,7 +2372,7 @@ get_standalone_instances() {
 manage_instance_menu() {
     local type=$1 id=$2 service=$3 conf=$4; local disp_name=$(get_instance_display_name "$type" "$id")
     while true; do
-        clear; echo "=================================="; echo "      ${disp_name}  $(dim "(${type^^} ${id})")"; echo "=================================="
+        clear; echo "=================================="; echo "  管理 ${disp_name}  $(dim "(${type^^} ${id})")"; echo "  当前：独立实例 > ${type} > ${id}"; echo "=================================="
         local status_info=""
         if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then
             local tag; case "$type" in xray_reality) tag="vless-reality-${id}";; hysteria2) tag="hy2-${id}";; esac
@@ -2382,19 +2382,19 @@ manage_instance_menu() {
         echo "状态：$(get_service_status_string "$service") $(dim "$status_info")"
         if [[ "$type" == "xray_reality" ]]; then cyan "订阅链接: $(generate_singbox_reality_link $id)"; fi
         if [[ "$type" == "hysteria2" ]]; then cyan "订阅链接: $(generate_singbox_hy2_link $id)"; fi
-        echo "----------------------------------"; echo "1) 启动/重启此实例"; echo "2) 停止此实例"; echo "3) 查看实时日志"; echo "4) 编辑配置文件"; echo "5) 修改实例名称"; echo "6) 查看客户端配置"; echo "99) 彻底删除此实例"; echo "0) 返回"
-        read -p "请选择 [0-6, 99]: " choice
+        echo "----------------------------------"; echo "1) 启动/重启此实例"; echo "2) 停止此实例"; echo "3) 查看实时日志"; echo "4) 编辑配置文件"; echo "5) 修改实例名称"; echo "6) 查看客户端配置"; echo "7) 保存客户端配置到文件"; echo "99) 彻底删除此实例"; echo "0) 返回"
+        read -p "请选择 [0-7, 99]: " choice
         case $choice in
-            1) log "正在启动/重启..."; systemctl restart "$service"; green "操作完成！";;
+            1) log "正在启动/重启..."; systemctl restart "$service"; sleep 1; if systemctl is-active --quiet "$service"; then green "✓ 运行正常"; else red "✗ 启动失败，请查看日志"; fi;;
             2) log "正在停止..."; systemctl stop "$service"; green "操作完成！";;
             3)
                 log "正在实时跟踪日志... (按 Ctrl+C 仅退出日志)"
                 sleep 1
                 follow_journal_safely -u "$service" --since "1 hour ago"
                 ;;
-            4) nano "$conf"; log "重启实例以应用配置..."; systemctl restart "$service"; green "配置已更新！";;
+            4) nano "$conf"; log "重启实例以应用配置..."; systemctl restart "$service"; sleep 1; if systemctl is-active --quiet "$service"; then green "✓ 配置已更新，运行正常"; else red "✗ 重启失败，请检查配置"; fi;;
             5) interactive_rename_instance "$type" "$id"; read -p $'\n按任意键返回...' -n1 -s;;
-            99) read -p "确认彻底删除实例 ${id}？(默认"否") [y/N]: " confirm
+            99) read -p "确认删除实例 ${id}？将删除配置、服务、密钥和订阅 [y/N]: " confirm
                 if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                     if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then
                         local tag; case "$type" in xray_reality) tag="vless-reality-${id}";; hysteria2) tag="hy2-${id}";; esac
@@ -2418,6 +2418,15 @@ manage_instance_menu() {
                     "xray_reality") cyan "订阅链接: $(generate_singbox_reality_link "$id")" ;;
                     "hysteria2") cyan "订阅链接: $(generate_singbox_hy2_link "$id")" ;;
                 esac
+              read -p $'\n按任意键返回...' -n1 -s;;
+            7) clear; local out_file="$HOME/ax-${type}-${id}-config.txt"
+               case "$type" in
+                   "udp2raw") view_udp2raw_client_config "$id" > "$out_file" 2>&1 ;;
+                   "kcptun") view_kcptun_client_config "$id" > "$out_file" 2>&1 ;;
+                   "xray_reality") echo "订阅链接: $(generate_singbox_reality_link "$id")" > "$out_file" ;;
+                   "hysteria2") echo "订阅链接: $(generate_singbox_hy2_link "$id")" > "$out_file" ;;
+               esac
+               echo "" >> "$out_file"; green "已保存到: $out_file"
                read -p $'\n按任意键返回...' -n1 -s;;
             0) break;; *) red "无效输入";;
         esac
@@ -2638,9 +2647,11 @@ add_singbox_inbound() {
     echo
     
     if [[ "$type" == "xray_reality" ]]; then
-        cyan "订阅链接: $(generate_singbox_reality_link "$next_id")"
+        cyan "━━━ 复制以下订阅链接 ━━━"
+        green "$(generate_singbox_reality_link "$next_id")"
     elif [[ "$type" == "hysteria2" ]]; then
-        cyan "订阅链接: $(generate_singbox_hy2_link "$next_id")"
+        cyan "━━━ 复制以下订阅链接 ━━━"
+        green "$(generate_singbox_hy2_link "$next_id")"
     fi
 }
 
@@ -3126,26 +3137,29 @@ manage_chain_instance_3() {
     local conf3_path="$UDP2RAW_INSTALL_DIR/udp2raw_${manage_id}.conf"
     
     while true; do
-        clear; echo "=================================="; echo "     ${disp_name}  $(dim "(${manage_id})")"; echo "=================================="
+        clear; echo "=================================="; echo "     ${disp_name}  $(dim "(${manage_id})")"; echo "    当前：串联 > SS+KCP+UDP > ${manage_id}"; echo "=================================="
         read -r color s1_status s2_status s3_status <<< "$(get_3_chain_status_tuple "$manage_id")"
         local udp2raw_info=$(get_listen_info_from_conf "$conf3_path")
         
         $color "状态: SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] $(dim "$udp2raw_info")"
 
-        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置"; echo "4) 查看 Sing-box (SS) 日志"; echo "5) 查看 KCPTUN 日志"; echo "6) 查看 UDP2RAW 日志"; echo "7) 编辑 Sing-box 配置文件"; echo "8) 编辑 KCPTUN 配置文件"; echo "9) 编辑 UDP2RAW 配置文件"; echo "10) 修改实例名称"; echo "99) 彻底删除此串联"; echo "0) 返回"
-        read -p "请选择: " manage_choice
+        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置"; echo "4) 查看 Sing-box (SS) 日志"; echo "5) 查看 KCPTUN 日志"; echo "6) 查看 UDP2RAW 日志"; echo "7) 编辑 Sing-box 配置文件"; echo "8) 编辑 KCPTUN 配置文件"; echo "9) 编辑 UDP2RAW 配置文件"; echo "10) 修改实例名称"; echo "11) 保存客户端配置到文件"; echo "99) 彻底删除此串联"; echo "0) 返回"
+        read -p "请选择 [0-11, 99]: " manage_choice
         case $manage_choice in
-            1) log "重启串联..."; systemctl restart ax-singbox.service "$service2_full" "$service3_full";;
+            1) log "重启串联..."; systemctl restart ax-singbox.service "$service2_full" "$service3_full"; sleep 1; if systemctl is-active --quiet ax-singbox.service; then green "✓ 运行正常"; else red "✗ 启动失败，请查看日志"; fi;;
             2) log "停止串联..."; systemctl stop ax-singbox.service "$service2_full" "$service3_full";;
             3) view_chain_client_config_3 "$id_num"; read -p $'\n按任意键返回...' -n1 -s;;
             4) log "正在实时跟踪 Sing-box (SS) 日志... (按 Ctrl+C 仅退出日志)"; follow_journal_safely -u ax-singbox.service;;
             5) log "正在实时跟踪 KCPTUN 日志... (按 Ctrl+C 仅退出日志)"; follow_journal_safely -u "$service2_full";;
             6) log "正在实时跟踪 UDP2RAW 日志... (按 Ctrl+C 仅退出日志)"; follow_journal_safely -u "$service3_full";;
-            7) nano "$conf1_path"; systemctl restart ax-singbox.service;;
+            7) nano "$conf1_path"; systemctl restart ax-singbox.service; if systemctl is-active --quiet ax-singbox.service; then green "✓ 配置已更新"; else red "✗ 重启失败"; fi;;
             8) nano "$conf2_path"; systemctl restart "$service2_full";;
             9) nano "$conf3_path"; systemctl restart "$service3_full";;
             10) interactive_rename_instance "$manage_type" "$id_num"; read -p $'\n按任意键返回...' -n1 -s;;
-            99) read -p "确认删除串联实例 ${manage_id}？(默认\"否\") [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then
+            11) local out_file="$HOME/ax-ss3chain-${manage_id}-config.txt"
+                view_chain_client_config_3 "$id_num" > "$out_file" 2>&1
+                echo "" >> "$out_file"; green "已保存到: $out_file"; read -p $'\n按任意键返回...' -n1 -s;;
+            99) read -p "确认删除串联实例 ${manage_id}？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then
                 log "删除串联...";
                 remove_singbox_inbound "ss-${manage_id}"
                 systemctl stop "$service2_full" "$service3_full" 2>/dev/null;
@@ -3266,7 +3280,7 @@ view_chain_client_config() {
 # 处理 ACME 证书或自签名证书
 setup_hysteria2_certificates() {
     cyan "--- ACME证书 配置 ---" >&2
-    read -p "是否使用 ACME证书? (否则将使用自签名证书) [y/N] (默认"N"): " use_acme
+    read -p "是否使用 ACME 证书？[y/N] (默认否): " use_acme
     use_acme=${use_acme:-n}
     local cert_path="" key_path="" sni=""
     if [[ "$use_acme" == "y" || "$use_acme" == "Y" ]]; then
@@ -3462,16 +3476,16 @@ manage_chain_instance() {
     local udp2raw_conf_path="$UDP2RAW_INSTALL_DIR/udp2raw_${manage_id}.conf"
     
     while true; do
-        clear; echo "=================================="; echo "      ${disp_name}  $(dim "(${manage_id})")"; echo "=================================="
+        clear; echo "=================================="; echo "      ${disp_name}  $(dim "(${manage_id})")"; echo "    当前：串联 > Hysteria2+UDP > ${manage_id}"; echo "=================================="
         read -r color s1_status s2_status <<< "$(get_chain_status_tuple "$chain_type" "$manage_id")"
         local udp2raw_info=$(get_listen_info_from_conf "$udp2raw_conf_path")
         
         $color "状态: Hysteria2 [${s1_status}] + UDP2RAW [${s2_status}] $(dim "$udp2raw_info")"
  
-        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置"; echo "4) 查看 ${title} 日志"; echo "5) 查看 UDP2RAW 日志"; echo "6) 编辑 Sing-box 配置文件"; echo "7) 编辑 UDP2RAW 配置文件"; echo "8) 修改实例名称"; echo "99) 彻底删除此串联"; echo "0) 返回"
-        read -p "请选择 [0-8, 99]: " manage_choice
+        echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置"; echo "4) 查看 ${title} 日志"; echo "5) 查看 UDP2RAW 日志"; echo "6) 编辑 Sing-box 配置文件"; echo "7) 编辑 UDP2RAW 配置文件"; echo "8) 修改实例名称"; echo "9) 保存客户端配置到文件"; echo "99) 彻底删除此串联"; echo "0) 返回"
+        read -p "请选择 [0-9, 99]: " manage_choice
         case $manage_choice in
-            1) log "重启串联..."; systemctl restart "$service1_full" "$service2_full";;
+            1) log "重启串联..."; systemctl restart "$service1_full" "$service2_full"; sleep 1; if systemctl is-active --quiet "$service1_full"; then green "✓ 运行正常"; else red "✗ 启动失败，请查看日志"; fi;;
             2) log "停止串联..."; systemctl stop "$service1_full" "$service2_full";;
             3) view_chain_client_config "$chain_type" "$id_num"; read -p $'\n按任意键返回...' -n1 -s;;
             4)
@@ -3482,10 +3496,13 @@ manage_chain_instance() {
                 log "正在实时跟踪 UDP2RAW 日志... (按 Ctrl+C 仅退出日志)"
                 follow_journal_safely -u "$service2_full"
                 ;;
-            6) nano "$main_conf_path"; systemctl restart "$service1_full";;
+            6) nano "$main_conf_path"; systemctl restart "$service1_full"; if systemctl is-active --quiet "$service1_full"; then green "✓ 配置已更新"; else red "✗ 重启失败"; fi;;
             7) nano "$udp2raw_conf_path"; systemctl restart "$service2_full";;
             8) interactive_rename_instance "$manage_type" "$id_num"; read -p $'\n按任意键返回...' -n1 -s;;
-            99) read -p "确认删除串联实例 ${manage_id}？(默认“否”) [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
+            9) local out_file="$HOME/ax-hy2chain-${manage_id}-config.txt"
+                view_chain_client_config "$chain_type" "$id_num" > "$out_file" 2>&1
+                echo "" >> "$out_file"; green "已保存到: $out_file"; read -p $'\n按任意键返回...' -n1 -s;;
+            99) read -p "确认删除串联实例 ${manage_id}？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
                 if [[ "$chain_type" == "hy2" ]]; then
                     # 从 singbox.json 移除对应的 inbound
                     local tag="hy2-c${id_num}"
@@ -3982,7 +3999,7 @@ import_config_backup() {
     green "找到备份内容:"
     find "$base_dir" -type f | sed "s|$base_dir||" | sort
     echo "----------------------------------"
-    read -rp "确认恢复这些文件？现有文件将被覆盖 (y/N): " confirm
+    read -rp "确认恢复这些文件？现有文件将被覆盖 [y/N]: " confirm
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
         rm -rf "$tmp_dir"; yellow "已取消。"; return
     fi
@@ -4006,7 +4023,7 @@ import_config_backup() {
 # 卸载所有 (REFACTORED: 修复软卸载路径)
 # -----------------------------------------------------------------------------
 uninstall_all() {
-    read -p "确认要卸载吗（将删除所有配置文件，证书保留）？ (默认“否”) [y/N]: " confirm
+    read -p "确认卸载？将删除所有程序、配置、服务，证书保留 [y/N]: " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then 
         yellow "操作已取消。"
         return 1
@@ -4548,7 +4565,7 @@ handle_main_menu_choice() {
         7) clear; warp_management_menu ;;
         8) view_all_configs; read -p $'\n按任意键返回...' -n1 -s;;
         9) restart_all_services ;;
-        10) check_for_updates; read -p "按任意键继续..." -n1 -s ;;
+        10) check_for_updates; read -p $'\n按任意键返回...' -n1 -s ;;
         11) clear; install_sys_opt; read -p $'\n按任意键返回...' -n1 -s ;;
         12) clear; run_local_script "$AX_ACME_SCRIPT" "ACME 证书管理" "$AX_ACME_URL"; read -p $'\n按任意键返回...' -n1 -s ;;
         13) clear; export_config_backup ;;
