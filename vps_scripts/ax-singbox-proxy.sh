@@ -13,22 +13,18 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.70"
+SCRIPT_VERSION="0.8.71"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
 set -uo pipefail
 
-# KCPTUN 回退版本号 (下载源走 halibotee/scripts 仓库, 不依赖任何官方源)
-KCPTUN_FALLBACK_RELEASE="20260101"
-
 # 版本自增: 脚本内调用 bump_version [patch|minor|major]
 # 或 CLI: bash ax-singbox-proxy.sh --bump-version=patch|minor|major
 bump_version() {
-    local level=${1:-patch} script_path current new tmpf
-    script_path=$(basename "$0")
+    local level=${1:-patch} script_path current new tmpf major minor patch
+    script_path=$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")
     current=$SCRIPT_VERSION
-    major=0; minor=0; patch=0
     local n0="${current%%.*}"; local rest="${current#*.}"
     local n1="${rest%%.*}"; local n2="${rest#*.}"
     major=${n0:-0}; minor=${n1:-0}; patch=${n2:-0}
@@ -52,6 +48,16 @@ if [[ "${1:-}" == --bump-version=* ]]; then
     exit 0
 fi
 
+# -----------------------------------------------------------------------------
+# 终端颜色输出函数 (须在 OS 检测前定义, 供不支持系统提示使用)
+# -----------------------------------------------------------------------------
+green(){ echo -e "\033[0;32m$1\033[0m"; }  # 输出绿色文本
+red(){ echo -e "\033[0;31m$1\033[0m"; }    # 输出红色文本 (用于错误)
+yellow(){ echo -e "\033[0;33m$1\033[0m"; } # 输出黄色文本 (用于警告/提示)
+cyan(){ echo -e "\033[0;36m$1\033[0m"; }   # 输出青色文本 (用于信息)
+bold(){ echo -e "\033[1m$1\033[0m"; }      # 输出粗体文本
+dim(){ echo -e "\033[2m$1\033[0m"; }       # 输出淡化(灰色)文本
+
 # 检测操作系统
 if [[ -f /etc/redhat-release ]]; then
 release="Centos"
@@ -68,7 +74,7 @@ elif grep -q -E -i "ubuntu" /proc/version 2>/dev/null; then
 elif grep -q -E -i "centos|red hat|redhat" /proc/version 2>/dev/null; then
 release="Centos"
 else 
-red "不支持当前的系统，请选择使用Ubuntu,Debian,Centos系统。" && exit
+red "不支持当前的系统，请选择使用Ubuntu,Debian,Centos系统。" && exit 1
 fi
 case "$release" in
 "Centos") ;;
@@ -78,7 +84,7 @@ cpujg(){
 case $(uname -m) in
 aarch64) cpu=arm64;;
 x86_64) cpu=amd64;;
-*) red "目前脚本不支持$(uname -m)架构" && exit;;
+*) red "目前脚本不支持$(uname -m)架构" && exit 1;;
 esac
 }
 
@@ -372,16 +378,6 @@ EOM
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 终端颜色输出函数
-# -----------------------------------------------------------------------------
-green(){ echo -e "\033[0;32m$1\033[0m"; }  # 输出绿色文本
-red(){ echo -e "\033[0;31m$1\033[0m"; }    # 输出红色文本 (用于错误)
-yellow(){ echo -e "\033[0;33m$1\033[0m"; } # 输出黄色文本 (用于警告/提示)
-cyan(){ echo -e "\033[0;36m$1\033[0m"; }   # 输出青色文本 (用于信息)
-bold(){ echo -e "\033[1m$1\033[0m"; }      # 输出粗体文本
-dim(){ echo -e "\033[2m$1\033[0m"; }       # 输出淡化(灰色)文本
-
-# -----------------------------------------------------------------------------
 # 日志记录函数
 # -----------------------------------------------------------------------------
 log(){ echo -e "[$(date '+%H:%M:%S')] $(bold "$1")"; }
@@ -414,7 +410,7 @@ get_public_ip() {
         fi
     fi
     PUBLIC_IP=$(curl -s4m2 $PUBLIC_IP_SERVICE_1 || curl -s4m2 $PUBLIC_IP_SERVICE_2)
-    if [[ -z "$PUBLIC_IP" ]]; then PUBLIC_IP="127.0.0.1"; yellow "获取公网 IP 失败，将使用 127.0.0.1 作为备用。" >&2; fi
+    if [[ -z "$PUBLIC_IP" ]]; then PUBLIC_IP="127.0.0.1"; yellow "获取公网 IP 失败，将使用 127.0.0.1 作为备用。" >&2; echo "$PUBLIC_IP"; return; fi
     # 写入缓存 (timestamp + IP)
     echo "$(date +%s)" > "$PUBLIC_IP_CACHE" && echo "$PUBLIC_IP" >> "$PUBLIC_IP_CACHE"
     echo "$PUBLIC_IP"
@@ -1287,16 +1283,6 @@ warp_ip_optimize() {
 
 # ===================== 编辑 WARP 分流域名 (规则集列表) =====================
 
-# 统计已启用的规则集数量
-warp_ruleset_count() {
-    local list_file="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
-    if [[ -f "$list_file" ]]; then
-        grep -cE '^(domain:|[a-zA-Z0-9_-])' "$list_file" 2>/dev/null || echo 0
-    else
-        echo 0
-    fi
-}
-
 # 编辑 WARP 分流域名列表 (nano), 每行一个 rule_set 名称, # 为注释
 # 保存后自动同步到 singbox.json 并热重载
 edit_warp_rulesets() {
@@ -1610,7 +1596,8 @@ download_kcp_udp_binaries(){
         log "下载 KCPTUN (kcptun_server)..."
         download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/kcptun_server" "$KCP_INSTALL_DIR/kcptun_server" && \
         chmod +x "$KCP_INSTALL_DIR/kcptun_server" && \
-        echo "$fixed_version_kcp" > "$KCP_INSTALL_DIR/version.txt" || { red "KCPTUN 下载失败。"; return 1; }
+        is_elf_binary "$KCP_INSTALL_DIR/kcptun_server" && \
+        echo "$fixed_version_kcp" > "$KCP_INSTALL_DIR/version.txt" || { rm -f "$KCP_INSTALL_DIR/kcptun_server"; red "KCPTUN 下载失败。"; return 1; }
     else
         green "KCPTUN 已是最新版本 ($kcp_current)"
     fi
@@ -1620,9 +1607,10 @@ download_kcp_udp_binaries(){
         log "下载 UDP2RAW (udp2raw_binaries.tar.gz)..."
         download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/udp2raw_binaries.tar.gz" /tmp/udp2raw.tar.gz && \
         tar -xzf /tmp/udp2raw.tar.gz -C "$UDP2RAW_INSTALL_DIR" "udp2raw_${cpu}" && \
+        is_elf_binary "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" && \
         mv "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw" && \
-        echo "$fixed_version_udp" > "$UDP2RAW_INSTALL_DIR/version.txt" && \
-        chmod +x "$UDP2RAW_INSTALL_DIR/udp2raw" || { red "UDP2RAW 下载失败。"; return 1; }
+        chmod +x "$UDP2RAW_INSTALL_DIR/udp2raw" && \
+        echo "$fixed_version_udp" > "$UDP2RAW_INSTALL_DIR/version.txt" || { rm -f "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw"; rm -f /tmp/udp2raw.tar.gz; red "UDP2RAW 下载失败。"; return 1; }
     else
         green "UDP2RAW 已是最新版本 ($udp_current)"
     fi
@@ -2272,8 +2260,8 @@ display_instance_status_line() {
         "udp2raw"|"kcptun"|"xray_reality"|"hysteria2")
             local conf_file service_prefix title; local color_func="yellow"
             case "$type" in
-                udp2raw) conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"; service_prefix="ax-udp2raw"; title="UDP2RAW";;
-                kcptun) conf_file="$KCP_INSTALL_DIR/kcptun_${id}.json"; service_prefix="ax-kcptun"; title="KCPTUN";;
+                udp2raw) conf_file="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"; service_prefix="ax-udp2raw@${id}"; title="UDP2RAW";;
+                kcptun) conf_file="$KCP_INSTALL_DIR/kcptun_${id}.json"; service_prefix="ax-kcptun@${id}"; title="KCPTUN";;
                 xray_reality) conf_file="$SINGBOX_INSTALL_DIR/singbox.json"; service_prefix="ax-singbox"; title="VLESS+Reality";;
                 hysteria2) conf_file="$SINGBOX_INSTALL_DIR/singbox.json"; service_prefix="ax-singbox"; title="Hysteria2";;
             esac
@@ -2800,7 +2788,7 @@ view_kcptun_client_config(){
         if [[ "$key" == "sndwnd" ]]; then args+=" --${key} ${server_rcvwnd}"
         elif [[ "$key" == "rcvwnd" ]]; then args+=" --${key} ${server_sndwnd}"
         elif [[ "$key" == "mtu" ]]; then args+=" --mtu 1300"
-        elif [[ "$key" != "listen" && "$key" != "target" ]]; then local value=$(jq -r --arg k "$key" '.[$k]' "$conf"); args+=" --${key} ${value}"; fi
+        elif [[ "$key" != "listen" && "$key" != "target" ]]; then local value=$(jq -r --arg k "$key" '.[$k]' "$conf"); if [[ "$value" == "true" || "$value" == "false" ]]; then args+=" --${key}=${value}"; else args+=" --${key} ${value}"; fi; fi
     done; green "$args"; echo
 }
 
@@ -2864,7 +2852,7 @@ view_chain_client_config_3() {
         elif [[ "$key" == "mtu" ]]; then kcp_args+=" --mtu 1300"
         elif [[ "$key" != "listen" && "$key" != "target" ]]; then
             local value=$(jq -r --arg k "$key" '.[$k]' "$kcptun_conf_path")
-            kcp_args+=" --${key} ${value}"
+            if [[ "$value" == "true" || "$value" == "false" ]]; then kcp_args+=" --${key}=${value}"; else kcp_args+=" --${key} ${value}"; fi
         fi
     done
     green "$kcp_args"; echo
@@ -3358,9 +3346,21 @@ EOF
     sync
     log "启动串联服务..."
     systemctl restart ax-singbox.service
-    systemctl enable --now "ax-udp2raw@${chain_id}.service"
-    
+    if ! systemctl enable --now "ax-udp2raw@${chain_id}.service" 2>/dev/null; then
+        red "UDP2RAW 启动失败, 正在回滚..." >&2
+        remove_singbox_inbound "hy2-c${i}" >/dev/null 2>&1
+        rm -f "$udp2raw_conf"
+        return 1
+    fi
     sleep 1
+    if ! systemctl is-active --quiet "ax-udp2raw@${chain_id}.service"; then
+        red "UDP2RAW 启动后状态检查失败, 正在回滚..." >&2
+        remove_singbox_inbound "hy2-c${i}" >/dev/null 2>&1
+        systemctl stop "ax-udp2raw@${chain_id}.service" 2>/dev/null
+        systemctl disable "ax-udp2raw@${chain_id}.service" >/dev/null 2>&1
+        rm -f "$udp2raw_conf"
+        return 1
+    fi
     green "串联实例 ${chain_id} 已启动！"
     echo
     view_chain_client_config "$chain_type" "$i"
@@ -3381,7 +3381,7 @@ manage_chain_instance() {
     local disp_name=$(get_instance_display_name "$manage_type" "$id_num")
     
     if [[ "$chain_type" == "hy2" ]]; then
-        id_prefix="c"; title="Hysteria2"; main_conf_path=""; service1_name="ax-singbox"
+        id_prefix="c"; title="Hysteria2"; main_conf_path="$SINGBOX_INSTALL_DIR/singbox.json"; service1_name="ax-singbox"
     fi
     
     local manage_id="${id_prefix}${id_num}"
@@ -3558,8 +3558,11 @@ main_manager_loop() {
                 if [[ ${#INSTANCES[@]} -eq 0 ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
                 echo "$(bold "可用实例:")"; local ii __seq=1; declare -A __MAP; for ii in "${INSTANCES[@]}"; do display_instance_status_line "$type_lowercase" "$ii" "$__seq) "; __MAP[$__seq]=$ii; __seq=$((__seq + 1)); done
                 local manage_id_num; read -p "请输入您想管理的实例序号: " manage_id_num; local mapped_id="${__MAP[$manage_id_num]-}"; if [[ -n "$mapped_id" ]]; then
-                    local conf_path="$SINGBOX_INSTALL_DIR/singbox.json"
-                    manage_instance_menu "$type_lowercase" "$mapped_id" "ax-singbox" "$conf_path"
+                    case "$type_lowercase" in
+                        udp2raw) manage_instance_menu "udp2raw" "$mapped_id" "ax-udp2raw@${mapped_id}" "$UDP2RAW_INSTALL_DIR/udp2raw_${mapped_id}.conf" ;;
+                        kcptun)  manage_instance_menu "kcptun" "$mapped_id" "ax-kcptun@${mapped_id}" "$KCP_INSTALL_DIR/kcptun_${mapped_id}.json" ;;
+                        xray_reality|hysteria2) manage_instance_menu "$type_lowercase" "$mapped_id" "ax-singbox" "$SINGBOX_INSTALL_DIR/singbox.json" ;;
+                    esac
                 else red "无效的实例序号！"; sleep 2; fi;;
              3)
                 if [[ ${#INSTANCES[@]} -eq 0 ]]; then yellow "当前没有实例可供查看。"; sleep 2; continue; fi
@@ -3959,12 +3962,12 @@ uninstall_all() {
     else
         log "未检测到 $AX_ACME_SCRIPT 客户端，跳过清理。"
     fi
-    log "步骤 4: 清理临时文件和元数据..."
+    log "步骤 5: 清理临时文件和元数据..."
     rm -f /tmp/kcptun.tar.gz /tmp/udp2raw.tar.gz /tmp/singbox.tar.gz
     rm -f "$INSTANCE_NAMES_FILE" "$SERVER_ADDR_FILE" "$PUBLIC_IP_CACHE"
-    log "步骤 5: 清理脚本文件和残留..."
+    log "步骤 6: 清理脚本文件和残留..."
     rm -rf /root/scripts /root/ax-singbox-proxy.sh /root/ax-acme.sh /root/ax-optz.sh
-    log "步骤 6: 重载 systemd 并清理状态..."
+    log "步骤 7: 重载 systemd 并清理状态..."
     systemctl daemon-reload; systemctl reset-failed
     green "Systemd 已重载并清理。"
     
@@ -4068,7 +4071,7 @@ import_subscription_links() {
             ss_inbound=${ss_inbound/__ID__/s3c${i}}
             ss_inbound=${ss_inbound/__LISTEN_PORT__/$ss_port}
             ss_inbound=${ss_inbound/__SS_METHOD__/$ss_method}
-            ss_inbound=${ss_inbound/__SS_PASSWORD__/$ss_password}
+            ss_inbound=${ss_inbound/__SS_PASSWORD__/$(json_escape "$ss_password")}
             safe_add_singbox_inbound "$ss_inbound" "$SINGBOX_INSTALL_DIR/singbox.json" || return 1
 
             [[ -z "$kcp_mtu" ]] && kcp_mtu=1350
@@ -4076,12 +4079,12 @@ import_subscription_links() {
             [[ -z "$kcp_rcvwnd" ]] && kcp_rcvwnd=512
             [[ -z "$kcp_nocomp" ]] && kcp_nocomp=true
             [[ -z "$kcp_tcp" ]] && kcp_tcp=false
-            [[ -z "$kcp_crypt" ]] && kcp_crypt="aes"
+            [[ -z "$kcp_crypt" ]] && kcp_crypt="aes-128"
             [[ -z "$kcp_mode" ]] && kcp_mode="fast2"
             local kcp_config="$KCPTUN_CONFIG_JSON_TEMPLATE"
             kcp_config=${kcp_config/__LISTEN__/127.0.0.1:${kcp_listen_port}}
             kcp_config=${kcp_config/__TARGET__/127.0.0.1:${ss_port}}
-            kcp_config=${kcp_config/__KEY__/$kcp_key}
+            kcp_config=${kcp_config/__KEY__/$(json_escape "$kcp_key")}
             kcp_config=${kcp_config/__MODE__/$kcp_mode}
             kcp_config=${kcp_config/__CRYPT__/$kcp_crypt}
             kcp_config=${kcp_config/__TCP__/$kcp_tcp}
@@ -4097,7 +4100,7 @@ import_subscription_links() {
             local udp_config="${UDP2RAW_CONFIG_TEMPLATE}"
             udp_config="${udp_config//__LISTEN_ADDR__/0.0.0.0:${udp_public_port}}"
             udp_config="${udp_config//__TARGET_ADDR__/${udp_listen}}"
-            udp_config="${udp_config//__PASSWORD__/${udp_password}}"
+            udp_config="${udp_config//__PASSWORD__/$(json_escape "${udp_password}")}"
             udp_config="${udp_config//__RAW_MODE__/${udp_raw_mode}}"
             udp_config="${udp_config//__CIPHER_MODE__/${udp_cipher_mode}}"
             udp_config="${udp_config//__AUTH_MODE__/${udp_auth_mode}}"
@@ -4119,9 +4122,6 @@ import_subscription_links() {
 
             local hy2_raw="${p1#hysteria2://}"
             local hy2_password="${hy2_raw%%@*}"
-            local hy2_rest="${hy2_raw#*@}"
-            local hy2_port="${hy2_rest#*:}"
-            hy2_port="${hy2_port%%\?*}"
             local hy2_sni=$(echo "$p1" | grep -oP '(?<=sni=)[^&]+')
             [[ -z "$hy2_sni" ]] && hy2_sni="$HY2_SNI"
 
@@ -4156,7 +4156,7 @@ import_subscription_links() {
     "listen_port": '$hy2_listen_port',
     "up_mbps": 100,
     "down_mbps": 100,
-    "users": [{"password": "'${hy2_password}'"}],
+    "users": [{"password": "'$(json_escape "${hy2_password}")'"}],
     "tls": {
         "enabled": true,
         "server_name": "'${hy2_sni}'",
@@ -4172,7 +4172,7 @@ import_subscription_links() {
             local udp_config="${UDP2RAW_CONFIG_TEMPLATE}"
             udp_config="${udp_config//__LISTEN_ADDR__/0.0.0.0:${udp_public_port}}"
             udp_config="${udp_config//__TARGET_ADDR__/${udp_listen}}"
-            udp_config="${udp_config//__PASSWORD__/${udp_password}}"
+            udp_config="${udp_config//__PASSWORD__/$(json_escape "${udp_password}")}"
             udp_config="${udp_config//__RAW_MODE__/${udp_raw_mode}}"
             udp_config="${udp_config//__CIPHER_MODE__/${udp_cipher_mode}}"
             udp_config="${udp_config//__AUTH_MODE__/${udp_auth_mode}}"
@@ -4280,6 +4280,7 @@ check_system_compatibility() {
     if [[ ${#missing_commands[@]} -gt 0 ]]; then
         red "错误: 缺少必要命令: ${missing_commands[*]}"
         red "请运行脚本的安装功能或手动安装缺失的依赖。"
+        exit 1
     fi
 }
 
@@ -4467,7 +4468,7 @@ main_menu(){
         local num_items=${#QUICK_MANAGE_MAP_ID[@]}
         local max_index=$((20 + num_items))
         echo "----------------------------------"
-        local prompt="请选择 [0-16, 99"
+        local prompt="请选择 [0-15, 99"
         if [[ $num_items -gt 0 ]]; then
             prompt+=", 21-${max_index}"
         fi
