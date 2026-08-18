@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.72"
+SCRIPT_VERSION="0.8.73"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -655,6 +655,15 @@ hash_file() {
 # -----------------------------------------------------------------------------
 json_escape() {
     printf '%s' "$1" | sed 's/["\]/\\&/g'
+}
+
+# -----------------------------------------------------------------------------
+# 获取证书 SHA256 指纹 (用于 pinSHA256 替代 insecure=1)
+# -----------------------------------------------------------------------------
+get_cert_fingerprint() {
+    local cert=$1
+    [[ -f "$cert" ]] || return 1
+    openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr 'A-Z' 'a-z'
 }
 
 # -----------------------------------------------------------------------------
@@ -2582,6 +2591,7 @@ add_singbox_inbound() {
         read_valid_port "请输入监听端口 (留空则随机): " listen_port true
         local hy2_password=$(handle_password_input "hysteria2")
         hy2_password=$(json_escape "$hy2_password")
+        read -p "请输入 Hysteria2 端口跳跃范围 (如 10000-20000, 留空禁用): " hop_port
         
         inbound_json=$SINGBOX_HYSTERIA2_TEMPLATE
         inbound_json=${inbound_json/__ID__/$next_id}
@@ -2590,6 +2600,9 @@ add_singbox_inbound() {
         inbound_json=${inbound_json/__SNI__/$HY2_SNI}
         inbound_json=${inbound_json/__KEY_PATH__/$HY2_KEY_PATH}
         inbound_json=${inbound_json/__CERT_PATH__/$HY2_CERT_PATH}
+        if [[ -n "$hop_port" ]]; then
+            inbound_json=$(echo "$inbound_json" | jq -c --arg hop "$hop_port" '. + {hop_port: $hop, hop_interval: 30}')
+        fi
     fi
 
     if [[ -z "$inbound_json" ]]; then
@@ -2777,7 +2790,14 @@ generate_singbox_hy2_link() {
     local password=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .users[0].password' "$conf")
     local sni=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .tls.server_name' "$conf")
     if [[ -z "$port" || "$port" == "null" || -z "$password" || "$password" == "null" ]]; then echo "N/A"; return; fi
-    local link="hysteria2://${password}@${ip}:${port}?sni=${sni}&insecure=1#$(get_instance_sub_name "hysteria2" "$id")"
+    local hop_port=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .hop_port // empty' "$conf")
+    local fp=$(get_cert_fingerprint "$HY2_CERT_PATH")
+    local tls_param="insecure=1"
+    [[ -n "$fp" ]] && tls_param="pinSHA256=${fp}"
+    local link="hysteria2://${password}@${ip}:${port}?sni=${sni}&${tls_param}#$(get_instance_sub_name "hysteria2" "$id")"
+    if [[ -n "$hop_port" ]]; then
+        link="hysteria2://${password}@${ip}:${port}?sni=${sni}&${tls_param}&hop_port=${hop_port}&hop_interval=30#$(get_instance_sub_name "hysteria2" "$id")"
+    fi
     echo "$link"
 }
 
@@ -3018,6 +3038,9 @@ start_new_chain_instance_3() {
     ss_inbound=${ss_inbound/__LISTEN_PORT__/$ss_listen_port}
     ss_inbound=${ss_inbound/__SS_METHOD__/$ss_method}
     ss_inbound=${ss_inbound/__SS_PASSWORD__/$ss_password}
+    if [[ "$AX_TCP_BRUTAL_AVAILABLE" == true ]]; then
+        ss_inbound=$(echo "$ss_inbound" | jq -c '. + {"multiplex": {"enabled": true, "protocol": "h2mux", "max_streams": 4}, "tcp_brutal": {"enabled": true, "speed_mbps": 500}}')
+    fi
     
     if ! safe_add_singbox_inbound "$ss_inbound" "$SINGBOX_INSTALL_DIR/singbox.json"; then
         red "添加 SS inbound 失败, 操作已回滚。" >&2
@@ -3194,15 +3217,18 @@ view_chain_client_config() {
         local sni=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .tls.server_name // empty' "$SINGBOX_INSTALL_DIR/singbox.json" 2>/dev/null)
         local cert_path=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .tls.certificate_path // empty' "$SINGBOX_INSTALL_DIR/singbox.json" 2>/dev/null)
         local insecure_flag=0
+        local cert_path_for_fp=""
         
         if [[ "$sni" == "$HY2_SNI" || -z "$sni" ]]; then
             insecure_flag=$HY2_CLIENT_INSECURE
             sni="$HY2_SNI"
+            cert_path_for_fp="$HY2_CERT_PATH"
         fi
         
         if [[ -n "$cert_path" && "$cert_path" == *"$AX_CERT_DIR"* ]]; then
             sni=$(echo "$cert_path" | cut -d'/' -f4)
             insecure_flag=0
+            cert_path_for_fp="$cert_path"
         fi
         
         if [[ "$sni" != "$HY2_SNI" && -n "$sni" ]]; then
@@ -3212,8 +3238,14 @@ view_chain_client_config() {
             client_args="${UDP2RAW_CLIENT_BASE_ARGS} -r ${sni_remote} -l ${client_listen_addr} -k ${udp2raw_password}"
         fi
 
-        sub_link="hysteria2://${hy2_password}@${client_udp2raw_host}:${client_udp2raw_port}?sni=${sni}&insecure=${insecure_flag}#$(get_instance_sub_name "hy2_chain" "$id_num")"
-        local hy2_chain_clean="hysteria2://${hy2_password}@${client_udp2raw_host}:${client_udp2raw_port}?sni=${sni}&insecure=${insecure_flag}"
+        local fp=$(get_cert_fingerprint "$cert_path_for_fp")
+        local tls_param="insecure=${insecure_flag}"
+        [[ -n "$fp" ]] && tls_param="pinSHA256=${fp}"
+        local hop_port=$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag) | .hop_port // empty' "$SINGBOX_INSTALL_DIR/singbox.json" 2>/dev/null)
+        local hop_param=""
+        [[ -n "$hop_port" ]] && hop_param="&hop_port=${hop_port}&hop_interval=30"
+        sub_link="hysteria2://${hy2_password}@${client_udp2raw_host}:${client_udp2raw_port}?sni=${sni}&${tls_param}${hop_param}#$(get_instance_sub_name "hy2_chain" "$id_num")"
+        local hy2_chain_clean="hysteria2://${hy2_password}@${client_udp2raw_host}:${client_udp2raw_port}?sni=${sni}&${tls_param}${hop_param}"
         local chain_name=$(get_instance_sub_name "hy2_chain" "$id_num")
         local chain_link="CHAIN://[${hy2_chain_clean} && udp2raw://${client_args}]#${chain_name}"
     fi
@@ -3318,6 +3350,8 @@ start_new_chain_instance() {
     local cert_info=$(setup_hysteria2_certificates) || return 1
     IFS='|' read -r cert_path key_path sni <<< "$cert_info"
     
+    read -p "请输入 Hysteria2 端口跳跃范围 (如 10000-20000, 留空禁用): " hop_port
+    
     # 创建 Hysteria2 inbound
     local hy2_inbound=$(cat <<EOF
 {
@@ -3339,6 +3373,10 @@ EOF
 )
     
     local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
+    if [[ -n "$hop_port" ]]; then
+        hy2_inbound=$(echo "$hy2_inbound" | jq -c --arg hop "$hop_port" '. + {hop_port: $hop, hop_interval: 30}')
+    fi
+    
     if [[ ! -f "$config_file" ]]; then
         red "错误: 基础配置文件 $config_file 不存在！请先安装 Sing-box。"
         return 1
@@ -4116,6 +4154,9 @@ import_subscription_links() {
             ss_inbound=${ss_inbound/__LISTEN_PORT__/$ss_port}
             ss_inbound=${ss_inbound/__SS_METHOD__/$(json_escape "$ss_method")}
             ss_inbound=${ss_inbound/__SS_PASSWORD__/$(json_escape "$ss_password")}
+            if [[ "$AX_TCP_BRUTAL_AVAILABLE" == true ]]; then
+                ss_inbound=$(echo "$ss_inbound" | jq -c '. + {"multiplex": {"enabled": true, "protocol": "h2mux", "max_streams": 4}, "tcp_brutal": {"enabled": true, "speed_mbps": 500}}')
+            fi
             safe_add_singbox_inbound "$ss_inbound" "$SINGBOX_INSTALL_DIR/singbox.json" || return 1
 
             [[ -z "$kcp_mtu" ]] && kcp_mtu=1350
@@ -4347,7 +4388,7 @@ check_system_compatibility() {
 }
 
 # -----------------------------------------------------------------------------
-# 自动检测并启用 BBR + fq (如果未启用)
+# 自动检测并启用 BBR + fq + tcp_brutal (如果未启用)
 # -----------------------------------------------------------------------------
 enable_bbr_fq() {
     local mod_loaded=false changed=false
@@ -4371,6 +4412,13 @@ EOF
         green "✓ BBR + fq 已就绪"
     elif ! $mod_loaded; then
         yellow "⚠ tcp_bbr 模块不可用, 跳过 BBR 配置。"
+    fi
+    # 检测 tcp_brutal 模块
+    if lsmod 2>/dev/null | grep -q 'tcp_brutal'; then
+        AX_TCP_BRUTAL_AVAILABLE=true
+        green "✓ tcp_brutal 模块已就绪"
+    else
+        AX_TCP_BRUTAL_AVAILABLE=false
     fi
 }
 
