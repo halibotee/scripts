@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.76"
+SCRIPT_VERSION="0.8.77"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -347,7 +347,7 @@ read -r -d '' SINGBOX_WARP_WIREGUARD_ENDPOINT <<'EOM'
                 "port": 2408,
                 "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
                 "allowed_ips": ["0.0.0.0/0", "::/0"],
-                "persistent_keepalive_interval": 30,
+                "persistent_keepalive_interval": 15,
                 "reserved": __WARP_RESERVED__
             }
         ]
@@ -978,6 +978,12 @@ except Exception:
 # -----------------------------------------------------------------------------
 detect_best_warp_mtu() {
     local test_ip="162.159.192.1"  # Cloudflare WARP 任何可达 IP 均可
+    # 如果 ping 不通, 直接返回默认 MTU
+    if ! ping -c1 -W2 "$test_ip" >/dev/null 2>&1; then
+        yellow "无法 ping 通 WARP 服务器, 使用默认 MTU 1280" >&2
+        echo "1280"
+        return
+    fi
     local min=1280 max=1500 best=1280
     while [ $((min <= max)) -eq 1 ]; do
         local mid=$(( (min + max) / 2 ))
@@ -1130,7 +1136,11 @@ for name in extra_names:
         'tag': name, 'type': 'remote', 'format': 'binary',
         'url': f'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{srs}'
     })
-# 构建路由规则: 基础规则 + 固定 ip-api.com→warp-ep + 每条规则走 warp-ep
+# 构建路由规则: 基础规则 + WARP 服务器直连 + 固定 ip-api.com→warp-ep + 每条规则走 warp-ep
+    warp_direct_rules = [
+        {'action': 'route', 'domain_suffix': ['cloudflareclient.com', 'cloudflare.com'], 'outbound': 'direct'},
+        {'action': 'route', 'ip_cidr': ['162.159.192.0/24', '162.159.193.0/24'], 'outbound': 'direct'}
+    ]
     warp_ip_rule = [{'action': 'route', 'domain_suffix': ['ip-api.com'], 'outbound': 'warp-ep'}]
     extra_rules = []
     for name in extra_names:
@@ -1138,7 +1148,7 @@ for name in extra_names:
             extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': 'warp-ep'})
         else:
             extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
-    cfg['route']['rules'] = base + warp_ip_rule + extra_rules
+    cfg['route']['rules'] = base + warp_direct_rules + warp_ip_rule + extra_rules
 cfg['route']['rule_set'] = ruleset
 if 'final' in cfg.get('route', {}):
     del cfg['route']['final']
