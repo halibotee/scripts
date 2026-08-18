@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.81"
+SCRIPT_VERSION="0.8.82"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1141,6 +1141,7 @@ for name in extra_names:
 # 构建路由规则: 基础规则 + WARP 服务器直连 + 固定 ip-api.com→warp-ep + 每条规则走 warp-ep
     warp_direct_rules = [
         {'action': 'route', 'domain_suffix': ['cloudflareclient.com', 'cloudflare.com'], 'outbound': 'direct'},
+        {'action': 'route', 'domain_suffix': ['gemini.google.com', 'bard.google.com'], 'outbound': 'direct'},
         {'action': 'route', 'ip_cidr': ['162.159.192.0/24', '162.159.193.0/24'], 'outbound': 'direct'}
     ]
     warp_ip_rule = [{'action': 'route', 'domain_suffix': ['ip-api.com'], 'outbound': 'warp-ep'}]
