@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.75"
+SCRIPT_VERSION="0.8.76"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1256,8 +1256,12 @@ sync_warp_config() {
     wg_ep=$(apply_warp_wireguard_config) || return 1
     route_rules=$SINGBOX_WARP_ROUTE_RULES
     apply_warp_config_to_file "$wg_ep" "$route_rules" || return 1
-    safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null
+    if safe_hot_reload_singbox; then
+        return 0
+    fi
+    systemctl restart ax-singbox.service 2>/dev/null
     sleep 1
+    systemctl is-active --quiet ax-singbox.service
 }
 
 # -----------------------------------------------------------------------------
@@ -1310,6 +1314,7 @@ warp_ip_optimize() {
 # 保存后自动同步到 singbox.json 并热重载
 edit_warp_rulesets() {
     local list_file="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
+    if ! warp_enabled; then yellow "WARP 未启用，编辑规则集后不会生效。请先启用 WARP 分流。"; read -p $'\n按任意键继续...' -n1 -s; fi
     if [[ ! -f "$list_file" ]]; then
         cat > "$list_file" <<'EOF'
 # 规则集 (rule_set): 来自 SagerNet/sing-geosite，无前缀
@@ -1333,8 +1338,11 @@ EOF
     local after_hash; after_hash=$(hash_file "$list_file")
     if [[ "$before_hash" != "$after_hash" ]]; then
         green "规则集列表已更新, 正在同步..."
-        sync_warp_config
-        green "Sing-box 已热重载, 新规则已生效。"
+        if sync_warp_config; then
+            green "Sing-box 已热重载, 新规则已生效。"
+        else
+            red "Sing-box 同步失败, 请检查配置或日志。"
+        fi
     else
         yellow "列表无变化, 无需更新。"
     fi
@@ -1359,7 +1367,10 @@ change_warp_account_apply() {
 }
 
 change_warp_account_register() {
-    register_warp_wireguard || { red "注册新账户失败, 已保留原有账户。" >&2; return 1; }
+    if ! register_warp_wireguard; then
+        red "注册新账户失败, 已保留原有账户。" >&2
+        return 1
+    fi
     change_warp_account_apply
 }
 
@@ -1536,8 +1547,7 @@ warp_management_menu() {
                 else
                     if enable_warp_in_config; then sync; green "WARP 分流已启用！"; else yellow "启用失败。"; fi
                 fi
-                read -p $'\n按任意键返回...' -n1 -s
-                break;;
+                read -p $'\n按任意键继续...' -n1 -s;;
             2) edit_warp_rulesets;;
             3) change_warp_account_menu;;
             4)
@@ -3742,14 +3752,6 @@ show_global_tls_status() {
 show_warp_status() {
     echo "--- WARP 状态 ---"
     if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-        if ! jq -e '.inbounds[] | select(.tag == "mixed-in")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-            python3 -c "
-import json
-cfg = json.load(open('$SINGBOX_INSTALL_DIR/singbox.json'))
-cfg.setdefault('inbounds', []).append({'type': 'mixed', 'tag': 'mixed-in', 'listen': '127.0.0.1', 'listen_port': 17888})
-json.dump(cfg, open('$SINGBOX_INSTALL_DIR/singbox.json','w'), indent=2)
-" 2>/dev/null && systemctl restart ax-singbox.service 2>/dev/null
-        fi
         green "WARP 分流: 已启用"
         local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
         [[ -n "$warp_ip" ]] && green "  WARP 出口IP: $warp_ip"
@@ -4524,7 +4526,7 @@ display_main_menu() {
     cyan "--- 组件管理 ---"
     echo " 5) UDP2RAW"
     echo " 6) KCPTUN"
-    echo " 7) WARP分流"
+    echo " 7) WARP分流管理"
     echo "----------------------------------"
     cyan "--- 全局操作 ---"
     echo " 8) 查看全部订阅"
