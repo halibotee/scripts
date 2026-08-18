@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.79"
+SCRIPT_VERSION="0.8.80"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1522,8 +1522,10 @@ warp_management_menu() {
         local warp_ip=""
         local warp_ok=""
         if $cfg_enabled || $global; then
-            warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
-            if check_warp_tunnel 0; then warp_ok=true; else warp_ok=false; fi
+            if jq -e '.inbounds[] | select(.tag == "mixed-in")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
+                warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
+                if check_warp_tunnel 0; then warp_ok=true; else warp_ok=false; fi
+            fi
         fi
         if $global; then
             green "当前状态: 全局 WARP (全部流量走 WARP)"
@@ -1536,6 +1538,8 @@ warp_management_menu() {
         fi
         if [[ -n "$warp_ok" ]]; then
             if $warp_ok; then green "      隧道状态: 正常 (keepalive 15s)"; else red "      隧道状态: 异常"; fi
+        else
+            yellow "      隧道状态: SOCKS5 代理未配置，请重新启用 WARP"
         fi
         echo "----------------------------------"
         if $global; then
@@ -3763,12 +3767,16 @@ show_warp_status() {
     echo "--- WARP 状态 ---"
     if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
         green "WARP 分流: 已启用"
-        local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
-        [[ -n "$warp_ip" ]] && green "  WARP 出口IP: $warp_ip"
-        if check_warp_tunnel; then
-            green "  隧道状态: 正常 (keepalive 15s)"
+        if ! jq -e '.inbounds[] | select(.tag == "mixed-in")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
+            yellow "  SOCKS5 代理未配置，请重新启用 WARP 分流"
         else
-            red "  隧道状态: 异常"
+            local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
+            [[ -n "$warp_ip" ]] && green "  WARP 出口IP: $warp_ip"
+            if check_warp_tunnel 0; then
+                green "  隧道状态: 正常 (keepalive 15s)"
+            else
+                red "  隧道状态: 异常 (SOCKS5 代理无响应)"
+            fi
         fi
     else
         yellow "WARP 分流: 未启用"
