@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.80"
+SCRIPT_VERSION="0.8.81"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -87,6 +87,8 @@ x86_64) cpu=amd64;;
 *) red "目前脚本不支持$(uname -m)架构" && exit 1;;
 esac
 }
+
+AX_TCP_BRUTAL_AVAILABLE=false
 
 # =============================================================================
 # 1. 核心全局变量与脚本版本
