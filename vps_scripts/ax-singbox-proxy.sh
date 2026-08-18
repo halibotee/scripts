@@ -13,7 +13,7 @@
 #   https://www.gstatic.com/generate_204                     — 连通性检测端点
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.77"
+SCRIPT_VERSION="0.8.78"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1523,7 +1523,7 @@ warp_management_menu() {
         local warp_ok=""
         if $cfg_enabled || $global; then
             warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
-            if check_warp_tunnel 1; then warp_ok=true; else warp_ok=false; fi
+            if check_warp_tunnel 0; then warp_ok=true; else warp_ok=false; fi
         fi
         if $global; then
             green "当前状态: 全局 WARP (全部流量走 WARP)"
@@ -1535,7 +1535,7 @@ warp_management_menu() {
             yellow "当前状态: 未启用"
         fi
         if [[ -n "$warp_ok" ]]; then
-            if $warp_ok; then green "      隧道状态: 正常 (keepalive 30s)"; else red "      隧道状态: 异常 (已尝试自愈失败)"; fi
+            if $warp_ok; then green "      隧道状态: 正常 (keepalive 15s)"; else red "      隧道状态: 异常"; fi
         fi
         echo "----------------------------------"
         if $global; then
@@ -3766,7 +3766,7 @@ show_warp_status() {
         local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
         [[ -n "$warp_ip" ]] && green "  WARP 出口IP: $warp_ip"
         if check_warp_tunnel; then
-            green "  隧道状态: 正常 (keepalive 30s)"
+            green "  隧道状态: 正常 (keepalive 15s)"
         else
             red "  隧道状态: 异常"
         fi
