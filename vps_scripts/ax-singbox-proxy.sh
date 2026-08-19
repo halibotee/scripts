@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.84"
+SCRIPT_VERSION="0.8.85"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1488,7 +1488,14 @@ json.dump(cfg, open('$config_file','w'), indent=2)
         return 1
     fi
     rm -f "$gwbak"
-    if test_warp_connectivity 3; then
+    # 全局 WARP 下 SOCKS5 流量也走 WARP, 隧道初始化需要时间, 多次重试
+    local gw_ok=false
+    for _ in 1 2 3 4 5; do
+        if test_warp_connectivity 3; then gw_ok=true; break; fi
+        yellow "全局 WARP 隧道未就绪, 等待 3 秒重试..." >&2
+        sleep 3
+    done
+    if $gw_ok; then
         green "✓ 全局 WARP 已启用 (所有未匹配流量走 warp-ep)"
     else
         red "WARP 连通性测试失败，已回滚全局 WARP。"
