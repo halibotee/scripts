@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.83"
+SCRIPT_VERSION="0.8.84"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1151,7 +1151,6 @@ for name in extra_names:
         else:
             extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
     # Gemini/Bard 强制走 WARP（绕过 geosite-google 规则集下载不及时的问题）
-    extra_rules.insert(0, {'action': 'route', 'domain_suffix': ['gemini.google.com', 'bard.google.com'], 'outbound': 'warp-ep'})
     cfg['route']['rules'] = base + warp_direct_rules + warp_ip_rule + extra_rules
 cfg['route']['rule_set'] = ruleset
 if 'final' in cfg.get('route', {}):
@@ -1342,6 +1341,12 @@ domain:grok.x.ai
 # Google 认证一致性 (避免 gemini 前后端 IP 不一致):
 domain:accounts.google.com
 domain:oauth2.googleapis.com
+# Gemini 强制走 WARP (绕过被屏蔽的 VPS IP):
+domain:gemini.google.com
+domain:bard.google.com
+domain:gemini.gstatic.com
+domain:ssl.gstatic.com
+domain:www.googletagmanager.com
 #domain:google.com
 #domain:youtube.com
 #domain:openai.com
