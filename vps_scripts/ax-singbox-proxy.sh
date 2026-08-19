@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.85"
+SCRIPT_VERSION="0.8.86"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1078,16 +1078,20 @@ test_warp_connectivity() {
 # -----------------------------------------------------------------------------
 check_warp_tunnel() {
     local auto_repair=${1:-0}
-    local code
-    code=$(curl -s --max-time 6 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
-    if [[ "$code" == "204" ]]; then
-        return 0
-    fi
+    local code attempt=0
+    while [[ $attempt -lt 3 ]]; do
+        attempt=$((attempt + 1))
+        code=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
+        if [[ "$code" == "204" ]]; then
+            return 0
+        fi
+        [[ $attempt -lt 3 ]] && sleep 2
+    done
     if [[ "$auto_repair" == "1" ]]; then
         yellow "WARP 隧道异常 (HTTP $code), 重启 sing-box 尝试恢复..."
         systemctl restart ax-singbox.service 2>/dev/null
         sleep 5
-        code=$(curl -s --max-time 6 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
+        code=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
         [[ "$code" == "204" ]] && return 0
     fi
     return 1
