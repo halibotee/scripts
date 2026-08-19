@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.87"
+SCRIPT_VERSION="0.8.88"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1346,6 +1346,12 @@ domain:grok.x.ai
 domain:accounts.google.com
 domain:oauth2.googleapis.com
 #domain:google.com
+# Gemini 强制走 WARP (VPS IP 被屏蔽):
+domain:gemini.google.com
+domain:bard.google.com
+domain:gemini.gstatic.com
+domain:ssl.gstatic.com
+domain:www.googletagmanager.com
 #domain:youtube.com
 #domain:openai.com
 EOF
