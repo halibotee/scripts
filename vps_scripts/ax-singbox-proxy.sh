@@ -2196,6 +2196,8 @@ WantedBy=multi-user.target"
         need_reload=true
     fi
 
+    mkdir -p "$AX_CERT_DIR" >/dev/null 2>&1 || true
+
     # 创建初始 Sing-box 配置
     if create_initial_singbox_config; then
         need_reload=true
