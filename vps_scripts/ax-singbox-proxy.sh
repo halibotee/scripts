@@ -489,6 +489,17 @@ check_and_install_core_programs() {
     local kcp_ok=true; [[ ! -f "$KCP_INSTALL_DIR/kcptun_server" ]] && { kcp_ok=false; need_download=true; }
     local udp_ok=true; [[ ! -f "$UDP2RAW_INSTALL_DIR/udp2raw" ]] && { udp_ok=false; need_download=true; }
     local singbox_ok=true; [[ ! -f "$SINGBOX_INSTALL_DIR/sing-box" ]] && { singbox_ok=false; need_download=true; }
+    local sb_pkg_ok=false
+    if [[ "$singbox_ok" == true ]]; then
+        sb_pkg_ok=true
+    elif _is_pkg_installed sing-box >/dev/null 2>&1; then
+        sb_pkg_ok=true
+    elif [[ -x "$(command -v sing-box 2>/dev/null || true)" ]]; then
+        sb_pkg_ok=true
+    fi
+    if [[ "$sb_pkg_ok" == true ]]; then
+        [[ "$singbox_ok" == true ]] || singbox_ok=true
+    fi
     
     if [[ "$need_download" == false ]]; then
         green "✓ 所有核心程序已就绪"
@@ -506,7 +517,10 @@ check_and_install_core_programs() {
     
     if [[ "$singbox_ok" == false ]]; then
         cyan "  » 下载 Sing-box"
-        download_singbox_binary || { red "✗ Sing-box 下载失败"; return 1; }
+        if ! download_singbox_binary; then
+            yellow "    ⚠ Sing-box GitHub 下载失败，尝试系统包安装..."
+            _install_singbox_package || { red "✗ Sing-box 安装失败"; return 1; }
+        fi
         green "    ✓ Sing-box 安装完成"
     fi
     
@@ -569,6 +583,50 @@ download_with_retry(){
     done
     red "下载失败超过 $retries 次，请检查网络。" >&2
     return 1
+}
+
+# -----------------------------------------------------------------------------
+# Debian/Ubuntu apt 安装 Sing-box (作为 GitHub 下载失败后的稳定 fallback)
+# -----------------------------------------------------------------------------
+_install_singbox_package() {
+    if ! command -v apt-get &>/dev/null; then
+        red "Sing-box 安装失败：当前系统不支持 apt-get" >&2
+        return 1
+    fi
+    if ! _is_pkg_installed sing-box >/dev/null 2>&1; then
+        yellow "开始安装 sing-box 系统包..." >&2
+        if ! apt-get update >/dev/null 2>&1; then
+            red "apt-get update 失败" >&2
+            return 1
+        fi
+        if ! apt-get install -y sing-box >/dev/null 2>&1; then
+            red "apt-get install -y sing-box 失败" >&2
+            return 1
+        fi
+    fi
+    local pkg_bin
+    pkg_bin=$(command -v sing-box 2>/dev/null || true)
+    if [[ -z "$pkg_bin" ]]; then
+        red "未找到 sing-box 可执行文件" >&2
+        return 1
+    fi
+    mkdir -p "$SINGBOX_INSTALL_DIR"
+    cp -f "$pkg_bin" "$SINGBOX_INSTALL_DIR/sing-box" >/dev/null 2>&1 || {
+        ln -sf "$pkg_bin" "$SINGBOX_INSTALL_DIR/sing-box" >/dev/null 2>&1 || {
+            red "无法同步 sing-box 到 $SINGBOX_INSTALL_DIR" >&2; return 1; }
+    }
+    chmod +x "$SINGBOX_INSTALL_DIR/sing-box"
+    echo "apt" > "$SINGBOX_INSTALL_DIR/version.txt"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# 轻量包状态检查
+# -----------------------------------------------------------------------------
+_is_pkg_installed() {
+    local pkg=$1
+    [[ -f /var/lib/dpkg/status ]] || return 1
+    awk -v p="$pkg" 'BEGIN{state=""} $1=="Package" && $2==p {state="found"} $1=="/^Status:/" && state=="found" && ($0 ~ /ok installed/ || $0 ~ /half-installed/ || $0 ~ /unpacked/) {print "ok"; exit} $1=="/^Package:/" && state=="found" {state=""}' /var/lib/dpkg/status | grep -q "ok"
 }
 
 # -----------------------------------------------------------------------------
@@ -696,6 +754,7 @@ hash_file() {
 # 参数: $1=原始字符串, 输出到 stdout
 # -----------------------------------------------------------------------------
 json_escape() {
+    [[ $# -lt 1 ]] && { printf ''; return; }
     printf '%s' "$1" | sed 's/["\]/\\&/g'
 }
 
@@ -824,6 +883,9 @@ handle_password_input() {
     # 保存密码到文件并设置权限
     echo "$password" > "$pass_file"
     chmod 600 "$pass_file"
+    if [[ "$service_type" != "shadowsocks" ]]; then
+        green "已保存密码到: $pass_file" >&2
+    fi
     echo "$password"
 }
 
@@ -1847,7 +1909,7 @@ download_singbox_binary(){
         singbox_sha="$AX_SINGBOX_SHA256"
     fi
     
-    if [[ "$singbox_latest" != "$singbox_current" ]]; then
+    if [[ "$singbox_latest" != "$singbox_current" || ! -x "$SINGBOX_INSTALL_DIR/sing-box" ]]; then
         log "发现 Sing-box 新版本: $singbox_latest (当前: ${singbox_current:-未知})"
         log "下载 Sing-box ($singbox_latest)..."
         local singbox_ver="${singbox_latest#v}"
@@ -1883,6 +1945,13 @@ download_singbox_binary(){
     else
         green "Sing-box 已是最新版本 ($singbox_latest)"
     fi
+    [[ -x "$SINGBOX_INSTALL_DIR/sing-box" ]] && "$SINGBOX_INSTALL_DIR/sing-box" version >/dev/null 2>&1 || {
+        red "Sing-box 可执行文件校验失败，重新安装..." >&2
+        rm -f "$SINGBOX_INSTALL_DIR/sing-box"
+        if ! download_singbox_binary; then
+            _install_singbox_package || { red "✗ Sing-box 安装失败"; return 1; }
+        fi
+    }
 }
 
 # =============================================================================
