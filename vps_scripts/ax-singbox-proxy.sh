@@ -13,11 +13,18 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.88"
+SCRIPT_VERSION="0.8.89"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
 set -uo pipefail
+
+# bash 4+ 必需检查: 关联数组 / 大小写转换
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "[FATAL] 需要 bash >= 4.0, 当前为 $BASH_VERSION" >&2
+    echo "        CentOS 7+ / Ubuntu 16.04+ / Debian 9+ 默认 bash 满足; macOS 系统 bash 3.2 不支持, 请 brew install bash" >&2
+    exit 1
+fi
 
 # 版本自增: 脚本内调用 bump_version [patch|minor|major]
 # 或 CLI: bash ax-singbox-proxy.sh --bump-version=patch|minor|major
@@ -81,12 +88,12 @@ case "$release" in
 "Ubuntu"|"Debian") ;;
 esac
 cpujg(){
-case $(uname -m) in
-aarch64) cpu=arm64;;
-x86_64) cpu=amd64;;
-*) red "目前脚本不支持$(uname -m)架构" && exit 1;;
-esac
+    # 统一来源: 与 get_kcptun_arch 保持一致, 任何架构调整只改一处
+    cpu=$(get_kcptun_arch) || { red "目前脚本不支持 $(uname -m) 架构" >&2; exit 1; }
 }
+
+# 注: udp2raw/sing-box 的二进制后缀与 KCPTUN 一致 (amd64/arm64/arm/mipsle/...),
+# 因此 get_kcptun_arch 既是 KCPTUN 后缀, 也是 sing-box/udp2raw 后缀.
 
 AX_TCP_BRUTAL_AVAILABLE=false
 
@@ -591,6 +598,39 @@ is_elf_binary() {
 }
 
 # -----------------------------------------------------------------------------
+# 计算文件 SHA256, 与期望值比对 (大小写无关). 失败时输出实际值便于诊断.
+# 参数: $1=文件, $2=期望 SHA256 (空字符串则跳过校验, 仅警告)
+# -----------------------------------------------------------------------------
+verify_sha256() {
+    local file=$1 expected=$2 actual
+    [[ -f "$file" ]] || { red "SHA256: 文件不存在 ($file)" >&2; return 1; }
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        yellow "SHA256: sha256sum 不可用, 跳过校验" >&2
+        return 0
+    fi
+    actual=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
+    if [[ -z "$actual" ]]; then
+        red "SHA256: 计算失败 ($file)" >&2
+        return 1
+    fi
+    if [[ -z "$expected" ]]; then
+        yellow "SHA256: 未提供期望值, 仅记录 ($actual)" >&2
+        return 0
+    fi
+    # bash 3.2 不支持 ${var,,}, 用 tr 兼容
+    local _actual_lc _expected_lc
+    _actual_lc=$(printf '%s' "$actual" | tr 'A-Z' 'a-z')
+    _expected_lc=$(printf '%s' "$expected" | tr 'A-Z' 'a-z')
+    if [[ "$_actual_lc" != "$_expected_lc" ]]; then
+        red "SHA256 校验失败: $file" >&2
+        red "  期望: $expected" >&2
+        red "  实际: $actual" >&2
+        return 1
+    fi
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # 校验辅助脚本首行为 shebang, 拒绝下载到非脚本内容
 # -----------------------------------------------------------------------------
 is_shell_script() {
@@ -735,9 +775,11 @@ handle_password_input() {
         hysteria2) mkdir -p "$SINGBOX_INSTALL_DIR"; pass_file="$SINGBOX_INSTALL_DIR/last_hy2_pass.txt" ;;
     esac
     
-    # 读取上次保存的密码 (如果存在)
-    if [[ -f "$pass_file" ]]; then last_pass=$(cat "$pass_file"); fi
-    local display_pass=${last_pass:-"无"}
+    # 读取上次保存的密码 (如果存在) - 仅用于检测是否存在, 不显示明文
+    local has_prev=0
+    [[ -s "$pass_file" ]] && has_prev=1
+    local prev_hint="无"
+    (( has_prev )) && prev_hint="已保存"
     local prompt_text="请输入密码"
 
     # 为 SS-2022 提供特定提示
@@ -746,7 +788,10 @@ handle_password_input() {
          prompt_text="请输入 Base64 密钥"
     fi
 
-    read -p "${prompt_text} (原有: ${display_pass}, 回车自动生成): " password
+    # -s 关闭回显; 先 echo 提示 (因为 -s 同时抑制回显与提示, 需分两步)
+    echo -n "${prompt_text} (${prev_hint}, 回车自动生成): " >&2
+    read -rs password
+    echo >&2  # 换行, 因 -s 不自动换行
 
     if [[ -z "$password" ]]; then
         # 用户未输入，使用自动生成逻辑
@@ -793,7 +838,7 @@ handle_password_input() {
 collect_udp2raw_params() {
     # raw_mode 白名单校验
     while true; do
-        read -p "raw_mode [faketcp/udp/icmp] (默认 faketcp): " raw_mode >&2
+        read -rp "raw_mode [faketcp/udp/icmp] (默认 faketcp): " raw_mode >&2
         raw_mode=${raw_mode:-faketcp}
         [[ "$raw_mode" =~ ^(faketcp|udp|icmp)$ ]] && break
         red "raw_mode 必须是 faketcp/udp/icmp 之一！" >&2
@@ -801,7 +846,7 @@ collect_udp2raw_params() {
 
     # cipher_mode 白名单校验
     while true; do
-        read -p "cipher_mode [aes128cbc/xor/none] (默认 aes128cbc): " cipher_mode >&2
+        read -rp "cipher_mode [aes128cbc/xor/none] (默认 aes128cbc): " cipher_mode >&2
         cipher_mode=${cipher_mode:-aes128cbc}
         [[ "$cipher_mode" =~ ^(aes128cbc|xor|none)$ ]] && break
         red "cipher_mode 必须是 aes128cbc/xor/none 之一！" >&2
@@ -809,7 +854,7 @@ collect_udp2raw_params() {
 
     # auth_mode 白名单校验
     while true; do
-        read -p "auth_mode [hmac_sha1/simple/md5] (默认 hmac_sha1): " auth_mode >&2
+        read -rp "auth_mode [hmac_sha1/simple/md5] (默认 hmac_sha1): " auth_mode >&2
         auth_mode=${auth_mode:-hmac_sha1}
         [[ "$auth_mode" =~ ^(hmac_sha1|simple|md5)$ ]] && break
         red "auth_mode 必须是 hmac_sha1/simple/md5 之一！" >&2
@@ -834,28 +879,28 @@ _validate_num_range() {
 collect_kcptun_params() {
     # MTU 校验 (200-1500, 默认 1350 对齐 ax.sh/ax1.sh 服务端)
     while true; do
-        read -p "MTU (默认 1350, 范围 200-1500): " mtu >&2
+        read -rp "MTU (默认 1350, 范围 200-1500): " mtu >&2
         mtu=${mtu:-1350}
         _validate_num_range "$mtu" 200 1500 "MTU" && break
     done
 
     # sndwnd 校验 (16-65535)
     while true; do
-        read -p "sndwnd (默认 2048, 范围 16-65535): " sndwnd >&2
+        read -rp "sndwnd (默认 2048, 范围 16-65535): " sndwnd >&2
         sndwnd=${sndwnd:-2048}
         _validate_num_range "$sndwnd" 16 65535 "sndwnd" && break
     done
 
     # rcvwnd 校验 (16-65535)
     while true; do
-        read -p "rcvwnd (默认 2048, 范围 16-65535): " rcvwnd >&2
+        read -rp "rcvwnd (默认 2048, 范围 16-65535): " rcvwnd >&2
         rcvwnd=${rcvwnd:-2048}
         _validate_num_range "$rcvwnd" 16 65535 "rcvwnd" && break
     done
 
     # mode 白名单
     while true; do
-        read -p "mode [fast/fast2/fast3/normal/manual] (默认 $KCPTUN_DEFAULT_MODE): " mode >&2
+        read -rp "mode [fast/fast2/fast3/normal/manual] (默认 $KCPTUN_DEFAULT_MODE): " mode >&2
         mode=${mode:-$KCPTUN_DEFAULT_MODE}
         [[ "$mode" =~ ^(fast|fast2|fast3|normal|manual)$ ]] && break
         red "mode 必须是 fast/fast2/fast3/normal/manual 之一！" >&2
@@ -863,7 +908,7 @@ collect_kcptun_params() {
 
     # crypt 白名单
     while true; do
-        read -p "crypt [aes-128/aes-192/aes-256] (默认 aes-128): " crypt >&2
+        read -rp "crypt [aes-128/aes-192/aes-256] (默认 aes-128): " crypt >&2
         crypt=${crypt:-aes-128}
         [[ "$crypt" =~ ^(aes-128|aes-192|aes-256)$ ]] && break
         red "crypt 必须是 aes-128/aes-192/aes-256 之一！" >&2
@@ -871,7 +916,7 @@ collect_kcptun_params() {
 
     # tcp_enabled 白名单
     while true; do
-        read -p "tcp [true/false] (默认 false): " tcp_enabled >&2
+        read -rp "tcp [true/false] (默认 false): " tcp_enabled >&2
         tcp_enabled=${tcp_enabled:-false}
         [[ "$tcp_enabled" =~ ^(true|false)$ ]] && break
         red "tcp 必须是 true/false 之一！" >&2
@@ -1108,14 +1153,18 @@ check_warp_tunnel() {
 apply_warp_config_to_file() {
     local wg_ep=$1 route_rules=$2 config_file="$SINGBOX_INSTALL_DIR/singbox.json"
     local list_file="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
-    local tmpfile ep_tmp rules_tmp
+    local tmpfile ep_tmp rules_tmp py_err
     tmpfile=$(umask 077 && mktemp) || return 1
     ep_tmp=$(umask 077 && mktemp) || { rm -f "$tmpfile"; return 1; }
     rules_tmp=$(umask 077 && mktemp) || { rm -f "$tmpfile" "$ep_tmp"; return 1; }
+    # 任何退出路径清理三个临时文件
+    trap 'rm -f "$tmpfile" "$ep_tmp" "$rules_tmp" "$py_errfile"' RETURN
     printf '%s\n' "$wg_ep" > "$ep_tmp"
     printf '%s\n' "$route_rules" > "$rules_tmp"
     # 合并规则 (基础规则 + 用户列表中的规则集, 全部走 warp-ep)
-    if ! python3 - "$ep_tmp" "$rules_tmp" "$list_file" "$config_file" "$tmpfile" <<'PYEOF' 2>/dev/null
+    local py_errfile
+    py_errfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    if ! python3 - "$ep_tmp" "$rules_tmp" "$list_file" "$config_file" "$tmpfile" <<'PYEOF' 2>"$py_errfile"
 import json, os, sys
 ep_tmp, rules_tmp, list_file, config_file, tmpfile = sys.argv[1:]
 cfg = json.load(open(config_file))
@@ -1155,6 +1204,7 @@ for name in extra_names:
         else:
             extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
     # Gemini/Bard 强制走 WARP（绕过 geosite-google 规则集下载不及时的问题）
+    extra_rules.insert(0, {'action': 'route', 'domain_suffix': ['gemini.google.com', 'bard.google.com', 'gemini.gstatic.com', 'ssl.gstatic.com', 'www.googletagmanager.com'], 'outbound': 'warp-ep'})
     cfg['route']['rules'] = base + warp_direct_rules + warp_ip_rule + extra_rules
 cfg['route']['rule_set'] = ruleset
 if 'final' in cfg.get('route', {}):
@@ -1165,11 +1215,19 @@ if not any(i.get('tag') == 'mixed-in' for i in cfg.get('inbounds', [])):
 json.dump(cfg, open(tmpfile, 'w'), indent=2)
 PYEOF
     then
-        rm -f "$tmpfile" "$ep_tmp" "$rules_tmp"; return 1
+        red "WARP 配置合并失败" >&2
+        [[ -s "$py_errfile" ]] && yellow "  Python: $(cat "$py_errfile")" >&2
+        return 1
     fi
     rm -f "$ep_tmp" "$rules_tmp"
-    if ! python3 -c "import json; json.load(open('$tmpfile'))" 2>/dev/null; then
-        rm -f "$tmpfile"; return 1
+    local verify_errfile
+    verify_errfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    trap 'rm -f "$tmpfile" "$ep_tmp" "$rules_tmp" "$py_errfile" "$verify_errfile"' RETURN
+    if ! python3 -c "import json; json.load(open('$tmpfile'))" 2>"$verify_errfile"; then
+        rm -f "$tmpfile"
+        red "WARP 配置合并输出不是合法 JSON" >&2
+        [[ -s "$verify_errfile" ]] && yellow "  Python: $(cat "$verify_errfile")" >&2
+        return 1
     fi
     mv "$tmpfile" "$config_file"
     ensure_fscarmen_base_blocks "$config_file"
@@ -1234,7 +1292,11 @@ disable_warp_in_config() {
     if ! warp_enabled; then
         yellow "WARP 未启用，无需操作。"; return 0
     fi
-    local tmpfile; tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    local tmpfile _errfile
+    tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    _errfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
+    # trap 确保异常路径清理两个临时文件
+    trap 'rm -f "$tmpfile" "$_errfile"' RETURN
     if ! python3 -c "
 import json
 cfg = json.load(open('$config_file'))
@@ -1245,8 +1307,10 @@ if 'final' in cfg.get('route', {}):
 cfg['route'].pop('rule_set', None)
 cfg['inbounds'] = [i for i in cfg.get('inbounds', []) if i.get('tag') != 'mixed-in']
 json.dump(cfg, open('$tmpfile','w'), indent=2)
-" 2>/dev/null; then
-        rm -f "$tmpfile"; red "移除失败。" >&2; return 1
+" 2>"$_errfile"; then
+        red "移除失败。" >&2
+        [[ -s "$_errfile" ]] && yellow "  Python: $(cat "$_errfile")" >&2
+        return 1
     fi
     mv "$tmpfile" "$config_file"
     green "✓ WARP 已禁用"
@@ -1398,33 +1462,54 @@ change_warp_account_register() {
 }
 
 change_warp_account_manual() {
-    local addr6 priv r_input r1 r2 r3
+    local addr6 priv r_input r1 r2 r3 ok parts_arr v tmpfile jq_prog _err
     while true; do
-        read -p "请输入 WARP IPv6 地址: " addr6
-        [[ "$addr6" =~ : ]] && break
-        red "格式错误, 需含冒号的 IPv6 地址"
+        read -rp "请输入 WARP IPv6 地址: " addr6
+        # 必须含 ":" 且无引号/反斜杠, 避免 JSON 拼接注入
+        if [[ "$addr6" == *:* && "$addr6" != *'"'* && "$addr6" != *'\\'* ]]; then
+            break
+        fi
+        red "格式错误, 需含冒号的 IPv6 地址且不含引号/反斜杠"
     done
     while true; do
-        read -p "请输入 WARP Private Key: " priv
+        read -rp "请输入 WARP Private Key: " priv
         [[ "$priv" =~ ^[A-Za-z0-9+/_-]{43}=$ ]] && break
         red "格式错误, 请输入 43 位 base64 密钥且以 = 结尾"
     done
-    read -p "请输入 WARP reserved (格式: 123,456,789): " r_input
-    until [[ "$r_input" =~ ([0-9]+)[^0-9]*([0-9]+)[^0-9]*([0-9]+) ]]; do
-        red "reserved 格式错误, 请输入 3 个数字"
-        read -p "请输入 WARP reserved (格式: 123,456,789): " r_input
+    # reserved: 3 个 0-255 字节, 用 IFS 拆分避免正则贪婪边界歧义
+    while true; do
+        read -rp "请输入 WARP reserved (格式: 123,456,789, 范围 0-255): " r_input
+        ok=1
+        local IFS=','
+        parts_arr=($r_input)
+        if (( ${#parts_arr[@]} != 3 )); then ok=0; fi
+        if (( ok )); then
+            for v in "${parts_arr[@]}"; do
+                if ! [[ "$v" =~ ^[0-9]+$ ]] || (( v < 0 || v > 255 )); then ok=0; break; fi
+            done
+        fi
+        if (( ok )); then
+            r1="${parts_arr[0]}"; r2="${parts_arr[1]}"; r3="${parts_arr[2]}"
+            break
+        fi
+        red "reserved 格式错误, 请输入 3 个 0-255 数字 (逗号分隔)"
     done
-    r1="${BASH_REMATCH[1]}"; r2="${BASH_REMATCH[2]}"; r3="${BASH_REMATCH[3]}"
-    cat > "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" <<EOF
-{
-    "private_key": "$priv",
-    "address_v4": "172.16.0.2/32",
-    "address_v6": "$addr6",
-    "reserved": [$r1, $r2, $r3],
-    "peer_address": "engage.cloudflareclient.com"
-}
-EOF
-    chmod 600 "$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
+    # jq 表达式写到独立文件, 避免命令替换内嵌套 heredoc 在 bash 3.2 下被误解析
+    jq_prog=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$jq_prog"; return 1; }
+    trap 'rm -f "$tmpfile" "$jq_prog"' RETURN
+    cat > "$jq_prog" <<'JSONEOF'
+{private_key: $priv, address_v4: "172.16.0.2/32", address_v6: $addr6, reserved: [$r1, $r2, $r3], peer_address: "engage.cloudflareclient.com"}
+JSONEOF
+    if ! _err=$(jq -n --arg priv "$priv" --arg addr6 "$addr6" \
+            --argjson r1 "$r1" --argjson r2 "$r2" --argjson r3 "$r3" -f "$jq_prog" \
+            > "$tmpfile" 2>&1); then
+        red "JSON 生成失败" >&2
+        [[ -n "$_err" ]] && yellow "  jq: $_err" >&2
+        return 1
+    fi
+    install -m 600 "$tmpfile" "$SINGBOX_INSTALL_DIR/.warp_wireguard.json" || {
+        red "无法写入密钥文件" >&2; return 1; }
     change_warp_account_apply
 }
 
@@ -1435,7 +1520,7 @@ change_warp_account_menu() {
         echo " 2. 手动输入信息"
         echo " 3. IP优选 (更换出口IP)"
         echo " 0. 返回"
-        read -p "请选择: " wc
+        read -rp "请选择: " wc
         case "$wc" in
             1) change_warp_account_register; read -p $'\n按任意键返回...' -n1 -s ;;
             2) change_warp_account_manual; read -p $'\n按任意键返回...' -n1 -s ;;
@@ -1573,7 +1658,7 @@ warp_management_menu() {
         echo " 3) 更换 WARP 账户"
         if $global; then echo " 4) 关闭全局 WARP (回到智能分流)"; else echo " 4) 启用全局 WARP"; fi
         echo " 0) 返回"
-        read -p "请选择: " warp_choice
+        read -rp "请选择: " warp_choice
         case "$warp_choice" in
             1)
                 if $global || $cfg_enabled; then
@@ -1660,6 +1745,42 @@ get_latest_github_tag() {
 }
 
 # -----------------------------------------------------------------------------
+# 二进制供应链 SHA256 校验
+#   优先级: 环境变量 AX_KCP_SHA256 / AX_UDP2RAW_SHA256 / AX_SINGBOX_SHA256 >
+#            缓存文件 ($DIR/.sha256) > 首次运行时从同源 .sha256 自动下载
+#   升级 SHA 时只需更新环境变量或缓存文件
+# -----------------------------------------------------------------------------
+KCP_SHA256_URL="https://raw.githubusercontent.com/halibotee/scripts/main/package/kcptun_server.sha256"
+UDP2RAW_SHA256_URL="https://raw.githubusercontent.com/halibotee/scripts/main/package/udp2raw_binaries.tar.gz.sha256"
+
+# 解析并返回期望 SHA256: 优先缓存, 其次环境变量, 最后拉取 (仅一次, 不在每次启动都下载)
+# 参数: $1=缓存文件路径, $2=环境变量名, $3=同源 .sha256 URL
+resolve_expected_sha() {
+    local cache_file=$1 env_name=$2 url=$3 cached env_val
+    if [[ -s "$cache_file" ]]; then
+        cached=$(<"$cache_file")
+        if [[ "$cached" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            printf '%s' "$cached"
+            return 0
+        fi
+    fi
+    env_val=$(printenv "$env_name" 2>/dev/null || true)
+    if [[ "$env_val" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        printf '%s' "$env_val"
+        return 0
+    fi
+    # 首次安装: 尝试拉取同源 .sha256, 失败也不阻塞 (降级为只 ELF 校验)
+    local fetched
+    fetched=$(curl -fsSL --connect-timeout 5 --max-time 15 "$url" 2>/dev/null | awk '{print $1}' | head -1)
+    if [[ "$fetched" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        printf '%s' "$fetched" > "$cache_file"
+        printf '%s' "$fetched"
+        return 0
+    fi
+    return 1
+}
+
+# -----------------------------------------------------------------------------
 # 下载并安装 KCPTUN 和 UDP2RAW 二进制文件
 # -----------------------------------------------------------------------------
 download_kcp_udp_binaries(){
@@ -1674,9 +1795,14 @@ download_kcp_udp_binaries(){
     # KCPTUN - 只有版本不匹配或文件缺失才下载
     if [[ "$kcp_current" != "$fixed_version_kcp" || ! -f "$KCP_INSTALL_DIR/kcptun_server" ]]; then
         log "下载 KCPTUN (kcptun_server)..."
+        local kcp_sha=""
+        resolve_expected_sha "$KCP_INSTALL_DIR/.kcp_sha256" "AX_KCP_SHA256" "$KCP_SHA256_URL" > /tmp/ax-kcp.expected 2>/dev/null
+        [[ -s /tmp/ax-kcp.expected ]] && kcp_sha=$(< /tmp/ax-kcp.expected)
+        rm -f /tmp/ax-kcp.expected
         download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/kcptun_server" "$KCP_INSTALL_DIR/kcptun_server" && \
         chmod +x "$KCP_INSTALL_DIR/kcptun_server" && \
         is_elf_binary "$KCP_INSTALL_DIR/kcptun_server" && \
+        verify_sha256 "$KCP_INSTALL_DIR/kcptun_server" "$kcp_sha" && \
         echo "$fixed_version_kcp" > "$KCP_INSTALL_DIR/version.txt" || { rm -f "$KCP_INSTALL_DIR/kcptun_server"; red "KCPTUN 下载失败。"; return 1; }
     else
         green "KCPTUN 已是最新版本 ($kcp_current)"
@@ -1686,13 +1812,18 @@ download_kcp_udp_binaries(){
     if [[ "$udp_current" != "$fixed_version_udp" || ! -f "$UDP2RAW_INSTALL_DIR/udp2raw" ]]; then
         log "下载 UDP2RAW (udp2raw_binaries.tar.gz)..."
         local udp2raw_tmp; udp2raw_tmp=$(umask 077 && mktemp) || { red "创建临时文件失败"; return 1; }
+        trap 'rm -f "$udp2raw_tmp"' RETURN
+        local udp_sha=""
+        resolve_expected_sha "$UDP2RAW_INSTALL_DIR/.udp2raw_sha256" "AX_UDP2RAW_SHA256" "$UDP2RAW_SHA256_URL" > /tmp/ax-udp.expected 2>/dev/null
+        [[ -s /tmp/ax-udp.expected ]] && udp_sha=$(< /tmp/ax-udp.expected)
+        rm -f /tmp/ax-udp.expected
         download_with_retry "https://raw.githubusercontent.com/halibotee/scripts/main/package/udp2raw_binaries.tar.gz" "$udp2raw_tmp" && \
+        verify_sha256 "$udp2raw_tmp" "$udp_sha" && \
         tar -xzf "$udp2raw_tmp" -C "$UDP2RAW_INSTALL_DIR" "udp2raw_${cpu}" && \
         is_elf_binary "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" && \
         mv "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw" && \
         chmod +x "$UDP2RAW_INSTALL_DIR/udp2raw" && \
         echo "$fixed_version_udp" > "$UDP2RAW_INSTALL_DIR/version.txt" || { rm -f "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw" "$udp2raw_tmp"; red "UDP2RAW 下载失败。"; return 1; }
-        rm -f "$udp2raw_tmp"
     else
         green "UDP2RAW 已是最新版本 ($udp_current)"
     fi
@@ -1708,6 +1839,14 @@ download_singbox_binary(){
     mkdir -p "$SINGBOX_INSTALL_DIR"
     local singbox_current=$(cat "$SINGBOX_INSTALL_DIR/version.txt" 2>/dev/null)
     
+    # 优先从缓存或环境变量读取 SHA256; 否则从官方 sha256sum.txt 解析该版本的条目
+    local singbox_sha=""
+    if [[ -s "$SINGBOX_INSTALL_DIR/.singbox_sha256" ]]; then
+        singbox_sha=$(<"$SINGBOX_INSTALL_DIR/.singbox_sha256")
+    elif [[ -n "${AX_SINGBOX_SHA256:-}" ]] && [[ "${AX_SINGBOX_SHA256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        singbox_sha="$AX_SINGBOX_SHA256"
+    fi
+    
     if [[ "$singbox_latest" != "$singbox_current" ]]; then
         log "发现 Sing-box 新版本: $singbox_latest (当前: ${singbox_current:-未知})"
         log "下载 Sing-box ($singbox_latest)..."
@@ -1720,6 +1859,22 @@ download_singbox_binary(){
             singbox_url="$GITHUB_URL/$SINGBOX_REPO/releases/download/${singbox_latest}/sing-box-${singbox_latest}-linux-${cpu}.tar.gz"
             download_with_retry "$singbox_url" "$singbox_tmp" || { rm -f "$singbox_tmp"; rm -rf "$extract_dir"; red "Sing-box 下载失败。"; return 1; }
         }
+        # 首次安装: 尝试从官方 sha256sum.txt 拉取该版本的 SHA 缓存到本地
+        if [[ -z "$singbox_sha" ]]; then
+            local _sb_sum
+            _sb_sum=$(curl -fsSL --connect-timeout 5 --max-time 15 \
+                "$GITHUB_URL/$SINGBOX_REPO/releases/download/${singbox_latest}/sha256sum.txt" 2>/dev/null)
+            if [[ -n "$_sb_sum" ]]; then
+                # 匹配形如 "<hash>  sing-box-1.10.0-linux-amd64.tar.gz"
+                local _archive_name="sing-box-${singbox_ver}-linux-${cpu}.tar.gz"
+                singbox_sha=$(echo "$_sb_sum" | awk -v n="$_archive_name" '$2==n{print $1; exit}')
+                [[ -z "$singbox_sha" ]] && singbox_sha=$(echo "$_sb_sum" | awk -v n="$_archive_name" 'tolower($2)==tolower(n){print $1; exit}')
+            fi
+            if [[ "$singbox_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+                printf '%s' "$singbox_sha" > "$SINGBOX_INSTALL_DIR/.singbox_sha256"
+            fi
+        fi
+        verify_sha256 "$singbox_tmp" "$singbox_sha" && \
         tar -xzf "$singbox_tmp" -C "$extract_dir" && \
         cp "$extract_dir/sing-box-${singbox_ver}-linux-${cpu}/sing-box" "$SINGBOX_INSTALL_DIR/sing-box" && \
         chmod +x "$SINGBOX_INSTALL_DIR/sing-box" && \
@@ -1856,27 +2011,36 @@ create_initial_singbox_config() {
 safe_hot_reload_singbox() {
     local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
     [[ ! -f "$config_file" ]] && return 1
-    local backup="${config_file}.hotbak.$(date +%s)"
+    # $$ 防止同秒并发命名冲突; trap RETURN 任何路径都清理
+    local backup="${config_file}.hotbak.$$.$(date +%s)"
     cp -p "$config_file" "$backup" 2>/dev/null
+    trap 'cleanup_hot_baks "$config_file"; rm -f "$backup"' RETURN
     if ! "$SINGBOX_INSTALL_DIR/sing-box" check -c "$config_file" >/dev/null 2>&1; then
-        rm -f "$backup"
         red "配置校验失败, 跳过热更。" >&2
         return 1
     fi
     if ! systemctl reload ax-singbox.service 2>/dev/null; then
-        [[ -f "$backup" ]] && cp "$backup" "$config_file" && rm -f "$backup"
+        cp "$backup" "$config_file" 2>/dev/null
         systemctl restart ax-singbox.service 2>/dev/null
         return 1
     fi
     sleep 1
-    local pid_after=$(systemctl show -p MainPID ax-singbox.service 2>/dev/null | awk -F= '{print $2}')
+    local pid_after
+    pid_after=$(systemctl show -p MainPID ax-singbox.service 2>/dev/null | awk -F= '{print $2}')
     if [[ -n "$pid_after" && "$pid_after" != "0" ]]; then
+        cleanup_hot_baks "$config_file"
         rm -f "$backup"
         return 0
     fi
-    [[ -f "$backup" ]] && cp "$backup" "$config_file" && rm -f "$backup"
+    cp "$backup" "$config_file" 2>/dev/null
     systemctl restart ax-singbox.service 2>/dev/null
     return 1
+}
+
+# 仅保留最新 3 个历史 backup, 与 safe_add_singbox_inbound 的 .bak.* 策略对齐
+cleanup_hot_baks() {
+    local config_file="$1"
+    ls -1t "${config_file}.hotbak."* 2>/dev/null | tail -n +4 | xargs -r rm -f
 }
 
 # -----------------------------------------------------------------------------
@@ -1892,8 +2056,17 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=${KCP_INSTALL_DIR}/kcptun_server -c ${KCP_INSTALL_DIR}/kcptun_%i.json
+# bind 特权端口 < 1024 时需要 CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=${KCP_INSTALL_DIR}
+PrivateTmp=yes
 Restart=always
 RestartSec=3
+LimitNOFILE=infinity
 [Install]
 WantedBy=multi-user.target"
     
@@ -1910,8 +2083,14 @@ Type=simple
 ExecStart=${UDP2RAW_INSTALL_DIR}/udp2raw --conf-file ${UDP2RAW_INSTALL_DIR}/udp2raw_%i.conf
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=${UDP2RAW_INSTALL_DIR}
+PrivateTmp=yes
 Restart=always
 RestartSec=3
+LimitNOFILE=infinity
 [Install]
 WantedBy=multi-user.target"
     
@@ -1921,7 +2100,7 @@ WantedBy=multi-user.target"
 
     generate_self_signed_cert
 
-# Sing-box 服务模板 (仿 fscarmen: 健壮重启 + HUP 热重载 + NOFILE)
+# Sing-box 服务模板 (仿 fscarmen: 健壮重启 + HUP 热重载 + NOFILE + sandbox)
 local singbox_content="[Unit]
 Description=Sing-box Service
 After=network.target nss-lookup.target
@@ -1933,6 +2112,10 @@ ExecReload=/bin/kill -HUP \$MAINPID
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=${SINGBOX_INSTALL_DIR} ${AX_CERT_DIR}
+PrivateTmp=yes
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=infinity
@@ -2133,7 +2316,7 @@ prompt_server_address() {
     local existing=$(get_custom_server_addr "$key")
     local prompt_default="${existing:-$default}"
     while true; do
-        read -p "请输入域名或IP (留空则使用 ${prompt_default}): " user_addr
+        read -rp "请输入域名或IP (留空则使用 ${prompt_default}): " user_addr
         if [[ -z "$user_addr" ]]; then
             set_custom_server_addr "$key" "$prompt_default"
             green "使用地址: $prompt_default"
@@ -2291,7 +2474,7 @@ get_instance_sub_name() {
 
 prompt_custom_instance_name() {
     local type=$1 id=$2; local default_name=$(generate_instance_display_name "$type" "$id")
-    read -p "请输入实例名称 (留空则使用默认: ${default_name}): " custom_name
+    read -rp "请输入实例名称 (留空则使用默认: ${default_name}): " custom_name
     if [[ -n "$custom_name" ]]; then
         local max_suffix=0
         if [[ -f "$INSTANCE_NAMES_FILE" ]]; then
@@ -2315,7 +2498,7 @@ interactive_rename_instance() {
     local type=$1 id=$2; local key="${type}_${id}"
     local current=$(get_instance_display_name "$type" "$id")
     echo "当前名称: $(cyan "$current")"
-    read -p "请输入新名称 (留空恢复默认): " new_name
+    read -rp "请输入新名称 (留空恢复默认): " new_name
     if [[ -z "$new_name" ]]; then
         remove_custom_instance_name "$key"
         green "已恢复默认名称"
@@ -2440,7 +2623,7 @@ manage_instance_menu() {
         if [[ "$type" == "xray_reality" ]]; then cyan "订阅链接: $(generate_singbox_reality_link $id)"; fi
         if [[ "$type" == "hysteria2" ]]; then cyan "订阅链接: $(generate_singbox_hy2_link $id)"; fi
         echo "----------------------------------"; echo "1) 启动/重启此实例"; echo "2) 停止此实例"; echo "3) 查看实时日志"; echo "4) 编辑配置文件"; echo "5) 修改实例名称"; echo "6) 查看客户端配置"; echo "7) 保存客户端配置到文件"; echo "99) 彻底删除此实例"; echo "0) 返回"
-        read -p "请选择 [0-7, 99]: " choice
+        read -rp "请选择 [0-7, 99]: " choice
         case $choice in
             1) log "正在启动/重启..."; systemctl restart "$service"; sleep 1; if systemctl is-active --quiet "$service"; then green "✓ 运行正常"; else red "✗ 启动失败，请查看日志"; fi;;
             2) log "正在停止..."; systemctl stop "$service"; green "操作完成！";;
@@ -2451,7 +2634,7 @@ manage_instance_menu() {
                 ;;
             4) nano "$conf"; log "重启实例以应用配置..."; systemctl restart "$service"; sleep 1; if systemctl is-active --quiet "$service"; then green "✓ 配置已更新，运行正常"; else red "✗ 重启失败，请检查配置"; fi;;
             5) interactive_rename_instance "$type" "$id"; read -p $'\n按任意键返回...' -n1 -s;;
-            99) read -p "确认删除实例 ${id}？将删除配置、服务、密钥和订阅 [y/N]: " confirm
+            99) read -rp "确认删除实例 ${id}？将删除配置、服务、密钥和订阅 [y/N]: " confirm
                 if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                     if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then
                         local tag; case "$type" in xray_reality) tag="vless-reality-${id}";; hysteria2) tag="hy2-${id}";; esac
@@ -2528,11 +2711,11 @@ collect_common_instance_config() {
     # 收集通用配置
     declare -A replacements
     
-    read -p "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input
+    read -rp "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input
     listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
     read_valid_port "请输入监听端口 (留空则随机生成): " listen_port true
     
-    read -p "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host
+    read -rp "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host
     target_host=${target_host:-$DEFAULT_TARGET_ADDR}
     read_valid_port "请输入目标端口 (留空则随机生成): " target_port true
     
@@ -2657,7 +2840,7 @@ add_singbox_inbound() {
         read_valid_port "请输入监听端口 (留空则随机): " listen_port true
         local hy2_password=$(handle_password_input "hysteria2")
         hy2_password=$(json_escape "$hy2_password")
-        read -p "请输入 Hysteria2 端口跳跃范围 (如 10000-20000, 留空禁用): " hop_port
+        read -rp "请输入 Hysteria2 端口跳跃范围 (如 10000-20000, 留空禁用): " hop_port
         
         inbound_json=$SINGBOX_HYSTERIA2_TEMPLATE
         inbound_json=${inbound_json/__ID__/$next_id}
@@ -2728,15 +2911,20 @@ safe_add_singbox_inbound() {
         return 1
     fi
     # 预校验 inbound JSON 合法性
-    if ! echo "$inbound_json" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null; then
+    local _parse_err
+    if ! _parse_err=$(echo "$inbound_json" | python3 -c "import json,sys; json.load(sys.stdin)" 2>&1 >/dev/null); then
         red "错误: 生成的 inbound JSON 不合法，操作取消。" >&2
+        [[ -n "$_parse_err" ]] && yellow "  Python: $_parse_err" >&2
         return 1
     fi
     # 备份原文件
     local backup="${config_file}.bak.$(date +%s)"
     cp -p "$config_file" "$backup" 2>/dev/null || cp "$config_file" "$backup"
-    local tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
-    local inbound_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
+    local tmpfile inbound_tmp
+    tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    inbound_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
+    # 任何退出路径都清理临时文件
+    trap 'rm -f "$tmpfile" "$inbound_tmp"' RETURN
     printf '%s\n' "$inbound_json" > "$inbound_tmp"
     if ! python3 -c "
 import json,sys
@@ -2752,9 +2940,11 @@ json.dump(cfg, open('$tmpfile','w'), indent=2)
         return 1
     fi
     rm -f "$inbound_tmp"
-    if ! python3 -c "import json; json.load(open('$tmpfile'))" 2>/dev/null; then
+    local _verify_err
+    if ! _verify_err=$(python3 -c "import json; json.load(open('$tmpfile'))" 2>&1 >/dev/null); then
         rm -f "$tmpfile"
         red "错误: 合并输出不是合法 JSON，已回滚。" >&2
+        [[ -n "$_verify_err" ]] && yellow "  Python: $_verify_err" >&2
         return 1
     fi
     mv "$tmpfile" "$config_file"
@@ -3007,7 +3197,7 @@ select_ss_method() {
     echo "4) aes-256-gcm" >&2
     echo "5) aes-128-gcm" >&2
     echo "6) chacha20-poly1305" >&2
-    read -p "请选择加密方式 (默认 1): " ss_method_choice >&2
+    read -rp "请选择加密方式 (默认 1): " ss_method_choice >&2
     ss_method_choice=${ss_method_choice:-1}
     case $ss_method_choice in
         1) echo "2022-blake3-aes-256-gcm" ;;
@@ -3201,7 +3391,7 @@ manage_chain_instance_3() {
         $color "状态: SS [${s1_status}] + KCP [${s2_status}] + UDP2RAW [${s3_status}] $(dim "$udp2raw_info")"
 
         echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置"; echo "4) 查看 Sing-box (SS) 日志"; echo "5) 查看 KCPTUN 日志"; echo "6) 查看 UDP2RAW 日志"; echo "7) 编辑 Sing-box 配置文件"; echo "8) 编辑 KCPTUN 配置文件"; echo "9) 编辑 UDP2RAW 配置文件"; echo "10) 修改实例名称"; echo "11) 保存客户端配置到文件"; echo "99) 彻底删除此串联"; echo "0) 返回"
-        read -p "请选择 [0-11, 99]: " manage_choice
+        read -rp "请选择 [0-11, 99]: " manage_choice
         case $manage_choice in
             1) log "重启串联..."; systemctl restart ax-singbox.service "$service2_full" "$service3_full"; sleep 1; if systemctl is-active --quiet ax-singbox.service; then green "✓ 运行正常"; else red "✗ 启动失败，请查看日志"; fi;;
             2) log "停止串联..."; systemctl stop ax-singbox.service "$service2_full" "$service3_full";;
@@ -3216,7 +3406,7 @@ manage_chain_instance_3() {
             11) local out_file="$HOME/ax-ss3chain-${manage_id}-config.txt"
                 view_chain_client_config_3 "$id_num" > "$out_file" 2>&1
                 echo "" >> "$out_file"; green "已保存到: $out_file"; read -p $'\n按任意键返回...' -n1 -s;;
-            99) read -p "确认删除串联实例 ${manage_id}？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then
+            99) read -rp "确认删除串联实例 ${manage_id}？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then
                 log "删除串联...";
                 remove_singbox_inbound "ss-${manage_id}"
                 systemctl stop "$service2_full" "$service3_full" 2>/dev/null;
@@ -3337,11 +3527,11 @@ view_chain_client_config() {
 # 处理 ACME 证书或自签名证书
 setup_hysteria2_certificates() {
     cyan "--- ACME证书 配置 ---" >&2
-    read -p "是否使用 ACME 证书？[y/N] (默认否): " use_acme
+    read -rp "是否使用 ACME 证书？[y/N] (默认否): " use_acme
     use_acme=${use_acme:-n}
     local cert_path="" key_path="" sni=""
     if [[ "$use_acme" == "y" || "$use_acme" == "Y" ]]; then
-        read -p "请输入您的域名 (DNS 必须指向本机): " domain_name
+        read -rp "请输入您的域名 (DNS 必须指向本机): " domain_name
         if [[ -z "$domain_name" ]]; then
             red "域名不能为空！已取消创建。" >&2
             return 1
@@ -3410,7 +3600,7 @@ start_new_chain_instance() {
     done
     
     cyan "--- Hysteria2 配置 ---"
-    read -p "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth
+    read -rp "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth
     ignore_client_bandwidth=${ignore_client_bandwidth:-true}
     
     local hy2_password=$(generate_strong_password)
@@ -3421,7 +3611,7 @@ start_new_chain_instance() {
     local cert_info=$(setup_hysteria2_certificates) || return 1
     IFS='|' read -r cert_path key_path sni <<< "$cert_info"
     
-    read -p "请输入 Hysteria2 端口跳跃范围 (如 10000-20000, 留空禁用): " hop_port
+    read -rp "请输入 Hysteria2 端口跳跃范围 (如 10000-20000, 留空禁用): " hop_port
     
     # 创建 Hysteria2 inbound
     local hy2_inbound=$(cat <<EOF
@@ -3540,7 +3730,7 @@ manage_chain_instance() {
         $color "状态: Hysteria2 [${s1_status}] + UDP2RAW [${s2_status}] $(dim "$udp2raw_info")"
  
         echo "----------------------------------"; echo "1) 启动/重启此串联"; echo "2) 停止此串联"; echo "3) 查看客户端配置"; echo "4) 查看 ${title} 日志"; echo "5) 查看 UDP2RAW 日志"; echo "6) 编辑 Sing-box 配置文件"; echo "7) 编辑 UDP2RAW 配置文件"; echo "8) 修改实例名称"; echo "9) 保存客户端配置到文件"; echo "99) 彻底删除此串联"; echo "0) 返回"
-        read -p "请选择 [0-9, 99]: " manage_choice
+        read -rp "请选择 [0-9, 99]: " manage_choice
         case $manage_choice in
             1) log "重启串联..."; systemctl restart "$service1_full" "$service2_full"; sleep 1; if systemctl is-active --quiet "$service1_full"; then green "✓ 运行正常"; else red "✗ 启动失败，请查看日志"; fi;;
             2) log "停止串联..."; systemctl stop "$service1_full" "$service2_full";;
@@ -3559,7 +3749,7 @@ manage_chain_instance() {
             9) local out_file="$HOME/ax-hy2chain-${manage_id}-config.txt"
                 view_chain_client_config "$chain_type" "$id_num" > "$out_file" 2>&1
                 echo "" >> "$out_file"; green "已保存到: $out_file"; read -p $'\n按任意键返回...' -n1 -s;;
-            99) read -p "确认删除串联实例 ${manage_id}？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
+            99) read -rp "确认删除串联实例 ${manage_id}？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
                 if [[ "$chain_type" == "hy2" ]]; then
                     # 从 singbox.json 移除对应的 inbound
                     local tag="hy2-c${id_num}"
@@ -3602,14 +3792,14 @@ chain_manager_menu_3() {
         fi
         
         echo "----------------------------------"; echo "1) 新建实例"; echo "2) 管理已有实例"; echo "3) 查看订阅链接"; echo "0) 返回主菜单"
-        read -p "请选择: " choice
+        read -rp "请选择: " choice
         case $choice in
             1) start_new_chain_instance_3; read -p $'\n按任意键返回...' -n1 -s;;
             2) 
                 if [[ -z "$INSTANCES" ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
                 echo "$(bold "可用实例:")"
                 local ii __seq=1; for ii in $INSTANCES; do display_instance_status_line "ss_3_chain_chain" "$ii" "$__seq) "; CHAIN_MAP[$__seq]=$ii; __seq=$((__seq + 1)); done
-                read -p "请输入您想管理的实例序号: " manage_id_num
+                read -rp "请输入您想管理的实例序号: " manage_id_num
                 local mapped_id="${CHAIN_MAP[$manage_id_num]}"
                 if [[ -n "$mapped_id" ]]; then 
                     manage_chain_instance_3 "$mapped_id"
@@ -3650,13 +3840,13 @@ chain_manager_menu() {
         fi
         
         echo "----------------------------------"; echo "1) 新建实例"; echo "2) 管理已有实例"; echo "3) 查看订阅链接"; echo "0) 返回主菜单"
-        read -p "请选择: " choice
+        read -rp "请选择: " choice
         case $choice in
             1) start_new_chain_instance "$chain_type"; read -p $'\n按任意键返回...' -n1 -s;;
                 2) if [[ -z "$INSTANCES" ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
                 local _chain_display="hy2_chain"
                 echo "$(bold "可用实例:")"; local ii __seq=1; for ii in $INSTANCES; do display_instance_status_line "$_chain_display" "$ii" "$__seq) "; CHAIN_MAP[$__seq]=$ii; __seq=$((__seq + 1)); done
-                read -p "请输入您想管理的实例序号: " manage_id_num; local mapped_id="${CHAIN_MAP[$manage_id_num]}"; if [[ -n "$mapped_id" ]]; then manage_chain_instance "$chain_type" "$mapped_id"; else red "无效的实例序号！"; sleep 2; fi;;
+                read -rp "请输入您想管理的实例序号: " manage_id_num; local mapped_id="${CHAIN_MAP[$manage_id_num]}"; if [[ -n "$mapped_id" ]]; then manage_chain_instance "$chain_type" "$mapped_id"; else red "无效的实例序号！"; sleep 2; fi;;
             3) if [[ -z "$INSTANCES" ]]; then yellow "当前没有实例可供查看。"; sleep 2; continue; fi; local i; for i in $INSTANCES; do view_chain_client_config "$chain_type" $i; done; read -p $'\n按任意键返回...' -n1 -s;;
             0) break;; *) red "无效输入"; sleep 1;;
         esac
@@ -3690,7 +3880,7 @@ main_manager_loop() {
         if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then menu_options+=("3) 查看订阅链接");
         elif [[ "$type" == "udp2raw" || "$type" == "kcptun" ]]; then menu_options+=("3) 查看客户端配置"); fi
         menu_options+=("0) 返回主菜单"); for opt in "${menu_options[@]}"; do echo "$opt"; done
-        read -p "请选择: " choice
+        read -rp "请选择: " choice
         case $choice in
             1)
                 if [[ "$type_lowercase" == "udp2raw" || "$type_lowercase" == "kcptun" ]]; then
@@ -3702,7 +3892,7 @@ main_manager_loop() {
             2)
                 if [[ ${#INSTANCES[@]} -eq 0 ]]; then yellow "当前没有可管理的实例。"; sleep 2; continue; fi
                 echo "$(bold "可用实例:")"; local ii __seq=1; declare -A __MAP; for ii in "${INSTANCES[@]}"; do display_instance_status_line "$type_lowercase" "$ii" "$__seq) "; __MAP[$__seq]=$ii; __seq=$((__seq + 1)); done
-                local manage_id_num; read -p "请输入您想管理的实例序号: " manage_id_num; local mapped_id="${__MAP[$manage_id_num]-}"; if [[ -n "$mapped_id" ]]; then
+                local manage_id_num; read -rp "请输入您想管理的实例序号: " manage_id_num; local mapped_id="${__MAP[$manage_id_num]-}"; if [[ -n "$mapped_id" ]]; then
                     case "$type_lowercase" in
                         udp2raw) manage_instance_menu "udp2raw" "$mapped_id" "ax-udp2raw@${mapped_id}" "$UDP2RAW_INSTALL_DIR/udp2raw_${mapped_id}.conf" ;;
                         kcptun)  manage_instance_menu "kcptun" "$mapped_id" "ax-kcptun@${mapped_id}" "$KCP_INSTALL_DIR/kcptun_${mapped_id}.json" ;;
@@ -3720,7 +3910,7 @@ main_manager_loop() {
                     done
                 else
                     echo "$(bold "可用实例:")"; local ii __seq=1; declare -A __MAP; for ii in "${INSTANCES[@]}"; do display_instance_status_line "$type_lowercase" "$ii" "$__seq) "; __MAP[$__seq]=$ii; __seq=$((__seq + 1)); done
-                    local view_id_num; read -p "请输入您想查看的实例序号: " view_id_num; local mapped_id="${__MAP[$view_id_num]-}"; if [[ -n "$mapped_id" ]]; then
+                    local view_id_num; read -rp "请输入您想查看的实例序号: " view_id_num; local mapped_id="${__MAP[$view_id_num]-}"; if [[ -n "$mapped_id" ]]; then
                         case "$type" in
                             udp2raw) view_udp2raw_client_config "$mapped_id" ;;
                             kcptun) view_kcptun_client_config "$mapped_id" ;;
@@ -4076,7 +4266,7 @@ import_config_backup() {
 # 卸载所有 (REFACTORED: 修复软卸载路径)
 # -----------------------------------------------------------------------------
 uninstall_all() {
-    read -p "确认卸载？将删除所有程序、配置、服务，证书保留 [y/N]: " confirm
+    read -rp "确认卸载？将删除所有程序、配置、服务，证书保留 [y/N]: " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then 
         yellow "操作已取消。"
         return 1
@@ -4150,7 +4340,7 @@ import_subscription_links() {
     echo "  2) CHAIN://[hysteria2://... && udp2raw://...]#名称          (2层串联)"
     echo "  3) vless://UUID@IP:PORT?...                                   (VLESS独立)"
     echo "----------------------------------"
-    read -p "请输入完整订阅链接: " full_link
+    read -rp "请输入完整订阅链接: " full_link
     [[ -z "$full_link" ]] && { red "链接不能为空。"; read -p $'\n按任意键返回...' -n1 -s; return; }
 
     # 提取 #名称
