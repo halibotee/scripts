@@ -305,9 +305,9 @@ read -r -d '' SINGBOX_BASE_CONFIG_TEMPLATE <<'EOM'
     },
     "ntp": {
         "enabled": true,
-        "server": "pool.ntp.org",
+        "server": "time.cloudflare.com",
         "server_port": 123,
-        "interval": "60m"
+        "interval": "120m"
     },
     "experimental": {
         "cache_file": {
@@ -2027,9 +2027,9 @@ dns.setdefault('servers', [{'type': 'local', 'prefer_go': True}])
 dns['strategy'] = '$strategy'
 ntp = cfg.setdefault('ntp', {})
 ntp.setdefault('enabled', True)
-ntp.setdefault('server', 'pool.ntp.org')
+ntp.setdefault('server', 'time.cloudflare.com')
 ntp.setdefault('server_port', 123)
-ntp.setdefault('interval', '60m')
+ntp.setdefault('interval', '120m')
 exp = cfg.setdefault('experimental', {})
 exp.setdefault('cache_file', {'enabled': True, 'path': '$SINGBOX_INSTALL_DIR/cache.db'})
 exp.setdefault('clash_api', {'external_controller': '127.0.0.1:9090'})
