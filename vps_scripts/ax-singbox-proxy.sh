@@ -2004,7 +2004,6 @@ ensure_fscarmen_base_blocks() {
     [[ ! -f "$config_file" ]] && return 1
     command -v python3 >/dev/null 2>&1 || return 1
     local strategy; strategy=$(detect_dns_strategy)
-    # http_clients/default_http_client 需 sing-box >=1.14 (正式版当前为 1.13)
     local sb_version=""
     [[ -x "$SINGBOX_INSTALL_DIR/sing-box" ]] && sb_version=$("$SINGBOX_INSTALL_DIR/sing-box" version 2>/dev/null | awk '/version/{print $NF; exit}')
     local enable_http_clients="false"
@@ -2015,7 +2014,10 @@ ensure_fscarmen_base_blocks() {
             if [[ "$minor" -ge 14 ]]; then enable_http_clients="true"; fi
         fi
     fi
-    local tmpfile; tmpfile=$(umask 077 && mktemp) || return 1
+    local backup="${config_file}.bak.$(date +%s)"
+    cp -p "$config_file" "$backup" 2>/dev/null || cp "$config_file" "$backup"
+    local tmpfile; tmpfile=$(umask 077 && mktemp) || { rm -f "$backup"; return 1; }
+    trap 'rm -f "$tmpfile"' RETURN
     if ! python3 -c "
 import json, sys
 cfg = json.load(open('$config_file'))
@@ -2042,11 +2044,18 @@ if not any((r.get('action') == 'sniff') for r in rules if isinstance(r, dict)):
     rules.insert(0, {'action': 'sniff'})
 json.dump(cfg, open('$tmpfile','w'), indent=2, ensure_ascii=False)
 " 2>/dev/null; then
-        rm -f "$tmpfile"; return 1
+        rm -f "$tmpfile"
+        return 1
+    fi
+    if ! python3 -c "import json; json.load(open('$tmpfile'))" 2>/dev/null; then
+        rm -f "$tmpfile"
+        return 1
     fi
     mv "$tmpfile" "$config_file"
+    ls -1t "${config_file}.bak."* 2>/dev/null | tail -n +4 | xargs -r rm -f
     return 0
 }
+
 
 # 创建初始 Sing-box 配置
 create_initial_singbox_config() {
@@ -3031,9 +3040,12 @@ remove_singbox_inbound() {
     local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
     if [[ ! -f "$config_file" ]]; then red "配置文件不存在" >&2; return 1; fi
     if ! command -v python3 &>/dev/null; then red "错误: python3 未安装。" >&2; return 1; fi
-    local tmpfile; tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
+    local backup="${config_file}.bak.$(date +%s)"
+    cp -p "$config_file" "$backup" 2>/dev/null || cp "$config_file" "$backup"
+    local tmpfile; tmpfile=$(umask 077 && mktemp) || { rm -f "$backup"; red "无法创建临时文件" >&2; return 1; }
+    trap 'rm -f "$tmpfile"' RETURN
     if ! python3 -c "
-import json,sys
+import json
 cfg = json.load(open('$config_file'))
 cfg['inbounds'] = [i for i in cfg['inbounds'] if i.get('tag') != '$tag']
 json.dump(cfg, open('$tmpfile','w'), indent=2)
@@ -3042,10 +3054,17 @@ json.dump(cfg, open('$tmpfile','w'), indent=2)
         red "错误: 移除失败" >&2
         return 1
     fi
+    if ! python3 -c "import json; json.load(open('$tmpfile'))" 2>/dev/null; then
+        rm -f "$tmpfile"
+        red "错误: 移除后配置不是合法 JSON，已回滚。" >&2
+        return 1
+    fi
     mv "$tmpfile" "$config_file"
+    ls -1t "${config_file}.bak."* 2>/dev/null | tail -n +4 | xargs -r rm -f
     systemctl restart ax-singbox.service
     green "Inbound '$tag' 已移除。"
 }
+
 
 # =============================================================================
 # 16. 客户端配置与订阅链接生成
