@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.92"
+SCRIPT_VERSION="0.8.93"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1171,15 +1171,17 @@ test_warp_connectivity() {
     sleep "$wait_seconds"
     # 用 ip-api.com 验证，而不是 gstatic:
     # gstatic 在 WARP 分流模式下可能直接走 direct，导致 WARP 根本未生效却误报成功。
-    local ip_json warp_ip warp_status
+    local ip_json warp_ip warp_status warp_org local_ip
     ip_json=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 "http://ip-api.com/json/" 2>/dev/null)
     warp_status=$(printf '%s' "$ip_json" | jq -r '.status // empty' 2>/dev/null)
     warp_ip=$(printf '%s' "$ip_json" | jq -r '.query // empty' 2>/dev/null)
-    if [[ "$warp_status" == "success" && -n "$warp_ip" ]]; then
+    warp_org=$(printf '%s' "$ip_json" | jq -r '.org // empty' 2>/dev/null)
+    local_ip=$(get_public_ip)
+    if [[ "$warp_status" == "success" && -n "$warp_ip" && "$warp_ip" != "$local_ip" && "$warp_org" == *"Cloudflare"* ]]; then
         green "  代理连通性测试通过: 出口IP $warp_ip"
         return 0
     fi
-    yellow "  代理连通性测试失败"
+    yellow "  代理连通性测试失败 (出口IP=${warp_ip:-无}, 归属=${warp_org:-无})"
     return 1
 }
 
@@ -1190,12 +1192,14 @@ test_warp_connectivity() {
 # -----------------------------------------------------------------------------
 check_warp_tunnel() {
     local auto_repair=${1:-0}
-    local ip_json warp_ip attempt=0
+    local ip_json warp_ip warp_org local_ip attempt=0
     while [[ $attempt -lt 3 ]]; do
         attempt=$((attempt + 1))
         ip_json=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 "http://ip-api.com/json/" 2>/dev/null)
         warp_ip=$(printf '%s' "$ip_json" | jq -r '.query // empty' 2>/dev/null)
-        if [[ -n "$warp_ip" ]]; then
+        warp_org=$(printf '%s' "$ip_json" | jq -r '.org // empty' 2>/dev/null)
+        local_ip=$(get_public_ip)
+        if [[ -n "$warp_ip" && "$warp_ip" != "$local_ip" && "$warp_org" == *"Cloudflare"* ]]; then
             return 0
         fi
         [[ $attempt -lt 3 ]] && sleep 2
@@ -1206,7 +1210,11 @@ check_warp_tunnel() {
         sleep 5
         ip_json=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 "http://ip-api.com/json/" 2>/dev/null)
         warp_ip=$(printf '%s' "$ip_json" | jq -r '.query // empty' 2>/dev/null)
-        [[ -n "$warp_ip" ]] && return 0
+        warp_org=$(printf '%s' "$ip_json" | jq -r '.org // empty' 2>/dev/null)
+        local_ip=$(get_public_ip)
+        if [[ -n "$warp_ip" && "$warp_ip" != "$local_ip" && "$warp_org" == *"Cloudflare"* ]]; then
+            return 0
+        fi
     fi
     return 1
 }
@@ -1227,7 +1235,7 @@ apply_warp_config_to_file() {
     ep_tmp=$(umask 077 && mktemp) || { rm -f "$tmpfile"; return 1; }
     rules_tmp=$(umask 077 && mktemp) || { rm -f "$tmpfile" "$ep_tmp"; return 1; }
     # 任何退出路径清理三个临时文件
-    trap 'rm -f "$tmpfile" "$ep_tmp" "$rules_tmp" "$py_errfile"' RETURN
+    trap 'rm -f "$tmpfile" "$ep_tmp" "$rules_tmp" "${py_errfile:-}"' RETURN
     printf '%s\n' "$wg_ep" > "$ep_tmp"
     printf '%s\n' "$route_rules" > "$rules_tmp"
     # 合并规则 (基础规则 + 用户列表中的规则集, 全部走 warp-ep)
@@ -1261,20 +1269,20 @@ for name in extra_names:
         'url': f'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{srs}'
     })
 # 构建路由规则: 基础规则 + WARP 服务器直连 + 固定 ip-api.com→warp-ep + 每条规则走 warp-ep
-    warp_direct_rules = [
-        {'action': 'route', 'domain_suffix': ['cloudflareclient.com', 'cloudflare.com'], 'outbound': 'direct'},
-        {'action': 'route', 'ip_cidr': ['162.159.192.0/24', '162.159.193.0/24'], 'outbound': 'direct'}
-    ]
-    warp_ip_rule = [{'action': 'route', 'domain_suffix': ['ip-api.com'], 'outbound': 'warp-ep'}]
-    extra_rules = []
-    for name in extra_names:
-        if name.startswith('domain:'):
-            extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': 'warp-ep'})
-        else:
-            extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
-    # Gemini/Bard 强制走 WARP（绕过 geosite-google 规则集下载不及时的问题）
-    extra_rules.insert(0, {'action': 'route', 'domain_suffix': ['gemini.google.com', 'bard.google.com', 'gemini.gstatic.com', 'ssl.gstatic.com', 'www.googletagmanager.com'], 'outbound': 'warp-ep'})
-    cfg['route']['rules'] = base + warp_direct_rules + warp_ip_rule + extra_rules
+warp_direct_rules = [
+    {'action': 'route', 'domain_suffix': ['cloudflareclient.com', 'cloudflare.com'], 'outbound': 'direct'},
+    {'action': 'route', 'ip_cidr': ['162.159.192.0/24', '162.159.193.0/24'], 'outbound': 'direct'}
+]
+warp_ip_rule = [{'action': 'route', 'domain_suffix': ['ip-api.com'], 'outbound': 'warp-ep'}]
+extra_rules = []
+for name in extra_names:
+    if name.startswith('domain:'):
+        extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': 'warp-ep'})
+    else:
+        extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
+# Gemini/Bard 强制走 WARP（绕过 geosite-google 规则集下载不及时的问题）
+extra_rules.insert(0, {'action': 'route', 'domain_suffix': ['gemini.google.com', 'bard.google.com', 'gemini.gstatic.com', 'ssl.gstatic.com', 'www.googletagmanager.com'], 'outbound': 'warp-ep'})
+cfg['route']['rules'] = base + warp_direct_rules + warp_ip_rule + extra_rules
 cfg['route']['rule_set'] = ruleset
 if 'final' in cfg.get('route', {}):
     del cfg['route']['final']
@@ -1291,7 +1299,7 @@ PYEOF
     rm -f "$ep_tmp" "$rules_tmp"
     local verify_errfile
     verify_errfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
-    trap 'rm -f "$tmpfile" "$ep_tmp" "$rules_tmp" "$py_errfile" "$verify_errfile"' RETURN
+    trap 'rm -f "$tmpfile" "$ep_tmp" "$rules_tmp" "${py_errfile:-}" "${verify_errfile:-}"' RETURN
     if ! python3 -c "import json; json.load(open('$tmpfile'))" 2>"$verify_errfile"; then
         rm -f "$tmpfile"
         red "WARP 配置合并输出不是合法 JSON" >&2
@@ -1365,7 +1373,7 @@ disable_warp_in_config() {
     tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
     _errfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
     # trap 确保异常路径清理两个临时文件
-    trap 'rm -f "$tmpfile" "$_errfile"' RETURN
+    trap 'rm -f "$tmpfile" "${_errfile:-}"' RETURN
     if ! python3 -c "
 import json
 cfg = json.load(open('$config_file'))
@@ -2024,7 +2032,7 @@ ensure_fscarmen_base_blocks() {
     local backup="${config_file}.bak.$(date +%s)"
     cp -p "$config_file" "$backup" 2>/dev/null || cp "$config_file" "$backup"
     local tmpfile; tmpfile=$(umask 077 && mktemp) || { rm -f "$backup"; return 1; }
-    trap 'rm -f "$tmpfile"' RETURN
+    trap 'rm -f "${tmpfile:-}"' RETURN
     if ! python3 -c "
 import json, sys
 cfg = json.load(open('$config_file'))
@@ -2099,7 +2107,7 @@ safe_hot_reload_singbox() {
     # $$ 防止同秒并发命名冲突; trap RETURN 任何路径都清理
     local backup="${config_file}.hotbak.$$.$(date +%s)"
     cp -p "$config_file" "$backup" 2>/dev/null
-    trap 'cleanup_hot_baks "$config_file"; rm -f "$backup"' RETURN
+    trap 'cleanup_hot_baks "$config_file"; rm -f "${backup:-}"' RETURN
     if ! "$SINGBOX_INSTALL_DIR/sing-box" check -c "$config_file" >/dev/null 2>&1; then
         red "配置校验失败, 跳过热更。" >&2
         return 1
@@ -3011,7 +3019,7 @@ safe_add_singbox_inbound() {
     tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
     inbound_tmp=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$tmpfile"; return 1; }
     # 任何退出路径都清理临时文件
-    trap 'rm -f "$tmpfile" "$inbound_tmp"' RETURN
+    trap 'rm -f "${tmpfile:-}" "${inbound_tmp:-}"' RETURN
     printf '%s\n' "$inbound_json" > "$inbound_tmp"
     if ! python3 -c "
 import json,sys
@@ -3050,7 +3058,7 @@ remove_singbox_inbound() {
     local backup="${config_file}.bak.$(date +%s)"
     cp -p "$config_file" "$backup" 2>/dev/null || cp "$config_file" "$backup"
     local tmpfile; tmpfile=$(umask 077 && mktemp) || { rm -f "$backup"; red "无法创建临时文件" >&2; return 1; }
-    trap 'rm -f "$tmpfile"' RETURN
+    trap 'rm -f "${tmpfile:-}"' RETURN
     if ! python3 -c "
 import json
 cfg = json.load(open('$config_file'))
