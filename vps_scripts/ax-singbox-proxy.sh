@@ -1169,12 +1169,17 @@ apply_warp_wireguard_config() {
 test_warp_connectivity() {
     local wait_seconds=${1:-5}
     sleep "$wait_seconds"
-    local code=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
-    if [[ "$code" == "204" ]]; then
-        green "  代理连通性测试通过: HTTP $code"
+    # 用 ip-api.com 验证，而不是 gstatic:
+    # gstatic 在 WARP 分流模式下可能直接走 direct，导致 WARP 根本未生效却误报成功。
+    local ip_json warp_ip warp_status
+    ip_json=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 "http://ip-api.com/json/" 2>/dev/null)
+    warp_status=$(printf '%s' "$ip_json" | jq -r '.status // empty' 2>/dev/null)
+    warp_ip=$(printf '%s' "$ip_json" | jq -r '.query // empty' 2>/dev/null)
+    if [[ "$warp_status" == "success" && -n "$warp_ip" ]]; then
+        green "  代理连通性测试通过: 出口IP $warp_ip"
         return 0
     fi
-    yellow "  代理连通性测试失败 (HTTP $code)"
+    yellow "  代理连通性测试失败"
     return 1
 }
 
@@ -1185,21 +1190,23 @@ test_warp_connectivity() {
 # -----------------------------------------------------------------------------
 check_warp_tunnel() {
     local auto_repair=${1:-0}
-    local code attempt=0
+    local ip_json warp_ip attempt=0
     while [[ $attempt -lt 3 ]]; do
         attempt=$((attempt + 1))
-        code=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
-        if [[ "$code" == "204" ]]; then
+        ip_json=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 "http://ip-api.com/json/" 2>/dev/null)
+        warp_ip=$(printf '%s' "$ip_json" | jq -r '.query // empty' 2>/dev/null)
+        if [[ -n "$warp_ip" ]]; then
             return 0
         fi
         [[ $attempt -lt 3 ]] && sleep 2
     done
     if [[ "$auto_repair" == "1" ]]; then
-        yellow "WARP 隧道异常 (HTTP $code), 重启 sing-box 尝试恢复..."
+        yellow "WARP 隧道异常, 重启 sing-box 尝试恢复..."
         systemctl restart ax-singbox.service 2>/dev/null
         sleep 5
-        code=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 -o /dev/null -w "%{http_code}" "http://www.gstatic.com/generate_204" 2>/dev/null)
-        [[ "$code" == "204" ]] && return 0
+        ip_json=$(curl -s --max-time 8 --socks5-hostname 127.0.0.1:17888 "http://ip-api.com/json/" 2>/dev/null)
+        warp_ip=$(printf '%s' "$ip_json" | jq -r '.query // empty' 2>/dev/null)
+        [[ -n "$warp_ip" ]] && return 0
     fi
     return 1
 }
@@ -1641,10 +1648,10 @@ json.dump(cfg, open('$config_file','w'), indent=2)
     rm -f "$gwbak"
     # 全局 WARP 下 SOCKS5 流量也走 WARP, 隧道初始化需要时间, 多次重试
     local gw_ok=false
-    for _ in 1 2 3 4 5; do
+    for _ in 1 2 3 4 5 6 7 8; do
         if test_warp_connectivity 3; then gw_ok=true; break; fi
-        yellow "全局 WARP 隧道未就绪, 等待 3 秒重试..." >&2
-        sleep 3
+        yellow "全局 WARP 隧道未就绪, 等待 4 秒重试..." >&2
+        sleep 4
     done
     if $gw_ok; then
         green "✓ 全局 WARP 已启用 (所有未匹配流量走 warp-ep)"
