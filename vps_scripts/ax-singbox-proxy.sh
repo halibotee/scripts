@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.95"
+SCRIPT_VERSION="0.8.96"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -4070,10 +4070,16 @@ show_global_tls_status() {
 # -----------------------------------------------------------------------------
 show_warp_status() {
     echo "--- WARP 状态 ---"
-    if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-        green "WARP 自定义分流: 已启用"
+    local warp_mode=""
+    if jq -e '.route.final == "warp-ep"' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
+        warp_mode="全局 WARP (全部流量走 WARP)"
+    elif jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
+        warp_mode="WARP 自定义分流 (按规则集分配)"
+    fi
+    if [[ -n "$warp_mode" ]]; then
+        green "WARP: 已启用 ($warp_mode)"
         if ! jq -e '.inbounds[] | select(.tag == "mixed-in")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-            yellow "  SOCKS5 代理未配置，请重新启用 WARP 自定义分流"
+            yellow "  SOCKS5 代理未配置，请重新启用 WARP"
         else
             local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
             [[ -n "$warp_ip" ]] && green "  WARP 出口IP: $warp_ip"
@@ -4084,7 +4090,7 @@ show_warp_status() {
             fi
         fi
     else
-        yellow "WARP 自定义分流: 未启用"
+        yellow "WARP: 未启用"
     fi
 }
 
