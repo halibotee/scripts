@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.93"
+SCRIPT_VERSION="0.8.94"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -144,7 +144,7 @@ SINGBOX_REALITY_DEFAULT_FLOW="xtls-rprx-vision"      # VLESS+Reality 模式默�
 # 6. WARP 分流配置
 # =============================================================================
 # WARP 按 .warp_ruleset_list 逐条检测原生连通性, 可达走 direct, 否则走 warp-ep
-# 支持 geosite 规则集 (SagerNet/sing-geosite) 与 domain: 域名后缀
+# 只使用 geosite 规则集 (SagerNet/sing-geosite)，不再支持 domain: 域名后缀
 
 
 # =============================================================================
@@ -1258,11 +1258,11 @@ if os.path.exists(list_file):
 # 去重
 seen = set()
 extra_names = [x for x in extra_names if not (x in seen or seen.add(x))]
+# 只使用规则集 (rule_set)，忽略历史遗留的 domain: 行
+extra_names = [x for x in extra_names if not x.startswith('domain:')]
 # 构建 rule_set 定义: 用户列表中的规则集
 ruleset = []
 for name in extra_names:
-    if name.startswith('domain:'):
-        continue
     srs = f'{name}.srs'
     ruleset.append({
         'tag': name, 'type': 'remote', 'format': 'binary',
@@ -1276,10 +1276,7 @@ warp_direct_rules = [
 warp_ip_rule = [{'action': 'route', 'domain_suffix': ['ip-api.com'], 'outbound': 'warp-ep'}]
 extra_rules = []
 for name in extra_names:
-    if name.startswith('domain:'):
-        extra_rules.append({'action': 'route', 'domain_suffix': [name[7:]], 'outbound': 'warp-ep'})
-    else:
-        extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
+    extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
 # Gemini/Bard 强制走 WARP（绕过 geosite-google 规则集下载不及时的问题）
 extra_rules.insert(0, {'action': 'route', 'domain_suffix': ['gemini.google.com', 'bard.google.com', 'gemini.gstatic.com', 'ssl.gstatic.com', 'www.googletagmanager.com'], 'outbound': 'warp-ep'})
 cfg['route']['rules'] = base + warp_direct_rules + warp_ip_rule + extra_rules
@@ -1475,26 +1472,12 @@ edit_warp_rulesets() {
     if ! warp_enabled; then yellow "WARP 未启用，编辑规则集后不会生效。请先启用 WARP 分流。"; read -p $'\n按任意键继续...' -n1 -s; fi
     if [[ ! -f "$list_file" ]]; then
         cat > "$list_file" <<'EOF'
-# 规则集 (rule_set): 来自 SagerNet/sing-geosite，无前缀
+# 规则集 (rule_set): 来自 SagerNet/sing-geosite，无前缀；每行一个规则集
 geosite-openai
 geosite-google-gemini
 geosite-twitter
 geosite-xai
-# 域名后缀 (domain_suffix): 以 domain: 开头
-# geosite-xai 包含 grok.com 但不含 grok.x.ai, 单独补充:
-domain:grok.x.ai
-# Google 认证一致性 (避免 gemini 前后端 IP 不一致):
-domain:accounts.google.com
-domain:oauth2.googleapis.com
-#domain:google.com
-# Gemini 强制走 WARP (VPS IP 被屏蔽):
-domain:gemini.google.com
-domain:bard.google.com
-domain:gemini.gstatic.com
-domain:ssl.gstatic.com
-domain:www.googletagmanager.com
-#domain:youtube.com
-#domain:openai.com
+# 不再支持 domain: 行；如需要，改用对应 geosite 规则集
 EOF
     fi
     local before_hash; before_hash=$(hash_file "$list_file")
