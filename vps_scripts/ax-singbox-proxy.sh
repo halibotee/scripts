@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.94"
+SCRIPT_VERSION="0.8.95"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1463,20 +1463,27 @@ warp_ip_optimize() {
     return 1
 }
 
-# ===================== 编辑 WARP 分流域名 (规则集列表) =====================
+# ===================== 编辑 WARP 自定义分流 (规则集列表) =====================
 
-# 编辑 WARP 分流域名列表 (nano), 每行一个 rule_set 名称, # 为注释
+# 编辑 WARP 自定义分流列表 (nano), 每行一个 rule_set 名称, # 为注释
 # 保存后自动同步到 singbox.json 并热重载
 edit_warp_rulesets() {
     local list_file="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
-    if ! warp_enabled; then yellow "WARP 未启用，编辑规则集后不会生效。请先启用 WARP 分流。"; read -p $'\n按任意键继续...' -n1 -s; fi
+    if ! warp_enabled; then yellow "WARP 未启用，编辑规则集后不会生效。请先启用 WARP 自定义分流。"; read -p $'\n按任意键继续...' -n1 -s; fi
     if [[ ! -f "$list_file" ]]; then
         cat > "$list_file" <<'EOF'
-# 规则集 (rule_set): 来自 SagerNet/sing-geosite，无前缀；每行一个规则集
+# 规则集 (rule_set): 来自 SagerNet/sing-geosite，无前缀；每行一个规则集，使用 # 注释
 geosite-openai
+geosite-google
 geosite-google-gemini
+geosite-youtube
 geosite-twitter
 geosite-xai
+geosite-telegram
+geosite-discord
+geosite-github
+geosite-apple
+geosite-microsoft
 # 不再支持 domain: 行；如需要，改用对应 geosite 规则集
 EOF
     fi
@@ -1604,7 +1611,7 @@ enable_global_warp() {
     local self_enabled=false
     if ! warp_enabled; then
         self_enabled=true
-        yellow "warp-ep 节点不存在, 正在启用 WARP 分流..."
+        yellow "warp-ep 节点不存在, 正在启用 WARP 自定义分流..."
         local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
         if [[ ! -f "$warp_key_file" ]]; then
             register_warp_wireguard || { red "WARP 注册失败。" >&2; return 1; }
@@ -1696,7 +1703,7 @@ warp_management_menu() {
             green "当前状态: 全局 WARP (全部流量走 WARP)"
             [[ -n "$warp_ip" ]] && echo "      出口IP: $warp_ip"
         elif $cfg_enabled; then
-            green "当前状态: 智能分流已启用 (按规则集分配分流)"
+            green "当前状态: 自定义分流已启用 (按规则集分配分流)"
             [[ -n "$warp_ip" ]] && echo "      出口IP: $warp_ip"
         else
             yellow "当前状态: 未启用"
@@ -1704,17 +1711,17 @@ warp_management_menu() {
         if [[ -n "$warp_ok" ]]; then
             if $warp_ok; then green "      隧道状态: 正常 (keepalive 15s)"; else red "      隧道状态: 异常"; fi
         else
-            yellow "      隧道状态: SOCKS5 代理未配置，请重新启用 WARP"
+            yellow "      隧道状态: SOCKS5 代理未配置，请重新启用 WARP 自定义分流"
         fi
         echo "----------------------------------"
         if $global; then
             echo " 1) 关闭 WARP (含全局)"
         elif $cfg_enabled; then
-            echo " 1) 禁用 WARP 分流"
+            echo " 1) 禁用 WARP 自定义分流"
         else
-            echo " 1) 启用 WARP 分流"
+            echo " 1) 启用 WARP 自定义分流"
         fi
-        echo " 2) 编辑WARP 分流域名"
+        echo " 2) 编辑 WARP 自定义分流"
         echo " 3) 更换 WARP 账户"
         if $global; then echo " 4) 关闭全局 WARP (回到智能分流)"; else echo " 4) 启用全局 WARP"; fi
         echo " 0) 返回"
@@ -1724,7 +1731,7 @@ warp_management_menu() {
                 if $global || $cfg_enabled; then
                     if disable_warp_in_config; then sync; safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null; green "WARP 已关闭。"; else yellow "关闭失败。"; fi
                 else
-                    if enable_warp_in_config; then sync; green "WARP 分流已启用！"; else yellow "启用失败。"; fi
+                    if enable_warp_in_config; then sync; green "WARP 自定义分流已启用！"; else yellow "启用失败。"; fi
                 fi
                 read -p $'\n按任意键继续...' -n1 -s;;
             2) edit_warp_rulesets;;
@@ -2090,7 +2097,7 @@ safe_hot_reload_singbox() {
     # $$ 防止同秒并发命名冲突; trap RETURN 任何路径都清理
     local backup="${config_file}.hotbak.$$.$(date +%s)"
     cp -p "$config_file" "$backup" 2>/dev/null
-    trap 'cleanup_hot_baks "$config_file"; rm -f "${backup:-}"' RETURN
+    trap 'cleanup_hot_baks "${config_file:-}"; rm -f "${backup:-}"' RETURN
     if ! "$SINGBOX_INSTALL_DIR/sing-box" check -c "$config_file" >/dev/null 2>&1; then
         red "配置校验失败, 跳过热更。" >&2
         return 1
@@ -4064,9 +4071,9 @@ show_global_tls_status() {
 show_warp_status() {
     echo "--- WARP 状态 ---"
     if jq -e '.endpoints[] | select(.tag == "warp-ep" and .type == "wireguard")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-        green "WARP 分流: 已启用"
+        green "WARP 自定义分流: 已启用"
         if ! jq -e '.inbounds[] | select(.tag == "mixed-in")' "$SINGBOX_INSTALL_DIR/singbox.json" >/dev/null 2>&1; then
-            yellow "  SOCKS5 代理未配置，请重新启用 WARP 分流"
+            yellow "  SOCKS5 代理未配置，请重新启用 WARP 自定义分流"
         else
             local warp_ip=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:17888 http://ip-api.com/json/ 2>/dev/null | jq -r '.query // empty')
             [[ -n "$warp_ip" ]] && green "  WARP 出口IP: $warp_ip"
@@ -4077,7 +4084,7 @@ show_warp_status() {
             fi
         fi
     else
-        yellow "WARP 分流: 未启用"
+        yellow "WARP 自定义分流: 未启用"
     fi
 }
 
