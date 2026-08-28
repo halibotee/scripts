@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.96"
+SCRIPT_VERSION="0.8.97"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1722,7 +1722,7 @@ warp_management_menu() {
             echo " 1) 启用 WARP 自定义分流"
         fi
         echo " 2) 编辑 WARP 自定义分流"
-        echo " 3) 更换 WARP 账户"
+        echo " 3) IP优选 (更换出口IP)"
         if $global; then echo " 4) 关闭全局 WARP (回到智能分流)"; else echo " 4) 启用全局 WARP"; fi
         echo " 0) 返回"
         read -rp "请选择: " warp_choice
@@ -1735,7 +1735,7 @@ warp_management_menu() {
                 fi
                 read -p $'\n按任意键继续...' -n1 -s;;
             2) edit_warp_rulesets;;
-            3) change_warp_account_menu;;
+            3) warp_ip_optimize; read -p $'\n按任意键返回...' -n1 -s ;;
             4)
                 if $global; then disable_global_warp; else enable_global_warp; fi
                 read -p $'\n按任意键返回...' -n1 -s;;
