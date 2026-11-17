@@ -1,3 +1,2 @@
-# VPS Scripts
+# My Scripts
 
-VPS 一键脚本集
