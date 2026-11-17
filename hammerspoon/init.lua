@@ -1,8 +1,11 @@
 --------------------------------------------------------------------------------
--- GEMINI-Prime 核心守护进程 (v4.5.6) - 中文系统深度适配版 (完美适配前台调度)
+-- GEMINI-Prime 核心守护进程 (v4.5.8) - 中文系统深度适配版 (完美适配前台调度)
 -- 修订：窗口排列时，使用 CoreGraphics 真实显示尺寸剔除台前调度左侧缩略图窗口
 -- 修订：WindowManager 改为三档开关 (0 关闭 / 1 仅排列 / 2 排列 + 再次长按恢复)
 -- 修订：开关面板沿用原单行格式，并在行尾注释中补充各参数值（0 / 1 / 2）的说明
+-- 修订：窗口排列改用 hs.window.orderedWindows() 获取窗口，不再常驻 window.filter 监听，
+--       避免日志中反复出现 LuaSkin: Unable to fetch NSRunningApplication for pid
+-- 修订：边缘吸附仅在"标题栏按下并真实拖动"后松手才触发，修复点击顶部菜单栏导致窗口被最大化
 --------------------------------------------------------------------------------
 
 local logger = hs.logger.new('CoreDaemon', 'info')
@@ -15,7 +18,7 @@ local FeatureSwitches = {
     FinderTools   = 1,  -- 模块 2：Command+E 访达静默新建文本 (0 关闭；1 开启)
     KeyRemapper   = 1,  -- 模块 3：右 Command 映射 Delete (0xE7 -> 0x4C) (0 关闭并恢复系统默认键位；1 开启)
     ServerMode    = 0,  -- 模块 4：服务器模式 合盖插电不眠+拔电后15s休眠 (0 关闭；1 开启)
-    WindowManager = 1   -- 模块 5：左 Cmd 长按一键排列 + 鼠标边缘吸附分屏 (0 关闭；1 开启，长按仅排列；2 开启，再次长按左 Cmd 恢复原有布局)
+    WindowManager = 2   -- 模块 5：左 Cmd 长按一键排列 + 鼠标边缘吸附分屏 (0 关闭；1 开启，长按仅排列；2 开启，再次长按左 Cmd 恢复原有布局)
 }
 
 -- =============================================================================
@@ -205,6 +208,8 @@ if FeatureSwitches.WindowManager >= 1 then
         local LEFT_CMD_KEYCODE = 55     -- 物理左侧 Command 硬件键码
         local HOLD_THRESHOLD   = 0.4    -- 长按触发阈值（秒）
         local EDGE_THRESHOLD   = 15     -- 鼠标拖拽至屏幕边缘的吸附像素阈值
+        local DRAG_MIN_DIST    = 8      -- 判定为"拖动"的最小移动距离（像素），小于此值视为单击
+        local TITLE_H          = 80     -- 判定为"在标题栏区域按下"的窗口顶部高度（像素，含容错）
         local THUMB_RATIO      = 0.85   -- 屏幕实际显示尺寸 / 窗口真实尺寸 低于此值，判定为台前调度缩略图
         local DEBUG_WINDOWS    = false  -- 设为 true：长按排列时在 Hammerspoon 控制台输出每个窗口的判定详情
 
@@ -281,9 +286,8 @@ if FeatureSwitches.WindowManager >= 1 then
             local screenFrame = screen:frame()
             local bounds = getOnScreenBounds()
 
-            -- 使用 window.filter 获取当前 Space 的标准窗口
-            local wf = hs.window.filter.defaultCurrentSpace
-            local windows = hs.fnutils.filter(wf:getWindows(), function(win)
+            -- 使用 orderedWindows 一次性获取当前 Space 的可见窗口（无常驻监听）
+            local windows = hs.fnutils.filter(hs.window.orderedWindows(), function(win)
                 if not win:isStandard() or win:screen() ~= screen then return false end
                 return isRealStageWindow(win, bounds, screenFrame)
             end)
@@ -389,13 +393,58 @@ if FeatureSwitches.WindowManager >= 1 then
         end):start()
 
         -- 2. 监听鼠标拖拽窗口到屏幕边缘松手自动吸附
+        --    仅当"在窗口标题栏区域按下，并真实拖动"后松手才触发。
+        --    （原逻辑只看松手位置：单击顶部 macOS 菜单栏时松手点也在屏幕顶部，会误触发窗口最大化）
+        local dragState = nil  -- { down = 按下坐标, moved = 是否已拖动, ignore = 是否按在菜单栏 }
+
         _G.WindowManagerObjects.dragSnapTap = hs.eventtap.new({
+            hs.eventtap.event.types.leftMouseDown,
+            hs.eventtap.event.types.leftMouseDragged,
             hs.eventtap.event.types.leftMouseUp
         }, function(event)
+            local types = hs.eventtap.event.types
+            local t = event:getType()
+
+            if t == types.leftMouseDown then
+                local pos = event:location()
+                local scr = hs.mouse.getCurrentScreen()
+                -- 按下位置高于屏幕可用区域顶部 = 点在 macOS 菜单栏上，直接忽略本次操作
+                local inMenuBar = scr ~= nil and pos.y < scr:frame().y
+                dragState = { down = pos, moved = false, ignore = inMenuBar }
+                return false
+            end
+
+            if t == types.leftMouseDragged then
+                if dragState and not dragState.moved then
+                    local p = event:location()
+                    local dx, dy = p.x - dragState.down.x, p.y - dragState.down.y
+                    if math.sqrt(dx * dx + dy * dy) >= DRAG_MIN_DIST then
+                        dragState.moved = true
+                    end
+                end
+                return false
+            end
+
+            -- leftMouseUp
+            local st = dragState
+            dragState = nil
+            if not st or st.ignore or not st.moved then return false end
+
             local win = hs.window.focusedWindow()
             if not win or not win:isStandard() then return false end
+
             local mousePos = hs.mouse.absolutePosition()
             local screen = hs.mouse.getCurrentScreen()
+            if not screen then return false end
+
+            -- 推算窗口被拖动前的位置，确认鼠标是在窗口标题栏区域按下的
+            local f = win:frame()
+            local startX = f.x - (mousePos.x - st.down.x)
+            local startY = f.y - (mousePos.y - st.down.y)
+            local inTitleBar = st.down.x >= startX and st.down.x <= startX + f.w
+                and st.down.y >= startY - 10 and st.down.y <= startY + TITLE_H
+            if not inTitleBar then return false end
+
             local max = screen:frame()
             local full = screen:fullFrame()
             if mousePos.x <= full.x + EDGE_THRESHOLD then
@@ -416,7 +465,7 @@ end
 -- =============================================================================
 -- [启动诊断报告]
 -- =============================================================================
-local statusMsg = "Hammerspoon v4.5.6\n"
+local statusMsg = "Hammerspoon v4.5.8\n"
 local keys = {}
 for k in pairs(FeatureSwitches) do table.insert(keys, k) end
 table.sort(keys)
