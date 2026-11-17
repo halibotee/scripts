@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.8.97"
+SCRIPT_VERSION="0.8.98"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1260,6 +1260,18 @@ seen = set()
 extra_names = [x for x in extra_names if not (x in seen or seen.add(x))]
 # 只使用规则集 (rule_set)，忽略历史遗留的 domain: 行
 extra_names = [x for x in extra_names if not x.startswith('domain:')]
+# 校验规则集 URL 可下载性, 失败时警告并保留 (sing-box 启动后会自动重试)
+import urllib.request, tempfile, os as _os
+bad_rules = []
+for name in extra_names:
+    srs_url = f'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{name}.srs'
+    try:
+        req = urllib.request.urlopen(srs_url, timeout=5)
+        req.read(100)  # 只读前100字节验证可达
+    except Exception as e:
+        bad_rules.append((name, str(e)))
+for name, err in bad_rules:
+    print(f'WARNING: 规则集 {name} 下载失败: {err}', file=__import__('sys').stderr)
 # 构建 rule_set 定义: 用户列表中的规则集
 ruleset = []
 for name in extra_names:
@@ -1332,6 +1344,23 @@ enable_warp_in_config() {
         if apply_warp_config_to_file "$wg_ep" "$route_rules"; then
             if safe_hot_reload_singbox; then
                 if test_warp_connectivity 5; then
+                    # 验证规则集下载是否成功
+                    local _rs_list="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
+                    if [[ -f "$_rs_list" ]]; then
+                        local _rs_fail=0
+                        while IFS= read -r _rs_name; do
+                            _rs_name=$(echo "$_rs_name" | tr -d '[:space:]')
+                            [[ -z "$_rs_name" || "$_rs_name" == \#* ]] && continue
+                            [[ "$_rs_name" == domain:* ]] && continue
+                            if ! curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+                                "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/${_rs_name}.srs" \
+                                2>/dev/null | grep -q '^200$'; then
+                                yellow "  规则集 ${_rs_name} 下载失败, 该规则集的域名将走直连而非 WARP"
+                                _rs_fail=1
+                            fi
+                        done < "$_rs_list"
+                        [[ $_rs_fail -eq 1 ]] && yellow "  请检查网络或稍后重试 (sing-box 会自动重试下载)"
+                    fi
                     green "✓ WARP 已启用 (尝试 $attempt 次)"
                     return 0
                 fi
@@ -1412,6 +1441,23 @@ sync_warp_config() {
     route_rules=$SINGBOX_WARP_ROUTE_RULES
     apply_warp_config_to_file "$wg_ep" "$route_rules" || return 1
     if safe_hot_reload_singbox; then
+        # 验证规则集下载
+        local _rs_list="$SINGBOX_INSTALL_DIR/.warp_ruleset_list"
+        if [[ -f "$_rs_list" ]]; then
+            local _rs_fail=0
+            while IFS= read -r _rs_name; do
+                _rs_name=$(echo "$_rs_name" | tr -d '[:space:]')
+                [[ -z "$_rs_name" || "$_rs_name" == \#* ]] && continue
+                [[ "$_rs_name" == domain:* ]] && continue
+                if ! curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+                    "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/${_rs_name}.srs" \
+                    2>/dev/null | grep -q '^200$'; then
+                    yellow "  规则集 ${_rs_name} 下载失败, 该规则集的域名将走直连而非 WARP"
+                    _rs_fail=1
+                fi
+            done < "$_rs_list"
+            [[ $_rs_fail -eq 1 ]] && yellow "  请检查网络或稍后重试 (sing-box 会自动重试下载)"
+        fi
         return 0
     fi
     systemctl restart ax-singbox.service 2>/dev/null
