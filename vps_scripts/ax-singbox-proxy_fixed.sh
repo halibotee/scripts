@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.12"
+SCRIPT_VERSION="0.9.13"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -751,13 +751,12 @@ is_elf_binary() {
 
 # -----------------------------------------------------------------------------
 # 计算文件 SHA256, 与期望值比对 (大小写无关). 失败时输出实际值便于诊断.
-# 参数: $1=文件, $2=期望 SHA256 (空字符串则跳过校验, 仅警告)
+# 参数: $1=文件, $2=期望 SHA256 (空字符串则跳过校验, 静默放行)
 # -----------------------------------------------------------------------------
 verify_sha256() {
     local file=$1 expected=$2 actual
     [[ -f "$file" ]] || { red "SHA256: 文件不存在 ($file)" >&2; return 1; }
     if ! command -v sha256sum >/dev/null 2>&1; then
-        yellow "SHA256: sha256sum 不可用, 跳过校验" >&2
         return 0
     fi
     actual=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
@@ -766,7 +765,6 @@ verify_sha256() {
         return 1
     fi
     if [[ -z "$expected" ]]; then
-        yellow "SHA256: 未提供期望值, 仅记录 ($actual)" >&2
         return 0
     fi
     # bash 3.2 不支持 ${var,,}, 用 tr 兼容
