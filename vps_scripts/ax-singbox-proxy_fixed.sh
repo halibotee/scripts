@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.15"
+SCRIPT_VERSION="0.9.16"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1423,7 +1423,7 @@ for name in extra_names:
     extra_rules.append({'action': 'route', 'rule_set': [name], 'outbound': 'warp-ep'})
 cfg['route']['rules'] = base + warp_direct_rules + warp_ip_rule + extra_rules
 cfg['route']['rule_set'] = ruleset
-# 注意: 不删除 route.final, 全局 WARP 状态由 enable/disable_global_warp 管理
+# 注意: 不删除 route.final, 全局 WARP 状态由 enable_global_warp 管理
 mixed_in = {'type': 'mixed', 'tag': 'mixed-in', 'listen': '127.0.0.1', 'listen_port': 17888}
 if not any(i.get('tag') == 'mixed-in' for i in cfg.get('inbounds', [])):
     cfg.setdefault('inbounds', []).append(mixed_in)
@@ -1801,20 +1801,6 @@ json.dump(cfg, open('$config_file','w'), indent=2)
     fi
 }
 
-disable_global_warp() {
-    local config_file="$SINGBOX_INSTALL_DIR/singbox.json"
-    if ! python3 -c "
-import json
-cfg = json.load(open('$config_file'))
-cfg['route'].pop('final', None)
-json.dump(cfg, open('$config_file','w'), indent=2)
-" 2>/dev/null; then red "关闭全局 WARP 失败。" >&2; return 1; fi
-    if ! safe_hot_reload_singbox && ! systemctl restart ax-singbox.service 2>/dev/null; then
-        red "重载 sing-box 失败，全局 WARP 可能仍生效。" >&2; return 1
-    fi
-    green "✓ 全局 WARP 已关闭"
-}
-
 warp_management_menu() {
     while true; do
         local cfg_enabled=false global=false
@@ -1856,7 +1842,7 @@ warp_management_menu() {
         fi
         echo " 2) 编辑 WARP 自定义分流"
         echo " 3) IP优选 (更换出口IP)"
-        if $global; then echo " 4) 关闭全局 WARP (回到智能分流)"; else echo " 4) 启用全局 WARP"; fi
+        if $global; then echo " 4) 关闭 WARP (含全局)"; else echo " 4) 启用全局 WARP"; fi
         echo " 0) 返回"
         read -rp "请选择: " warp_choice
         case "$warp_choice" in
@@ -1870,7 +1856,11 @@ warp_management_menu() {
             2) edit_warp_rulesets;;
             3) warp_ip_optimize; read -p $'\n按任意键返回...' -n1 -s ;;
             4)
-                if $global; then disable_global_warp; else enable_global_warp; fi
+                if $global; then
+                    if disable_warp_in_config; then sync; safe_hot_reload_singbox || systemctl restart ax-singbox.service 2>/dev/null; green "WARP 已关闭 (含全局)。"; else yellow "关闭失败。"; fi
+                else
+                    enable_global_warp
+                fi
                 read -p $'\n按任意键返回...' -n1 -s;;
             0) break;;
             *) red "无效选择!"; sleep 1;;
