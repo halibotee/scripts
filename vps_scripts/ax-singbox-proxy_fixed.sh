@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.03"
+SCRIPT_VERSION="0.9.04"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -4784,19 +4784,22 @@ check_system_compatibility() {
         exit 1
     fi
     
-    # 检查必要的命令是否可用
+}
+
+# -----------------------------------------------------------------------------
+# 必要命令检查 (须在依赖安装之后调用, 否则全新系统会在安装前就被拦下)
+# -----------------------------------------------------------------------------
+check_required_commands() {
     local required_commands=("curl" "jq" "openssl" "python3")
-    local missing_commands=()
-    
+    local missing_commands=() cmd
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
             missing_commands+=("$cmd")
         fi
     done
-    
     if [[ ${#missing_commands[@]} -gt 0 ]]; then
         red "错误: 缺少必要命令: ${missing_commands[*]}"
-        red "请运行脚本的安装功能或手动安装缺失的依赖。"
+        red "自动安装未成功, 请手动安装后重试 (例: apt install -y ${missing_commands[*]})"
         exit 1
     fi
 }
@@ -4845,6 +4848,8 @@ initial_check_and_install() {
     
     # 使用统一的安装函数
     install_dependencies_and_programs || { red "安装失败，退出脚本。"; exit 1; }
+    # 依赖安装完成后再确认必要命令
+    check_required_commands
     
     # 自动启用 BBR + fq
     enable_bbr_fq
