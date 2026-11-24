@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.09"
+SCRIPT_VERSION="0.9.10"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1372,7 +1372,7 @@ apply_warp_config_to_file() {
     ep_tmp=$(umask 077 && mktemp) || { rm -f "$tmpfile"; return 1; }
     rules_tmp=$(umask 077 && mktemp) || { rm -f "$tmpfile" "$ep_tmp"; return 1; }
     # 任何退出路径清理三个临时文件
-    trap 'rm -f "$tmpfile" "$ep_tmp" "$rules_tmp" "${py_errfile:-}"' RETURN
+    trap 'rm -f "${tmpfile:-}" "${ep_tmp:-}" "${rules_tmp:-}" "${py_errfile:-}"' RETURN
     printf '%s\n' "$wg_ep" > "$ep_tmp"
     printf '%s\n' "$route_rules" > "$rules_tmp"
     ensure_warp_list_file "$list_file"
@@ -1450,7 +1450,7 @@ PYEOF
     [[ -s "$py_errfile" ]] && yellow "  提示: $(cat "$py_errfile")" >&2
     local verify_errfile
     verify_errfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
-    trap 'rm -f "$tmpfile" "$ep_tmp" "$rules_tmp" "${py_errfile:-}" "${verify_errfile:-}"' RETURN
+    trap 'rm -f "${tmpfile:-}" "${ep_tmp:-}" "${rules_tmp:-}" "${py_errfile:-}" "${verify_errfile:-}"' RETURN
     if ! python3 -c "import json; json.load(open('$tmpfile'))" 2>"$verify_errfile"; then
         rm -f "$tmpfile"
         red "WARP 配置合并输出不是合法 JSON" >&2
@@ -1702,7 +1702,7 @@ change_warp_account_manual() {
     # jq 表达式写到独立文件, 避免命令替换内嵌套 heredoc 在 bash 3.2 下被误解析
     jq_prog=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; return 1; }
     tmpfile=$(umask 077 && mktemp) || { red "无法创建临时文件" >&2; rm -f "$jq_prog"; return 1; }
-    trap 'rm -f "$tmpfile" "$jq_prog"' RETURN
+    trap 'rm -f "${tmpfile:-}" "${jq_prog:-}"' RETURN
     cat > "$jq_prog" <<'JSONEOF'
 {private_key: $priv, address_v4: "172.16.0.2/32", address_v6: $addr6, reserved: [$r1, $r2, $r3], peer_address: "engage.cloudflareclient.com"}
 JSONEOF
@@ -2017,8 +2017,8 @@ download_kcp_udp_binaries(){
     if [[ "$udp_current" != "$fixed_version_udp" || ! -f "$UDP2RAW_INSTALL_DIR/udp2raw" ]]; then
         log "下载 UDP2RAW (udp2raw_binaries.tar.gz)..."
         local udp2raw_tmp; udp2raw_tmp=$(umask 077 && mktemp) || { red "创建临时文件失败"; return 1; }
-        trap 'rm -f "$udp2raw_tmp"' RETURN
         local udp_sha=""
+        local udp_ok=false
         resolve_expected_sha "$UDP2RAW_INSTALL_DIR/.udp2raw_sha256" "AX_UDP2RAW_SHA256" "$UDP2RAW_SHA256_URL" > /tmp/ax-udp.expected 2>/dev/null
         [[ -s /tmp/ax-udp.expected ]] && udp_sha=$(< /tmp/ax-udp.expected)
         rm -f /tmp/ax-udp.expected
@@ -2028,7 +2028,13 @@ download_kcp_udp_binaries(){
         is_elf_binary "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" && \
         mv "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw" && \
         chmod +x "$UDP2RAW_INSTALL_DIR/udp2raw" && \
-        echo "$fixed_version_udp" > "$UDP2RAW_INSTALL_DIR/version.txt" || { rm -f "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw" "$udp2raw_tmp"; red "UDP2RAW 下载失败。"; return 1; }
+        echo "$fixed_version_udp" > "$UDP2RAW_INSTALL_DIR/version.txt" && udp_ok=true
+        rm -f "$udp2raw_tmp"
+        if [[ "$udp_ok" != true ]]; then
+            rm -f "$UDP2RAW_INSTALL_DIR/udp2raw_${cpu}" "$UDP2RAW_INSTALL_DIR/udp2raw"
+            red "UDP2RAW 下载失败。"
+            return 1
+        fi
     else
         green "UDP2RAW 已是最新版本 ($udp_current)"
     fi
