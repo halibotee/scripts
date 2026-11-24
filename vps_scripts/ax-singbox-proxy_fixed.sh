@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.10"
+SCRIPT_VERSION="0.9.11"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -2928,7 +2928,7 @@ manage_instance_menu() {
                 ;;
             4) nano "$conf"; log "重启实例以应用配置..."; systemctl restart "$service"; sleep 1; if systemctl is-active --quiet "$service"; then green "✓ 配置已更新，运行正常"; else red "✗ 重启失败，请检查配置"; fi;;
             5) interactive_rename_instance "$type" "$id"; read -p $'\n按任意键返回...' -n1 -s;;
-            99) read -rp "确认删除实例 ${id}？将删除配置、服务、密钥和订阅 [y/N]: " confirm
+            99) read -rp "确认删除实例 $(get_instance_display_name "$type" "$id")？将删除配置、服务、密钥和订阅 [y/N]: " confirm
                 if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                     if [[ "$type" == "xray_reality" || "$type" == "hysteria2" ]]; then
                         local tag; case "$type" in xray_reality) tag="vless-reality-${id}";; hysteria2) tag="hy2-${id}";; esac
@@ -2943,9 +2943,9 @@ manage_instance_menu() {
                     remove_custom_server_addr "${type}_${id}"
                     cleanup_warp_secrets_if_orphan
                     systemctl daemon-reload
-                    green "实例 ${id} 已删除！"; break
+                    green "实例 $(get_instance_display_name "$type" "$id") 已删除！"; break
                 fi;;
-             6) clear; echo "--- ${type^^} 客户端配置 (实例 $id) ---"
+             6) clear; echo "--- ${type^^} 客户端配置 (实例 $(get_instance_display_name "$type" "$id")) ---"
                 case "$type" in
                     "udp2raw") view_udp2raw_client_config "$id" ;;
                     "kcptun") view_kcptun_client_config "$id" ;;
@@ -3061,7 +3061,7 @@ collect_common_instance_config() {
     log "启动服务..."
     systemctl enable --now "${SYSTEMD_SERVICE_NAME}@${next_id}.service"
     sleep 1
-    green "实例 ${next_id} 已启动！"
+    green "实例 $(get_instance_display_name "$type" "$next_id") 已启动！"
     echo
     
     case "$type" in
@@ -3182,7 +3182,7 @@ add_singbox_inbound() {
         return 1
     fi
     
-    green "Inbound '$tag' 已添加！Sing-box 运行正常。"
+    green "Inbound '$(get_instance_display_name "$type" "$next_id")' 已添加！Sing-box 运行正常。"
     echo
     
     if [[ "$type" == "xray_reality" ]]; then
@@ -3376,7 +3376,7 @@ view_udp2raw_client_config(){
     local ip=$(get_instance_server_addr "udp2raw" "$id"); local port=$(get_listen_info_from_conf "$conf" | awk -F':' '{print $NF}'); local password=$(grep -Po '(?<=-k )[^ ]+' "$conf")
     local remote=$(fmt_addr_port "$ip" "$port")
     
-    cyan "--- UDP2RAW 实例 ${id} 客户端配置 ---";  echo
+    cyan "--- UDP2RAW 实例 $(get_instance_display_name "udp2raw" "$id") 客户端配置 ---";  echo
     green "${UDP2RAW_CLIENT_BASE_ARGS} -r ${remote} -l ${CLIENT_UDP2RAW_LISTEN_ADDR} -k ${password}"
 }
 
@@ -3390,7 +3390,7 @@ view_kcptun_client_config(){
     local target=$(fmt_addr_port "$ip" "$server_port")
     # KCPTUN 客户端 sndwnd/rcvwnd 需与服务器互换 (server.sndwnd <-> client.rcvwnd)
     local server_sndwnd=$(jq -r '.sndwnd' "$conf"); local server_rcvwnd=$(jq -r '.rcvwnd' "$conf")
-    cyan "--- KCPTUN 实例 ${id} 客户端配置 ---"; echo
+    cyan "--- KCPTUN 实例 $(get_instance_display_name "kcptun" "$id") 客户端配置 ---"; echo
     yellow "方法一: 使用 JSON 配置文件 (推荐)"; yellow "将以下内容保存为客户端的 config.json (本地监听地址 ${CLIENT_KCPTUN_LISTEN_ADDR} 可自行修改):"; green "$(jq --arg listen "${CLIENT_KCPTUN_LISTEN_ADDR}" --arg target "$target" --argjson sndwnd "$server_rcvwnd" --argjson rcvwnd "$server_sndwnd" --argjson mtu 1300 '.listen = $listen | .target = $target | .sndwnd = $sndwnd | .rcvwnd = $rcvwnd | .mtu = $mtu' "$conf")"; echo
     yellow "方法二: 使用命令行参数"; yellow "在客户端使用以下命令行参数 (本地监听地址 ${CLIENT_KCPTUN_LISTEN_ADDR} 可自行修改):";local args="-l ${CLIENT_KCPTUN_LISTEN_ADDR} -r ${target}"
     for key in $(jq -r 'keys_unsorted | .[]' "$conf"); do
@@ -3428,7 +3428,7 @@ view_chain_client_config_3() {
     local udp2raw_conf_path="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"
     
     if [[ ! -f "$kcptun_conf_path" || ! -f "$udp2raw_conf_path" ]]; then
-        red "串联实例 ${id} 的配置文件不完整。"; return
+        red "串联实例 $(get_instance_display_name "ss_3_chain_chain" "$id_num") 的配置文件不完整。"; return
     fi
     
     local ss_method=$(jq -r --arg tag "$ss_tag" '.inbounds[] | select(.tag == $tag) | .method' "$config_file" 2>/dev/null)
@@ -3441,7 +3441,7 @@ view_chain_client_config_3() {
     local kcptun_password=$(jq -r '.key' "$kcptun_conf_path")
     local udp_remote=$(fmt_addr_port "$ip" "$udp2raw_port")
     
-    cyan "--- SS+KCP+UDP 实例 ${id} 客户端配置 ---"; echo
+    cyan "--- SS+KCP+UDP 实例 $(get_instance_display_name "ss_3_chain_chain" "$id_num") 客户端配置 ---"; echo
     
     yellow "步骤 1: 运行 UDP2RAW (客户端)"
     yellow " (它会监听 ${CLIENT_SS_3_CHAIN_KCP_TARGET}, 作为 KCPTUN 的目标)"
@@ -3675,7 +3675,7 @@ start_new_chain_instance_3() {
         return 1
     fi
 
-    green "串联实例 ${chain_id} 已启动！"; echo
+    green "串联实例 $(get_instance_display_name "ss_3_chain_chain" "$i") 已启动！"; echo
     view_chain_client_config_3 "$i"
 }
 
@@ -3719,7 +3719,7 @@ manage_chain_instance_3() {
             11) local out_file="$HOME/ax-ss3chain-${manage_id}-config.txt"
                 view_chain_client_config_3 "$id_num" > "$out_file" 2>&1
                 echo "" >> "$out_file"; green "已保存到: $out_file"; read -p $'\n按任意键返回...' -n1 -s;;
-            99) read -rp "确认删除串联实例 ${manage_id}？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then
+            99) read -rp "确认删除串联实例 $(get_instance_display_name "$manage_type" "$id_num")？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then
                 log "删除串联...";
                 remove_singbox_inbound "ss-${manage_id}"
                 systemctl stop "$service2_full" "$service3_full" 2>/dev/null;
@@ -3768,7 +3768,7 @@ view_chain_client_config() {
     fi
     local id="${id_prefix}${id_num}"
     local udp2raw_conf="$UDP2RAW_INSTALL_DIR/udp2raw_${id}.conf"
-    if [[ ! -f "$udp2raw_conf" ]]; then red "串联实例 ${id} 的 UDP2RAW 配置文件不完整。"; return; fi
+    if [[ ! -f "$udp2raw_conf" ]]; then red "串联实例 $(get_instance_display_name "hy2_chain" "$id_num") 的 UDP2RAW 配置文件不完整。"; return; fi
     
     local ip=$(get_instance_server_addr "hy2_chain" "$id_num")
     local udp2raw_port=$(get_listen_info_from_conf "$udp2raw_conf" | awk -F':' '{print $NF}')
@@ -3824,7 +3824,7 @@ view_chain_client_config() {
         local chain_link="CHAIN://[${hy2_chain_clean} && udp2raw://${client_args}]#${chain_name}"
     fi
 
-    cyan "--- ${title} 串联实例 ${id} 客户端配置 ---"; echo
+    cyan "--- ${title} 串联实例 $(get_instance_display_name "hy2_chain" "$id_num") 客户端配置 ---"; echo
     
     yellow "1. ${title} 客户端 (指向本地):"
     green "$sub_link"; echo
@@ -4009,7 +4009,7 @@ EOF
         rm -f "$udp2raw_conf"
         return 1
     fi
-    green "串联实例 ${chain_id} 已启动！"
+    green "串联实例 $(get_instance_display_name "hy2_chain" "$i") 已启动！"
     echo
     view_chain_client_config "$chain_type" "$i"
 }
@@ -4065,7 +4065,7 @@ manage_chain_instance() {
             9) local out_file="$HOME/ax-hy2chain-${manage_id}-config.txt"
                 view_chain_client_config "$chain_type" "$id_num" > "$out_file" 2>&1
                 echo "" >> "$out_file"; green "已保存到: $out_file"; read -p $'\n按任意键返回...' -n1 -s;;
-            99) read -rp "确认删除串联实例 ${manage_id}？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
+            99) read -rp "确认删除串联实例 $(get_instance_display_name "$manage_type" "$id_num")？将删除所有配置和服务 [y/N]: " del_confirm; if [[ "$del_confirm" == "y" ]]; then 
                 if [[ "$chain_type" == "hy2" ]]; then
                     # 从 singbox.json 移除对应的 inbound
                     local tag="hy2-c${id_num}"
@@ -4785,7 +4785,7 @@ import_subscription_links() {
             systemctl enable --now "ax-udp2raw@${chain_id}.service" 2>/dev/null || {
                 red "UDP2RAW 启动失败，回滚..."; rollback_chain_instance_3 "$chain_id"; return 1; }
             sleep 1
-            green "串联实例 ${chain_id} 已部署完成！"; echo
+            green "串联实例 $(get_instance_display_name "ss_3_chain_chain" "$i") 已部署完成！"; echo
             view_chain_client_config_3 "$i"
 
         # ── 2 层串联: HY2 + UDP2RAW ──
@@ -4862,7 +4862,7 @@ import_subscription_links() {
             systemctl enable --now "ax-udp2raw@${chain_id}.service" 2>/dev/null || {
                 red "UDP2RAW 启动失败"; return 1; }
             sleep 1
-            green "串联实例 ${chain_id} 已部署完成！"; echo
+            green "串联实例 $(get_instance_display_name "hy2_chain" "$i") 已部署完成！"; echo
             view_chain_client_config "hy2" "$i"
 
         else
@@ -4920,7 +4920,7 @@ import_subscription_links() {
             remove_singbox_inbound "$tag" >/dev/null 2>&1
             return 1
         fi
-        green "VLESS+Reality 实例 #${i} 已部署完成！"; echo
+        green "VLESS+Reality 实例 $(get_instance_display_name "xray_reality" "$i") 已部署完成！"; echo
         yellow "注意: 服务端生成了新的 Reality 密钥对。"
         yellow "请将客户端链接中的 pbk 更新为以下公钥:"
         green "$public_key"; echo
