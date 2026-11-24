@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.13"
+SCRIPT_VERSION="0.9.14"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1746,6 +1746,13 @@ enable_global_warp() {
         local route_rules=$SINGBOX_WARP_ROUTE_RULES
         if ! apply_warp_config_to_file "$wg_ep" "$route_rules"; then
             red "WARP 配置写入失败。" >&2; return 1
+        fi
+        # 写入配置后必须先重载, 否则 mixed-in(SOCKS5 17888) 尚未监听, 连通性测试必然失败
+        if safe_hot_reload_singbox; then
+            sleep 1
+        else
+            systemctl restart ax-singbox.service 2>/dev/null
+            sleep 2
         fi
         # 先测试 WARP 连通性, 通过后再设 final
         if ! test_warp_connectivity 5; then
