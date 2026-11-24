@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.11"
+SCRIPT_VERSION="0.9.12"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1323,31 +1323,21 @@ ensure_warp_list_file() {
     if [[ ! -f "$list_file" ]]; then
         cat > "$list_file" <<EOF
 # WARP 自定义分流列表: 命中的流量走 WARP, 其余走 direct (全局 WARP 开启时则其余也走 WARP)
-# 每行一条, # 开头为注释, 行尾 " #" 之后也视为注释:
-#   geosite-xxx          geosite 规则集 (来自 SagerNet/sing-geosite, 无前缀)
-#   domain:example.com   域名后缀, 匹配该域名及其所有子域名
-geosite-openai
+
+# geosite-openai
 geosite-google
 geosite-google-gemini
-geosite-youtube
 geosite-twitter
 geosite-xai
-geosite-telegram
-geosite-discord
-geosite-github
-geosite-apple
-geosite-microsoft
-${WARP_LIST_MIGRATION_MARKER}
-# Gemini/Bard 相关域名 (可自由增删)
 domain:gemini.google.com
-domain:bard.google.com
 domain:gemini.gstatic.com
 domain:ssl.gstatic.com
 domain:www.googletagmanager.com
 EOF
         return 0
     fi
-    if ! grep -qF -- "$WARP_LIST_MIGRATION_MARKER" "$list_file"; then
+    if ! grep -qF -- "$WARP_LIST_MIGRATION_MARKER" "$list_file" && \
+       ! grep -qxF -- "domain:gemini.google.com" "$list_file"; then
         {
             echo ""
             echo "$WARP_LIST_MIGRATION_MARKER"
