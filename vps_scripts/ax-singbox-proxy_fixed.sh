@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.05"
+SCRIPT_VERSION="0.9.06"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -451,6 +451,48 @@ _ax_pm_install() {
     fi
 }
 
+# Debian EOL 回退: 已停止支持的发行版 (如 bullseye) 会被移出官方镜像,
+# apt update 大量 404 导致 curl/jq 等装不上。仅在 Debian 上尝试一次归档源。
+AX_APT_ARCHIVE_TRIED=false
+_ax_try_eol_archive_repo() {
+    [[ "$AX_APT_ARCHIVE_TRIED" == true ]] && return 1
+    AX_APT_ARCHIVE_TRIED=true
+    local os_id=""
+    os_id=$(. /etc/os-release 2>/dev/null; echo "${ID:-}")
+    [[ "$os_id" == "debian" ]] || return 1
+    local codename=""
+    codename=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}")
+    [[ -z "$codename" ]] && return 1
+
+    yellow "  检测到 Debian ${codename} 软件源不可用, 尝试切换 archive.debian.org 归档源..." >&2
+    local sources="/etc/apt/sources.list"
+    local bak="${sources}.ax-bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "$sources" "$bak" 2>/dev/null
+    mkdir -p /etc/apt/sources.list.d.ax-bak
+    mv /etc/apt/sources.list.d/* /etc/apt/sources.list.d.ax-bak/ 2>/dev/null
+
+    cat > "$sources" <<EOF
+deb http://archive.debian.org/debian ${codename} main contrib non-free
+EOF
+    # 归档源 Release 已过期, 必须关闭有效期校验, 否则 apt 拒绝使用
+    cat > /etc/apt/apt.conf.d/99ax-archive <<'EOF'
+Acquire::Check-Valid-Until "false";
+Acquire::AllowInsecureRepositories "true";
+EOF
+
+    if apt-get update -o Acquire::Check-Valid-Until=false >/dev/null 2>&1; then
+        green "  ✓ 已切换到归档源 (${codename})" >&2
+        return 0
+    fi
+
+    # 归档源同样不可用: 还原原配置
+    [[ -f "$bak" ]] && cp -a "$bak" "$sources" 2>/dev/null
+    mv /etc/apt/sources.list.d.ax-bak/* /etc/apt/sources.list.d/ 2>/dev/null
+    rm -f /etc/apt/apt.conf.d/99ax-archive
+    yellow "  ⚠ 归档源同样不可用, 已还原原软件源配置" >&2
+    return 1
+}
+
 check_and_install_system_deps() {
     local -A dep_map=(
         ["curl"]="curl" ["wget"]="wget" ["tar"]="tar" ["unzip"]="unzip"
@@ -498,6 +540,7 @@ check_and_install_system_deps() {
         if ! apt-get update -o DPkg::Lock::Timeout=120 >"$log_file" 2>&1; then
             yellow "  apt-get update 出现错误 (仍会继续尝试安装), 最后几行:"
             tail -n 5 "$log_file" | sed 's/^/    /'
+            _ax_try_eol_archive_repo
         fi
     elif ! command -v dnf &>/dev/null && command -v yum &>/dev/null; then
         yum install -y epel-release >>"$log_file" 2>&1 || true
