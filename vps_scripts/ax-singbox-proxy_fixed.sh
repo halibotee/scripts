@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.08"
+SCRIPT_VERSION="0.9.09"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -2729,6 +2729,49 @@ prompt_custom_instance_name() {
     return 0
 }
 
+# 一次性迁移: 让已有实例也遵循 <基础名><类型后缀> 规则
+# 无自定义名的用本机 IP 作基础名; 有自定义名但缺后缀的补齐; 重复时末尾加序号
+migrate_instance_names() {
+    [[ -f "$INSTANCE_NAMES_FILE" ]] || echo '{}' > "$INSTANCE_NAMES_FILE"
+    local pairs="" type id
+    for id in $(get_chain_instances_3 2>/dev/null); do pairs="${pairs}ss_3_chain_chain:${id}"$'\n'; done
+    for id in $(get_chain_instances "hy2" 2>/dev/null); do pairs="${pairs}hy2_chain:${id}"$'\n'; done
+    for type in xray_reality hysteria2 udp2raw kcptun; do
+        for id in $(get_standalone_instances "$type" 2>/dev/null); do pairs="${pairs}${type}:${id}"$'\n'; done
+    done
+
+    local p key suffix stored name candidate n changed=0 tmp
+    while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        type="${p%%:*}"; id="${p##*:}"
+        key="${type}_${id}"
+        suffix=$(get_type_suffix "$type")
+        stored=$(get_custom_instance_name "$key")
+        if [[ -n "$stored" ]]; then
+            name="$stored"
+        else
+            name=$(get_instance_server_addr "$type" "$id")
+        fi
+        if [[ "$name" != *"$suffix" ]] && [[ ! "$name" =~ ${suffix}[0-9]+$ ]]; then
+            name="${name}${suffix}"
+        fi
+
+        candidate="$name" n=0
+        while [[ "$candidate" != "$stored" ]] && \
+              jq -e --arg n "$candidate" '[.[] | select(. == $n)] | length > 0' "$INSTANCE_NAMES_FILE" >/dev/null 2>&1; do
+            n=$((n + 1))
+            candidate="${name}${n}"
+        done
+        [[ "$candidate" == "$stored" ]] && continue
+
+        tmp=$(jq -c --arg k "$key" --arg v "$candidate" '.[$k] = $v' "$INSTANCE_NAMES_FILE" 2>/dev/null) || continue
+        [[ -n "$tmp" ]] && echo "$tmp" > "$INSTANCE_NAMES_FILE" && changed=1
+    done <<< "$pairs"
+
+    (( changed )) && yellow "已按新命名规则同步现有实例名称。"
+    return 0
+}
+
 interactive_rename_instance() {
     local type=$1 id=$2; local key="${type}_${id}"
     local suffix=$(get_type_suffix "$type")
@@ -4978,6 +5021,9 @@ initial_check_and_install() {
     # 启用 sing-box 开机自启 (修复重启后服务不自动拉起)
     systemctl enable --now ax-singbox.service 2>/dev/null
     sleep 1
+
+    # 同步已有实例名称到 "基础名+类型后缀" 新规则
+    migrate_instance_names
 }
 
 # -----------------------------------------------------------------------------
