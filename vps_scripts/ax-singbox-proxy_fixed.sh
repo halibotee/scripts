@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.07"
+SCRIPT_VERSION="0.9.08"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -2679,57 +2679,76 @@ get_instance_display_name() {
     if [[ -n "$custom_name" ]]; then echo "$custom_name"; else generate_instance_display_name "$type" "$id"; fi
 }
 
+# 实例类型固定后缀 (显示名 = 基础名 + 后缀)
+get_type_suffix() {
+    case "$1" in
+        xray_reality)     echo "_VL" ;;
+        hysteria2)        echo "_Hy" ;;
+        hy2_chain)        echo "_HyU" ;;
+        ss_3_chain_chain) echo "_SKU" ;;
+        kcptun)           echo "_KCP" ;;
+        udp2raw)          echo "_UDP" ;;
+        *)                echo "" ;;
+    esac
+}
+
 # 订阅链接片段名称: 自定义实例名时追加类型后缀, 默认名保持原样
 get_instance_sub_name() {
     local type=$1 id=$2 suffix=""
-    case "$type" in
-        ss_3_chain_chain) suffix="_SKU" ;;
-        hy2_chain)        suffix="_HyU" ;;
-        xray_reality)     suffix="_VL" ;;
-        hysteria2)        suffix="_Hy" ;;
-    esac
+    suffix=$(get_type_suffix "$type")
     local custom=$(get_custom_instance_name "${type}_${id}")
     if [[ -n "$custom" ]]; then
-        [[ "$custom" == *"${suffix}" ]] && echo "$custom" || echo "${custom}${suffix}"
+        # 已带后缀 (含判重序号) 时原样返回, 避免二次追加
+        if [[ "$custom" == *"$suffix" ]] || [[ "$custom" =~ ${suffix}[0-9]+$ ]]; then
+            echo "$custom"
+        else
+            echo "${custom}${suffix}"
+        fi
     else
         get_instance_display_name "$type" "$id"
     fi
 }
 
 prompt_custom_instance_name() {
-    local type=$1 id=$2; local default_name=$(generate_instance_display_name "$type" "$id")
+    local type=$1 id=$2
+    local suffix=$(get_type_suffix "$type")
+    local default_base=$(get_instance_server_addr "$type" "$id")
     local custom_name=""
-    read -rp "请输入实例名称 (留空则使用默认: ${default_name}): " custom_name || return 1
-    if [[ -n "$custom_name" ]]; then
-        local max_suffix=0
-        if [[ -f "$INSTANCE_NAMES_FILE" ]]; then
-            local name; while IFS= read -r name; do
-                if [[ "$name" == "$custom_name" ]]; then
-                    [[ 1 -gt $max_suffix ]] && max_suffix=1
-                elif [[ "$name" == "${custom_name}_"* ]]; then
-                    local suffix="${name#${custom_name}_}"
-                    if [[ "$suffix" =~ ^[0-9]+$ ]]; then
-                        [[ $suffix -ge $max_suffix ]] && max_suffix=$((suffix + 1))
-                    fi
-                fi
-            done < <(jq -r '.[]' "$INSTANCE_NAMES_FILE" 2>/dev/null)
-        fi
-        [[ $max_suffix -gt 0 ]] && custom_name="${custom_name}_${max_suffix}"
-        set_custom_instance_name "${type}_${id}" "$custom_name"
-    fi
+    read -rp "请输入实例名称 (留空则使用默认: ${default_base}${suffix}): " custom_name || return 1
+    [[ -z "$custom_name" ]] && custom_name="$default_base"
+    [[ "$custom_name" == *"$suffix" ]] || custom_name="${custom_name}${suffix}"
+
+    # 完整名称重复时, 末尾追加序号 (bf_HyU -> bf_HyU1 -> bf_HyU2)
+    local candidate="$custom_name" n=0
+    while [[ -f "$INSTANCE_NAMES_FILE" ]] && \
+          jq -e --arg n "$candidate" '[.[] | select(. == $n)] | length > 0' "$INSTANCE_NAMES_FILE" >/dev/null 2>&1; do
+        n=$((n + 1))
+        candidate="${custom_name}${n}"
+    done
+    set_custom_instance_name "${type}_${id}" "$candidate"
     return 0
 }
 
 interactive_rename_instance() {
     local type=$1 id=$2; local key="${type}_${id}"
+    local suffix=$(get_type_suffix "$type")
     local current=$(get_instance_display_name "$type" "$id")
     echo "当前名称: $(cyan "$current")"
-    read -rp "请输入新名称 (留空恢复默认): " new_name
+    local new_name=""
+    read -rp "请输入新名称 (留空恢复默认): " new_name || return 1
     if [[ -z "$new_name" ]]; then
         remove_custom_instance_name "$key"
         green "已恢复默认名称"
     else
-        set_custom_instance_name "$key" "$new_name"
+        [[ "$new_name" == *"$suffix" ]] || new_name="${new_name}${suffix}"
+        # 排除自身当前名称, 其余重复时末尾追加序号
+        local candidate="$new_name" n=0
+        while [[ "$candidate" != "$(get_custom_instance_name "$key")" ]] && \
+              jq -e --arg n "$candidate" '[.[] | select(. == $n)] | length > 0' "$INSTANCE_NAMES_FILE" >/dev/null 2>&1; do
+            n=$((n + 1))
+            candidate="${new_name}${n}"
+        done
+        set_custom_instance_name "$key" "$candidate"
     fi
 }
 
