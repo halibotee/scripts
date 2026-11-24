@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.04"
+SCRIPT_VERSION="0.9.05"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -438,13 +438,31 @@ get_public_ip() {
 # 统一检测与安装系统依赖和核心程序
 # -----------------------------------------------------------------------------
 # 检查并安装系统依赖
+# 包管理器安装 (供批量/逐个重试共用)
+_ax_pm_install() {
+    if command -v apt-get &>/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=120 "$@"
+    elif command -v dnf &>/dev/null; then
+        dnf install -y "$@"
+    elif command -v yum &>/dev/null; then
+        yum install -y "$@"
+    else
+        echo "未找到 apt-get/dnf/yum" >&2; return 1
+    fi
+}
+
 check_and_install_system_deps() {
     local -A dep_map=(
         ["curl"]="curl" ["wget"]="wget" ["tar"]="tar" ["unzip"]="unzip"
-        ["jq"]="jq" ["openssl"]="openssl" ["uuidgen"]="uuid-runtime"
+        ["jq"]="jq" ["openssl"]="openssl" ["uuidgen"]="uuid-runtime" ["python3"]="python3"
         ["nano"]="nano" ["iptables"]="iptables" ["socat"]="socat"
     )
-    
+
+    # uuidgen 在 RHEL 系由 util-linux 提供 (uuid-runtime 仅 Debian 系有)
+    if ! command -v apt-get &>/dev/null; then
+        dep_map["uuidgen"]="util-linux"
+    fi
+
     # 检查 dig 命令
     if ! command -v dig &>/dev/null; then
         if command -v apt-get &>/dev/null; then
@@ -453,42 +471,66 @@ check_and_install_system_deps() {
             dep_map["dig"]="bind-utils"
         fi
     fi
-    
-    local packages_to_install=()
+
+    local packages_to_install=() cmd pkg
     for cmd in "${!dep_map[@]}"; do
         if ! command -v "$cmd" &>/dev/null; then
             packages_to_install+=("${dep_map[$cmd]}")
         fi
     done
-    
+
     if [ ${#packages_to_install[@]} -eq 0 ]; then
         green "✓ 所有系统依赖组件已就绪"
         return 0
     fi
-    
+
     echo ""
     yellow "开始下载安装 系统依赖组件..."
     for pkg in "${packages_to_install[@]}"; do
         cyan "  » 安装 $pkg"
     done
     echo ""
-    
-    local install_ok=false
+
+    local log_file; log_file=$(umask 077 && mktemp) || { red "无法创建临时文件"; return 1; }
+    local install_ok=false failed_pkgs=()
+    # apt: 先 update; update 失败 (如某个第三方源不可用) 不阻止后续安装, 仅提示
     if command -v apt-get &>/dev/null; then
-        apt-get update >/dev/null 2>&1 && apt-get install -y "${packages_to_install[@]}" >/dev/null 2>&1 && install_ok=true
-    elif command -v dnf &>/dev/null; then
-        dnf install -y "${packages_to_install[@]}" >/dev/null 2>&1 && install_ok=true
-    elif command -v yum &>/dev/null; then
-        yum install -y epel-release >/dev/null 2>&1 || true
-        yum install -y "${packages_to_install[@]}" >/dev/null 2>&1 && install_ok=true
+        if ! apt-get update -o DPkg::Lock::Timeout=120 >"$log_file" 2>&1; then
+            yellow "  apt-get update 出现错误 (仍会继续尝试安装), 最后几行:"
+            tail -n 5 "$log_file" | sed 's/^/    /'
+        fi
+    elif ! command -v dnf &>/dev/null && command -v yum &>/dev/null; then
+        yum install -y epel-release >>"$log_file" 2>&1 || true
     fi
-    if $install_ok; then
-        green "✓ 系统依赖组件安装完成！"
+    if _ax_pm_install "${packages_to_install[@]}" >>"$log_file" 2>&1; then
+        install_ok=true
     else
-        red "✗ 部分系统依赖组件安装失败"
-        yellow "请手动执行: apt install ${packages_to_install[*]}"
+        yellow "批量安装失败, 逐个重试以定位问题包..."
+        for pkg in "${packages_to_install[@]}"; do
+            _ax_pm_install "$pkg" >>"$log_file" 2>&1 || failed_pkgs+=("$pkg")
+        done
+    fi
+
+    # 核心命令 (脚本运行必需) 仍缺失才视为失败; 其余可选组件失败只给出提示
+    local missing_core=()
+    for cmd in curl jq openssl python3 tar; do
+        command -v "$cmd" &>/dev/null || missing_core+=("$cmd")
+    done
+    if [[ ${#missing_core[@]} -gt 0 ]]; then
+        red "✗ 必要组件安装失败: ${missing_core[*]}"
+        yellow "安装日志 (最后 15 行):"
+        tail -n 15 "$log_file" | sed 's/^/    /'
+        yellow "请检查网络/DNS/软件源后手动执行安装: ${packages_to_install[*]}"
+        rm -f "$log_file"
         return 1
     fi
+    if [[ ${#failed_pkgs[@]} -gt 0 ]]; then
+        yellow "⚠ 以下可选组件未能安装, 部分功能可能受限: ${failed_pkgs[*]}"
+    else
+        green "✓ 系统依赖组件安装完成！"
+    fi
+    rm -f "$log_file"
+    return 0
 }
 
 # 检查并下载核心程序
