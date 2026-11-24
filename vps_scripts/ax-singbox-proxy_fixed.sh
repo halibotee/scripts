@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.14"
+SCRIPT_VERSION="0.9.15"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1737,7 +1737,7 @@ enable_global_warp() {
     local self_enabled=false
     if ! warp_enabled; then
         self_enabled=true
-        yellow "warp-ep 节点不存在, 正在启用 WARP 自定义分流..."
+        yellow "warp-ep 节点不存在, 首次启用需先初始化 WARP 隧道 (全局 WARP 的前置步骤)..."
         local warp_key_file="$SINGBOX_INSTALL_DIR/.warp_wireguard.json"
         if [[ ! -f "$warp_key_file" ]]; then
             register_warp_wireguard || { red "WARP 注册失败。" >&2; return 1; }
