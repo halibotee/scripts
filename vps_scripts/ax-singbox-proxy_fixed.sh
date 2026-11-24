@@ -13,7 +13,7 @@
 #   http://www.gstatic.com/generate_204                      — 连通性检测端点 (HTTP, 免 TLS 干扰)
 #   https://ip.sb / https://ipinfo.io/ip                     — 公网 IP 查询
 
-SCRIPT_VERSION="0.9.06"
+SCRIPT_VERSION="0.9.07"
 
 # 启用严格模式 (未定义变量/管道中间错误会报错)
 # 不启用 -e: 脚本为交互式, 大量 cmd1; cmd2 与 if ! cmd 模式
@@ -1890,7 +1890,7 @@ warp_management_menu() {
 read_valid_port() {
     local prompt=$1 var_name=$2 allow_random=$3
     while true; do
-        read -p "$prompt" input
+        read -p "$prompt" input || return 1
         if [[ -z "$input" && "$allow_random" == "true" ]]; then
             input=$(find_available_port)
             green "已为您随机选择端口: $input" >&2
@@ -2538,8 +2538,9 @@ prompt_server_address() {
     local default="${global_addr:-$vps_ip}"
     local existing=$(get_custom_server_addr "$key")
     local prompt_default="${existing:-$default}"
+    local user_addr=""
     while true; do
-        read -rp "请输入域名或IP (留空则使用 ${prompt_default}): " user_addr
+        read -rp "请输入域名或IP (留空则使用 ${prompt_default}): " user_addr || return 1
         if [[ -z "$user_addr" ]]; then
             set_custom_server_addr "$key" "$prompt_default"
             green "使用地址: $prompt_default"
@@ -2697,7 +2698,8 @@ get_instance_sub_name() {
 
 prompt_custom_instance_name() {
     local type=$1 id=$2; local default_name=$(generate_instance_display_name "$type" "$id")
-    read -rp "请输入实例名称 (留空则使用默认: ${default_name}): " custom_name
+    local custom_name=""
+    read -rp "请输入实例名称 (留空则使用默认: ${default_name}): " custom_name || return 1
     if [[ -n "$custom_name" ]]; then
         local max_suffix=0
         if [[ -f "$INSTANCE_NAMES_FILE" ]]; then
@@ -2715,6 +2717,7 @@ prompt_custom_instance_name() {
         [[ $max_suffix -gt 0 ]] && custom_name="${custom_name}_${max_suffix}"
         set_custom_instance_name "${type}_${id}" "$custom_name"
     fi
+    return 0
 }
 
 interactive_rename_instance() {
@@ -2934,13 +2937,16 @@ collect_common_instance_config() {
     # 收集通用配置
     declare -A replacements
     
+    local listen_port="" target_port=""
     read -rp "请输入监听地址 (默认: $DEFAULT_LISTEN_ADDR): " listen_addr_input
     listen_addr=${listen_addr_input:-$DEFAULT_LISTEN_ADDR}
     read_valid_port "请输入监听端口 (留空则随机生成): " listen_port true
+    [[ -n "$listen_port" ]] || { yellow "已取消创建。"; return 1; }
     
     read -rp "请输入目标地址 (默认: $DEFAULT_TARGET_ADDR): " target_host
     target_host=${target_host:-$DEFAULT_TARGET_ADDR}
     read_valid_port "请输入目标端口 (留空则随机生成): " target_port true
+    [[ -n "$target_port" ]] || { yellow "已取消创建。"; return 1; }
     
     if [[ "$type" == "udp2raw" ]]; then
         replacements["__LISTEN_ADDR__"]="${listen_addr}:${listen_port}"
@@ -3039,8 +3045,9 @@ add_singbox_inbound() {
         tag="vless-reality-${next_id}"
         log "添加一个新的 VLESS+Reality inbound, tag: $tag"
         
-        local listen_port
+        local listen_port=""
         read_valid_port "请输入监听端口 (留空则随机): " listen_port true
+        [[ -n "$listen_port" ]] || { yellow "已取消创建。"; return 1; }
         
         local uuid=$(generate_strong_password)
         local private_key=$(generate_and_save_reality_keypair "$tag") || return 1
@@ -3059,8 +3066,9 @@ add_singbox_inbound() {
         tag="hy2-${next_id}"
         log "添加一个新的 Hysteria2 inbound, tag: $tag"
         
-        local listen_port
+        local listen_port="" hop_port=""
         read_valid_port "请输入监听端口 (留空则随机): " listen_port true
+        [[ -n "$listen_port" ]] || { yellow "已取消创建。"; return 1; }
         local hy2_password=$(handle_password_input "hysteria2")
         hy2_password=$(json_escape "$hy2_password")
         read -rp "请输入 Hysteria2 端口跳跃范围 (如 10000-20000, 留空禁用): " hop_port
@@ -3457,14 +3465,18 @@ start_new_chain_instance_3() {
     local chain_id="s3c${i}"
     log "启动一个新的 SS+KCP+UDP 串联实例..."
     green "新串联实例 #${i} (SS + KCPTUN + UDP2RAW 三层串联)"
-    prompt_custom_instance_name "ss_3_chain_chain" "$i"
-    prompt_server_address "ss_3_chain_chain" "$i"
+    local udp2raw_listen_port="" kcptun_listen_port="" ss_listen_port=""
+    prompt_custom_instance_name "ss_3_chain_chain" "$i" || return 1
+    prompt_server_address "ss_3_chain_chain" "$i" || return 1
     
     read_valid_port "请输入UDP2RAW对外端口 (留空则随机): " udp2raw_listen_port true
+    [[ -n "$udp2raw_listen_port" ]] || { yellow "已取消创建。"; return 1; }
     green "已指定对外端口 (UDP2RAW): $udp2raw_listen_port"
     
     read_valid_port "请输入KCPTUN内联端口 (UDP2RAW->KCPTUN) (留空则随机生成): " kcptun_listen_port true
+    [[ -n "$kcptun_listen_port" ]] || { yellow "已取消创建。"; return 1; }
     read_valid_port "请输入SS内联端口 (KCPTUN->SS) (留空则随机生成): " ss_listen_port true
+    [[ -n "$ss_listen_port" ]] || { yellow "已取消创建。"; return 1; }
     
     # 去重: 同实例 3 端口不得相同, 且不得与已有服务端口冲突
     while true; do
@@ -3820,11 +3832,14 @@ start_new_chain_instance() {
     green "新串联实例 #${i} (Hysteria2 + UDP2RAW 两层串联)"
     
     local chain_display_type="hy2_chain"
-    prompt_custom_instance_name "$chain_display_type" "$i"
-    prompt_server_address "$chain_display_type" "$i"
+    local udp2raw_listen_port="" internal_listen_port="" hop_port="" cert_path="" key_path="" sni="" ignore_client_bandwidth=""
+    prompt_custom_instance_name "$chain_display_type" "$i" || return 1
+    prompt_server_address "$chain_display_type" "$i" || return 1
     
     read_valid_port "请输入对外端口 (留空则随机生成): " udp2raw_listen_port true
+    [[ -n "$udp2raw_listen_port" ]] || { yellow "已取消创建。"; return 1; }
     read_valid_port "请输入内联端口 (留空则随机生成): " internal_listen_port true
+    [[ -n "$internal_listen_port" ]] || { yellow "已取消创建。"; return 1; }
     
     # 去重: 同实例 2 端口不得相同 (0.0.0.0 bind 覆盖 127.0.0.1)
     while [[ "$internal_listen_port" == "$udp2raw_listen_port" ]]; do
@@ -3833,7 +3848,7 @@ start_new_chain_instance() {
     done
     
     cyan "--- Hysteria2 配置 ---"
-    read -rp "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth
+    read -rp "ignoreClientBandwidth [true/false] (默认 true): " ignore_client_bandwidth || { yellow "已取消创建。"; return 1; }
     ignore_client_bandwidth=${ignore_client_bandwidth:-true}
     
     local hy2_password=$(generate_strong_password)
@@ -3844,7 +3859,7 @@ start_new_chain_instance() {
     local cert_info=$(setup_hysteria2_certificates) || return 1
     IFS='|' read -r cert_path key_path sni <<< "$cert_info"
     
-    read -rp "请输入 Hysteria2 端口跳跃范围 (如 10000-20000, 留空禁用): " hop_port
+    read -rp "请输入 Hysteria2 端口跳跃范围 (如 10000-20000, 留空禁用): " hop_port || { yellow "已取消创建。"; return 1; }
     
     # 创建 Hysteria2 inbound
     local hy2_inbound=$(cat <<EOF
@@ -4011,7 +4026,7 @@ chain_manager_menu_3() {
     declare -A CHAIN_MAP
     
     while true; do
-        trap 'echo -e "\n\n\033[33m操作已取消, 返回上级菜单...\033[0m"; sleep 1; return' SIGINT
+        trap 'echo -e "\n\n\033[33m操作已取消, 返回上级菜单...\033[0m"; sleep 1; return 1' SIGINT
         clear; echo "=================================="; echo "  安装/管理 $title"; echo "=================================="; echo
         
         local INSTANCES=$(get_chain_instances_3)
@@ -4059,7 +4074,7 @@ chain_manager_menu() {
     declare -A CHAIN_MAP
     
     while true; do
-        trap 'echo -e "\n\n\033[33m操作已取消, 返回上级菜单...\033[0m"; sleep 1; return' SIGINT
+        trap 'echo -e "\n\n\033[33m操作已取消, 返回上级菜单...\033[0m"; sleep 1; return 1' SIGINT
         clear; echo "=================================="; echo "  安装/管理 $title"; echo "=================================="; echo
         
         local INSTANCES=$(get_chain_instances "$chain_type")
@@ -4098,7 +4113,7 @@ main_manager_loop() {
         hysteria2) title="Hysteria2"; dir="$SINGBOX_INSTALL_DIR"; pattern=""; service_prefix="ax-singbox"; type_lowercase="hysteria2";;
     esac
     while true; do
-        trap 'echo -e "\n\n\033[33m操作已取消, 返回上级菜单...\033[0m"; sleep 1; return' SIGINT
+        trap 'echo -e "\n\n\033[33m操作已取消, 返回上级菜单...\033[0m"; sleep 1; return 1' SIGINT
         clear; echo "=================================="; echo "     安装/管理 $title"; echo "=================================="; echo
         
         local INSTANCES=($(get_standalone_instances "$type_lowercase"))
